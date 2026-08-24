@@ -1,0 +1,14 @@
+[general]
+ignore=body-is-missing
+
+[title-max-length]
+line-length=100
+
+[title-min-length]
+min-length=5
+
+[title-must-not-contain-word]
+words=wip,todo,fixme
+
+[title-match-regex]
+regex=^[A-Z].*[^.]$
