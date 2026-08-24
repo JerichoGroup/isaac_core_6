@@ -1,0 +1,54 @@
+{
+  "Ros2ToGlobalPosition": {
+    "version": 1,
+    "description": "Subscribe to ROS 2 NavSatFix and PoseStamped topics to extract global position and orientation in ENU radians. MAVROS already publishes ENU, so no frame conversion is needed.",
+    "language": "Python",
+    "metadata": {
+      "uiName": "ROS2 to Global Position"
+    },
+    "inputs": {
+      "execIn": {
+        "type": "execution",
+        "description": "Execution trigger to read ROS 2 messages",
+        "default": 0,
+        "metadata": {
+          "uiName": "Exec In"
+        }
+      },
+      "lla_topic": {
+        "type": "string",
+        "description": "ROS 2 topic for NavSatFix (lat, lon, alt)",
+        "default": "/mavros/global_position/global",
+        "metadata": {
+          "uiName": "LLA Topic"
+        }
+      },
+      "orientation_topic": {
+        "type": "string",
+        "description": "ROS 2 topic for PoseStamped (orientation quaternion)",
+        "default": "/mavros/local_position/pose",
+        "metadata": {
+          "uiName": "Orientation Topic"
+        }
+      }
+    },
+    "outputs": {
+      "global_position": {
+        "type": "vectord[3]",
+        "description": "Global position [lat_deg, lon_deg, alt_m]",
+        "default": [0.0, 0.0, 0.0],
+        "metadata": {
+          "uiName": "Global Position"
+        }
+      },
+      "global_orientation": {
+        "type": "vectord[3]",
+        "description": "Global orientation [roll, pitch, yaw] in ENU radians, intrinsic XYZ",
+        "default": [0.0, 0.0, 0.0],
+        "metadata": {
+          "uiName": "Global Orientation"
+        }
+      }
+    }
+  }
+}

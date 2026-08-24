@@ -1,0 +1,23 @@
+[package]
+version = "1.0.0"
+icon = "data/math_pic.png"
+category = "SIM"
+title = "Isaac Core Math"
+description = "Pure math OmniGraph nodes: coordinate conversion, rotation composition"
+authors = ["isaac_core team"]
+repository = ""
+readme = "docs/README.md"
+keywords = ["math", "enu", "lla", "ecef", "position", "quaternion", "rotation"]
+
+[[python.module]]
+name = "isaac_core_ogn.math"
+
+[ogn]
+path = "isaac_core_ogn/math/nodes"
+
+[fswatcher.patterns]
+include = ["*.ogn", "*.py"]
+exclude = ["Ogn*Database.py"]
+
+[dependencies]
+"omni.graph" = {}

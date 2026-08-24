@@ -1,8 +1,10 @@
 exclude: |
   (?x)^(
     # ---- Project-specific excludes: add per-project paths/globs below ----
-    # docker/vendor/.*|
-    # legacy/.*|
+    # Nothing is excluded globally. Kit extensions under extensions/ are skipped
+    # by the mypy hook ONLY, via that hook's own `exclude:` key further down --
+    # a top-level exclude here would disable ruff, formatting and the hygiene
+    # hooks on them too, leaving that code entirely unchecked.
   )$
 
 repos:
@@ -47,6 +49,16 @@ repos:
         stages: [pre-commit]
         # Settings (strictness, excludes, etc.) live in [tool.mypy] in
         # pyproject.toml so `mypy .` locally matches this hook exactly.
+        #
+        # Kit extensions are the one exception. Their node modules import omni,
+        # carb and OGN-generated *Database classes that exist only inside Isaac
+        # Sim's runtime, so mypy cannot resolve them. `[tool.mypy] files` does
+        # not help here because pre-commit passes explicit filenames, which
+        # override it. This PER-HOOK exclude is the correct narrow fix: it skips
+        # mypy for extensions/ while ruff, ruff-format and every hygiene hook
+        # still check them. Do NOT move this to the top-level `exclude:` — that
+        # would disable all hooks on extensions/ and leave the code unchecked.
+        exclude: ^extensions/
         # Add per-package type stubs here as needed, e.g.:
         # additional_dependencies: ["types-requests", "types-PyYAML"]
         additional_dependencies: []

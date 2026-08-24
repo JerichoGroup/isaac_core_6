@@ -1,0 +1,38 @@
+{
+  "Template": {
+    "version": 1,
+    "description": "Scaffold node: greets the user by name and outputs a monotonic frame counter.",
+    "language": "Python",
+    "metadata": {
+      "uiName": "Template Node"
+    },
+    "inputs": {
+      "execIn": {
+        "type": "execution",
+        "description": "Execution trigger",
+        "default": 0,
+        "metadata": {
+          "uiName": "Exec In"
+        }
+      },
+      "name": {
+        "type": "string",
+        "description": "Name to greet",
+        "default": "Isaac User",
+        "metadata": {
+          "uiName": "Name"
+        }
+      }
+    },
+    "outputs": {
+      "frame_id": {
+        "type": "int",
+        "description": "Monotonically increasing frame counter",
+        "default": 0,
+        "metadata": {
+          "uiName": "Frame ID"
+        }
+      }
+    }
+  }
+}

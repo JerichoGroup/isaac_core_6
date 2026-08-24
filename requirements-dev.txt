@@ -1,0 +1,26 @@
+# Development tooling. System python only -- Isaac Sim's interpreter does not
+# need any of this.
+#
+#     pip install --user -r requirements-dev.txt
+#
+# Versions are pinned to match .pre-commit-config.yaml EXACTLY, and that matters
+# more than it looks. pre-commit runs ruff, mypy and gitlint inside its own
+# isolated environments at the pinned versions, so the commit gate works whether
+# or not these are installed here. Installing the same versions means that
+# running `ruff check .` or `mypy .` in a terminal gives the SAME answer as the
+# commit gate. A different version gives different answers and wastes an
+# afternoon.
+#
+# import-linter is the exception: it has no upstream pre-commit hook, so it runs
+# as a local hook against the system install and therefore must be present here.
+#
+# Runtime dependencies are included because mypy needs them importable to type
+# check anything that uses them.
+-r requirements.txt
+
+gitlint==0.19.1
+import-linter==2.1
+mypy==1.14.1
+pre-commit==4.0.1
+pytest==8.3.4
+ruff==0.8.2

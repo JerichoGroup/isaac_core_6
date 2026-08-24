@@ -1,0 +1,27 @@
+[package]
+version = "1.0.0"
+icon = "data/sensors_pic.png"
+category = "SIM"
+title = "Isaac Core Sensors"
+description = "OmniGraph nodes for publishing sensor data over ROS 2 (pose, range, image, gimbal)"
+authors = ["isaac_core team"]
+repository = ""
+readme = "docs/README.md"
+keywords = ["sensors", "ros2", "publisher", "gimbal", "image", "range", "pose"]
+
+[[python.module]]
+name = "isaac_core_ogn.sensors"
+
+[ogn]
+path = "isaac_core_ogn/sensors/nodes"
+
+[fswatcher.patterns]
+include = ["*.ogn", "*.py"]
+exclude = ["Ogn*Database.py"]
+
+[dependencies]
+"omni.graph" = {}
+"omni.replicator.core" = {}
+"omni.syntheticdata" = {}
+"isaacsim.core.nodes" = {}
+"isaacsim.ros2.bridge" = {}

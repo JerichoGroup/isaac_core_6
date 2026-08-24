@@ -1,0 +1,61 @@
+{
+  "Ros2RangePublisher": {
+    "version": 1,
+    "description": "Publish sensor_msgs/Range to a ROS 2 topic at a configurable rate.",
+    "language": "Python",
+    "metadata": {
+      "uiName": "ROS2 Range Publisher"
+    },
+    "inputs": {
+      "execIn": {
+        "type": "execution",
+        "description": "Execution trigger to publish range data",
+        "default": 0,
+        "metadata": {
+          "uiName": "Exec In"
+        }
+      },
+      "publish_rate_hz": {
+        "type": "int",
+        "description": "Rate (Hz) to publish ROS 2 range messages",
+        "default": 50,
+        "metadata": {
+          "uiName": "Publish Rate Hz"
+        }
+      },
+      "topic_name": {
+        "type": "string",
+        "description": "ROS 2 topic to publish range messages",
+        "default": "/isaac_core/distance_sensor",
+        "metadata": {
+          "uiName": "Topic Name"
+        }
+      },
+      "min_range": {
+        "type": "float",
+        "description": "Minimum range of the sensor in metres",
+        "default": 0.2,
+        "metadata": {
+          "uiName": "Min Range"
+        }
+      },
+      "max_range": {
+        "type": "float",
+        "description": "Maximum range of the sensor in metres",
+        "default": 180.0,
+        "metadata": {
+          "uiName": "Max Range"
+        }
+      },
+      "range_value": {
+        "type": "float",
+        "description": "Current range measurement in metres",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "Range Value"
+        }
+      }
+    },
+    "outputs": {}
+  }
+}

@@ -1,19 +1,54 @@
 [project]
-name = "dingo-project"
+name = "isaac-core"
 version = "0.1.0"
-description = "Dingo's Python project template"
+description = "Team infrastructure for building, running and scripting Isaac Sim 6 simulations"
 requires-python = ">=3.10"
 readme = "README.md"
 license = "Apache-2.0"
-dependencies = []
+dependencies = [
+    "numpy>=1.24,<3",
+    "pydantic>=2.6,<3",
+    "pyproj>=3.6,<4",
+    "tomli>=2.0,<3; python_version < '3.11'",
+    "transforms3d>=0.4,<0.5",
+]
+
+[project.scripts]
+isaac-core = "isaac_core.cli.main:cli"
 
 [project.optional-dependencies]
+# Installed into Isaac Sim's bundled interpreter:
+#   $ISAACSIM_PATH/python.sh -m pip install -e ".[sim]"
+# `omni`, `carb` and `pxr` ship with Isaac Sim and are deliberately never pip
+# dependencies.
+sim = []
+
+# Installed into any interpreter that has ROS 2 sourced. `rclpy` comes from
+# `source /opt/ros/humble/setup.bash`, not from pip, so this extra is empty by
+# design and exists to document the environment requirement.
+devkit = []
+
+# Services that cannot live inside Isaac's interpreter (GStreamer via PyGObject)
+# run on system python3. PyGObject is installed with apt rather than pip, because
+# the pip build needs libgirepository/pkg-config/cairo headers and frequently
+# fails, so this extra is empty:
+#
+#   apt install python3-gi python3-gi-cairo gir1.2-gstreamer-1.0 \
+#               gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-base \
+#               gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+#               gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools
+sidecar = []
+
+# GUIs use stdlib tkinter, which needs `apt install python3-tk`.
+debug = []
+
 dev = [
     "pytest==8.3.4",
     "mypy==1.14.1",
     "ruff==0.8.2",
     "pre-commit==4.0.1",
     "gitlint==0.19.1",
+    "import-linter==2.1",
 ]
 
 [build-system]
@@ -139,3 +174,236 @@ strict_equality = true
 # Show clearer output.
 pretty = true
 show_error_codes = true
+
+# ---------------------------------------------------------------------------
+# Modules that cannot be resolved in a plain venv.
+#
+# `omni`, `carb`, `pxr` and `isaacsim` are provided by Isaac Sim's bundled
+# interpreter; `rclpy` and the ROS message packages come from a sourced ROS 2
+# environment; `gi` comes from the system PyGObject package. None are pip
+# installable here, so mypy cannot see them.
+#
+# These are narrow, per-module overrides rather than a blanket
+# `ignore_missing_imports`, so anything else unresolved is still an error.
+# ---------------------------------------------------------------------------
+[[tool.mypy.overrides]]
+module = [
+    "carb.*",
+    "gi.*",
+    "isaacsim.*",
+    "omni.*",
+    "pxr.*",
+    "rclpy.*",
+]
+ignore_missing_imports = true
+
+# Third-party packages that ship no type stubs.
+[[tool.mypy.overrides]]
+module = [
+    "pyproj.*",
+    "transforms3d.*",
+]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Layering contracts, enforced by import-linter (`lint-imports`).
+#
+# The kernel (contracts -> config -> geo -> protocol -> vehicle) must stay pure:
+# importable with neither Isaac Sim nor ROS 2 present, and therefore unit
+# testable in CI without a GPU. These contracts are what stop that eroding.
+#
+# NOTE: import-linter errors on a module that does not exist, so these contracts
+# list only the packages built so far. EXTEND THEM as each new package lands:
+#   vehicle                 -> add to the layers list above config
+#   sim, devkit, sidecar, debug -> add to forbidden_modules, and re-enable the
+#                                  "simulator does not depend on the devkit" contract
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "isaac_core"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Config depends only on contracts"
+type = "layers"
+layers = [
+    "isaac_core.config",
+    "isaac_core.contracts",
+]
+
+[[tool.importlinter.contracts]]
+name = "Geo depends only on contracts"
+type = "layers"
+layers = [
+    "isaac_core.geo",
+    "isaac_core.contracts",
+]
+
+[[tool.importlinter.contracts]]
+name = "Protocol depends only on contracts"
+type = "layers"
+layers = [
+    "isaac_core.protocol",
+    "isaac_core.contracts",
+]
+
+[[tool.importlinter.contracts]]
+name = "Geo and protocol are independent of each other"
+type = "independence"
+modules = [
+    "isaac_core.geo",
+    "isaac_core.protocol",
+]
+
+[[tool.importlinter.contracts]]
+name = "Geo does not depend on config"
+type = "forbidden"
+source_modules = ["isaac_core.geo"]
+forbidden_modules = ["isaac_core.config"]
+
+[[tool.importlinter.contracts]]
+name = "Protocol does not depend on config"
+type = "forbidden"
+source_modules = ["isaac_core.protocol"]
+forbidden_modules = ["isaac_core.config"]
+
+[[tool.importlinter.contracts]]
+name = "Contracts depend on nothing else in the project"
+type = "forbidden"
+source_modules = ["isaac_core.contracts"]
+forbidden_modules = [
+    "isaac_core.config",
+    "isaac_core.geo",
+    "isaac_core.protocol",
+]
+
+[[tool.importlinter.contracts]]
+name = "Vehicle depends only on contracts and geo"
+type = "layers"
+layers = [
+    "isaac_core.vehicle",
+    "isaac_core.geo",
+    "isaac_core.contracts",
+]
+
+[[tool.importlinter.contracts]]
+name = "Sim depends only on contracts"
+type = "layers"
+layers = [
+    "isaac_core.sim",
+    "isaac_core.contracts",
+]
+
+[[tool.importlinter.contracts]]
+name = "Vehicle does not import protocol or sim"
+type = "forbidden"
+source_modules = ["isaac_core.vehicle"]
+forbidden_modules = [
+    "isaac_core.protocol",
+    "isaac_core.sim",
+    "isaac_core.config",
+]
+
+[[tool.importlinter.contracts]]
+name = "Sim does not import vehicle, protocol or geo"
+type = "forbidden"
+source_modules = ["isaac_core.sim"]
+forbidden_modules = [
+    "isaac_core.vehicle",
+    "isaac_core.protocol",
+    "isaac_core.geo",
+    "isaac_core.config",
+]
+
+[[tool.importlinter.contracts]]
+name = "Kernel packages do not import simulator or ROS dependencies"
+type = "forbidden"
+source_modules = [
+    "isaac_core.contracts",
+    "isaac_core.config",
+    "isaac_core.geo",
+    "isaac_core.protocol",
+    "isaac_core.vehicle",
+    "isaac_core.sim",
+]
+forbidden_modules = [
+    "omni",
+    "carb",
+    "pxr",
+    "rclpy",
+    "gi",
+]
+
+# --- Contracts for control, cli, install and devkit ---
+
+[[tool.importlinter.contracts]]
+name = "Control depends only on config and contracts"
+type = "layers"
+layers = [
+    "isaac_core.control",
+    "isaac_core.config",
+    "isaac_core.contracts",
+]
+
+[[tool.importlinter.contracts]]
+name = "Control does not import sim, vehicle, geo or protocol"
+type = "forbidden"
+source_modules = ["isaac_core.control"]
+forbidden_modules = [
+    "isaac_core.sim",
+    "isaac_core.vehicle",
+    "isaac_core.geo",
+    "isaac_core.protocol",
+]
+
+[[tool.importlinter.contracts]]
+name = "Install depends on nothing in the project"
+type = "forbidden"
+source_modules = ["isaac_core.install"]
+forbidden_modules = [
+    "isaac_core.contracts",
+    "isaac_core.config",
+    "isaac_core.geo",
+    "isaac_core.protocol",
+    "isaac_core.vehicle",
+    "isaac_core.sim",
+    "isaac_core.control",
+    "isaac_core.devkit",
+    "isaac_core.cli",
+]
+
+[[tool.importlinter.contracts]]
+name = "CLI does not import sim or devkit"
+type = "forbidden"
+source_modules = ["isaac_core.cli"]
+forbidden_modules = [
+    "isaac_core.sim",
+    "isaac_core.devkit",
+    "isaac_core.vehicle",
+    "isaac_core.geo",
+    "isaac_core.protocol",
+]
+
+[[tool.importlinter.contracts]]
+name = "Devkit does not import sim"
+type = "forbidden"
+source_modules = ["isaac_core.devkit"]
+forbidden_modules = [
+    "isaac_core.sim",
+    "isaac_core.vehicle",
+    "isaac_core.geo",
+]
+
+[[tool.importlinter.contracts]]
+name = "Control, CLI, install and devkit do not import omni/carb/pxr"
+type = "forbidden"
+source_modules = [
+    "isaac_core.control",
+    "isaac_core.cli",
+    "isaac_core.install",
+    "isaac_core.devkit",
+]
+forbidden_modules = [
+    "omni",
+    "carb",
+    "pxr",
+]

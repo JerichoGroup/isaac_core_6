@@ -1,0 +1,41 @@
+# Runtime dependencies for isaac_core.
+#
+# Installed system-wide, no venv, per team convention:
+#
+#     pip install --user -r requirements.txt
+#
+# Isaac Sim's bundled interpreter is a SEPARATE environment and needs its own
+# copy of these:
+#
+#     $ISAACSIM_PATH/python.sh -m pip install -r requirements.txt
+#
+# This file and [project.dependencies] in pyproject.toml must agree.
+# tests/unit/test_packaging.py fails if they drift apart.
+#
+# ---------------------------------------------------------------------------
+# Deliberately NOT listed, because pip cannot provide them. These come from the
+# environment, which is why the kernel packages avoid importing them at all:
+#
+#   omni, carb, pxr, isaacsim    ship with Isaac Sim 6
+#   rclpy, sensor_msgs,          from `source /opt/ros/<distro>/setup.bash`
+#     geographic_msgs, std_msgs
+#   gi (PyGObject) + GStreamer   apt install python3-gi python3-gi-cairo \
+#                                  gir1.2-gstreamer-1.0 \
+#                                  gir1.2-gst-plugins-base-1.0 \
+#                                  gstreamer1.0-plugins-base \
+#                                  gstreamer1.0-plugins-good \
+#                                  gstreamer1.0-plugins-bad \
+#                                  gstreamer1.0-plugins-ugly \
+#                                  gstreamer1.0-libav gstreamer1.0-tools
+#   tkinter                      apt install python3-tk
+#
+# PyGObject is installed via apt rather than pip on purpose: the pip build needs
+# libgirepository, pkg-config and cairo headers and frequently fails, whereas
+# the apt package just works. The previous generation's Dockerfile did the same.
+# ---------------------------------------------------------------------------
+
+numpy>=1.24,<3
+pydantic>=2.6,<3
+pyproj>=3.6,<4
+tomli>=2.0,<3; python_version < '3.11'
+transforms3d>=0.4,<0.5

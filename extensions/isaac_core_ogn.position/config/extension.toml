@@ -1,0 +1,24 @@
+[package]
+version = "1.0.0"
+icon = "data/position_pic.png"
+category = "SIM"
+title = "Isaac Core Position"
+description = "OmniGraph nodes that read global position data from UDP or ROS 2 sources"
+authors = ["isaac_core team"]
+repository = ""
+readme = "docs/README.md"
+keywords = ["position", "udp", "ros2", "lla", "lat", "lon", "alt", "roll", "pitch", "yaw", "mavros"]
+
+[[python.module]]
+name = "isaac_core_ogn.position"
+
+[ogn]
+path = "isaac_core_ogn/position/nodes"
+
+[fswatcher.patterns]
+include = ["*.ogn", "*.py"]
+exclude = ["Ogn*Database.py"]
+
+[dependencies]
+"omni.graph" = {}
+"isaacsim.ros2.bridge" = {}

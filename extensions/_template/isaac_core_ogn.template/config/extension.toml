@@ -1,0 +1,23 @@
+[package]
+version = "1.0.0"
+icon = "data/template_pic.png"
+category = "SIM"
+title = "Isaac Core Template"
+description = "Scaffold template for new isaac_core_ogn OmniGraph nodes"
+authors = ["isaac_core team"]
+repository = ""
+readme = "docs/README.md"
+keywords = ["template", "scaffold", "example"]
+
+[[python.module]]
+name = "isaac_core_ogn.template"
+
+[ogn]
+path = "isaac_core_ogn/template/nodes"
+
+[fswatcher.patterns]
+include = ["*.ogn", "*.py"]
+exclude = ["Ogn*Database.py"]
+
+[dependencies]
+"omni.graph" = {}

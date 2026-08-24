@@ -1,0 +1,77 @@
+{
+  "Ros2ImagePublisher": {
+    "version": 1,
+    "description": "Write raw RGB from a render product to a ROS 2 topic, and republish with rate limiting and frame counters.",
+    "language": "Python",
+    "metadata": {
+      "uiName": "ROS2 Image Publisher"
+    },
+    "inputs": {
+      "execIn": {
+        "type": "execution",
+        "description": "Execution trigger to initiate image publishing",
+        "default": 0,
+        "metadata": {
+          "uiName": "Exec In"
+        }
+      },
+      "enabled": {
+        "type": "bool",
+        "description": "Enable or disable image publishing",
+        "default": true,
+        "metadata": {
+          "uiName": "Enabled"
+        }
+      },
+      "context": {
+        "type": "uint64",
+        "description": "Render context used to retrieve the image from the render product",
+        "default": 0,
+        "metadata": {
+          "uiName": "Context"
+        }
+      },
+      "render_product_path": {
+        "type": "token",
+        "description": "Path to the render product (camera output) in the USD stage",
+        "default": "",
+        "metadata": {
+          "uiName": "Render Product Path"
+        }
+      },
+      "raw_topic": {
+        "type": "string",
+        "description": "ROS 2 topic name for raw RGB writer output",
+        "default": "/isaac_core/raw_rgb",
+        "metadata": {
+          "uiName": "Raw RGB Topic"
+        }
+      },
+      "repub_topic": {
+        "type": "string",
+        "description": "ROS 2 topic name for rate-limited republished images",
+        "default": "/isaac_core/image_rgb",
+        "metadata": {
+          "uiName": "Republish Topic"
+        }
+      },
+      "queue_size": {
+        "type": "int",
+        "description": "ROS 2 publisher/subscriber queue size",
+        "default": 10,
+        "metadata": {
+          "uiName": "Queue Size"
+        }
+      },
+      "publish_rate_hz": {
+        "type": "float",
+        "description": "Maximum rate (Hz) at which images are republished",
+        "default": 30.0,
+        "metadata": {
+          "uiName": "Publish Rate Hz"
+        }
+      }
+    },
+    "outputs": {}
+  }
+}

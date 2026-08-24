@@ -1,0 +1,110 @@
+{
+  "GlobalPositionToLocalPosition": {
+    "version": 1,
+    "description": "Convert global LLA position and ENU orientation to local ENU position and quaternion, applying gimbal offsets with configurable rotation frame.",
+    "language": "Python",
+    "metadata": {
+      "uiName": "Global Position to Local Position"
+    },
+    "inputs": {
+      "execIn": {
+        "type": "execution",
+        "description": "Tick input for processing",
+        "default": 0,
+        "metadata": {
+          "uiName": "Exec In"
+        }
+      },
+      "enu_reference": {
+        "type": "vectord[3]",
+        "description": "ENU reference point [lat_deg, lon_deg, alt_m]",
+        "default": [32.22481, 35.25621, 516.7],
+        "metadata": {
+          "uiName": "ENU Reference"
+        }
+      },
+      "global_position": {
+        "type": "vectord[3]",
+        "description": "Global position [lat_deg, lon_deg, alt_m]",
+        "default": [32.22481, 35.25621, 516.7],
+        "metadata": {
+          "uiName": "Global Position"
+        }
+      },
+      "global_orientation": {
+        "type": "vectord[3]",
+        "description": "Global orientation [roll, pitch, yaw] radians, ENU intrinsic XYZ. -pi<=roll<=+pi, -pi/2<=pitch<=+pi/2, -pi<=yaw<=+pi",
+        "default": [0.0, 0.0, 0.0],
+        "metadata": {
+          "uiName": "Global Orientation"
+        }
+      },
+      "offset_roll_deg": {
+        "type": "float",
+        "description": "Gimbal offset roll in degrees. -180<=roll<=180",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "Offset Roll (deg)"
+        }
+      },
+      "offset_pitch_deg": {
+        "type": "float",
+        "description": "Gimbal offset pitch in degrees. -90<=pitch<=+90",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "Offset Pitch (deg)"
+        }
+      },
+      "offset_yaw_deg": {
+        "type": "float",
+        "description": "Gimbal offset yaw in degrees. -180<=yaw<=180",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "Offset Yaw (deg)"
+        }
+      },
+      "rotation_frame": {
+        "type": "string",
+        "description": "Frame for gimbal offset composition: 'body' (intrinsic, default) or 'world' (extrinsic). See decision D14.",
+        "default": "body",
+        "metadata": {
+          "uiName": "Rotation Frame"
+        }
+      }
+    },
+    "outputs": {
+      "global_position": {
+        "type": "vectord[3]",
+        "description": "Echo of input global position [lat_deg, lon_deg, alt_m]",
+        "default": [0.0, 0.0, 0.0],
+        "metadata": {
+          "uiName": "Global Position"
+        }
+      },
+      "global_orientation": {
+        "type": "vectord[3]",
+        "description": "Combined orientation [roll, pitch, yaw] radians ENU intrinsic XYZ after gimbal offset",
+        "default": [0.0, 0.0, 0.0],
+        "metadata": {
+          "uiName": "Global Orientation"
+        }
+      },
+      "local_position": {
+        "type": "vectord[3]",
+        "description": "Local ENU position [east, north, up] in metres",
+        "default": [0.0, 0.0, 0.0],
+        "metadata": {
+          "uiName": "Local Position"
+        }
+      },
+      "local_orientation": {
+        "type": "quatd[4]",
+        "description": "Local orientation quaternion [qx, qy, qz, qw] (Isaac Sim IJKR component order, verified on Kit 110)",
+        "default": [0.0, 0.0, 0.0, 1.0],
+        "metadata": {
+          "uiName": "Local Orientation"
+        }
+      }
+    }
+  }
+}

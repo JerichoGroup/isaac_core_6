@@ -1,0 +1,54 @@
+{
+  "UdpToGlobalPosition": {
+    "version": 1,
+    "description": "Listen to a UDP port for the 51-byte pose packet and output global position and orientation in ENU radians. Input is NED on the wire; conversion to ENU is handled internally. On decode failure the last good pose is held and the failure counter increments.",
+    "language": "Python",
+    "metadata": {
+      "uiName": "UDP to Global Position"
+    },
+    "inputs": {
+      "execIn": {
+        "type": "execution",
+        "description": "Tick input for processing",
+        "default": 0,
+        "metadata": {
+          "uiName": "Exec In"
+        }
+      },
+      "udp_port": {
+        "type": "int",
+        "description": "UDP port to listen on for pose data",
+        "default": 33333,
+        "metadata": {
+          "uiName": "UDP Port"
+        }
+      }
+    },
+    "outputs": {
+      "global_position": {
+        "type": "vectord[3]",
+        "description": "Global position [lat_deg, lon_deg, alt_m]",
+        "default": [0.0, 0.0, 0.0],
+        "metadata": {
+          "uiName": "Global Position"
+        }
+      },
+      "global_orientation": {
+        "type": "vectord[3]",
+        "description": "Global orientation [roll, pitch, yaw] in ENU radians, intrinsic XYZ",
+        "default": [0.0, 0.0, 0.0],
+        "metadata": {
+          "uiName": "Global Orientation"
+        }
+      },
+      "decode_failure_count": {
+        "type": "int",
+        "description": "Cumulative count of packets that failed decoding since node creation. Monotonically increasing; useful for monitoring sustained corruption.",
+        "default": 0,
+        "metadata": {
+          "uiName": "Decode Failure Count"
+        }
+      }
+    }
+  }
+}

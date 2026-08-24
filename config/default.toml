@@ -1,0 +1,252 @@
+# =============================================================================
+# isaac_core default configuration
+# =============================================================================
+#
+# This file is the complete configuration surface. Every value the simulation
+# runs on appears here, and a user config passed with `--config` can override any
+# of it. There is no second file to edit: layer manifests (layer.toml) declare
+# *wiring* -- which config key maps to which prim attribute -- and never values.
+#
+# Resolution order, later wins:
+#
+#   this file
+#     -> --config <file> / $ISAAC_CORE_CONFIG
+#       -> environment (ISAAC_CORE__CAMERAS__EO__FOV_DEG=90)
+#         -> CLI flags
+#           -> runtime patches over the control plane
+#
+# Inspect the result with `isaac-core config dump`, and find out which source won
+# a particular key with `isaac-core config explain <key>`.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# [sim] -- simulator lifecycle
+# -----------------------------------------------------------------------------
+[sim]
+# Scene to open. A logical name resolved through [assets].search_paths, or an
+# absolute path to a .usd/.usda file.
+scene = "earth"
+
+# Run without a GUI window.
+headless = false
+
+# What to do when a requested feature's stage requirements are not met.
+# false: skip the feature and log why (good for a sandbox).
+# true:  fail immediately (good for CI).
+strict_features = false
+
+physics_dt = 0.016666666666666666
+stage_units_in_meters = 1.0
+
+
+# -----------------------------------------------------------------------------
+# [sim.control_plane] -- JSON-RPC command channel
+# -----------------------------------------------------------------------------
+# Low-rate commands only: query state, patch config, enable features, capture a
+# frame. Pose and sensor data never travel over this.
+#
+# SECURITY: this channel can write files and mutate the running simulation.
+# Binding to anything other than a loopback address REQUIRES a token, and
+# `capture_frame` paths are confined under output_root.
+[sim.control_plane]
+host = "127.0.0.1"
+port = 8760
+token = ""
+output_root = "~/isaac_core_out"
+
+
+# -----------------------------------------------------------------------------
+# [sim.viewport] -- what the GUI window looks through
+# -----------------------------------------------------------------------------
+[sim.viewport]
+# "<vehicle_id>.<camera_id>", or omit to use the first camera of the first vehicle.
+# primary_camera = "drone_0.eo"
+
+
+# -----------------------------------------------------------------------------
+# [assets] -- where scenes, layers and heavy binaries are found
+# -----------------------------------------------------------------------------
+[assets]
+# Extra directories searched for scenes, ahead of the packaged ones. Also
+# settable with $ISAAC_CORE_ASSET_PATH.
+search_paths = []
+
+# Extra directories scanned for feature layers (each subdirectory containing a
+# layer.toml). This is how a project adds its own features without forking or
+# editing this repo.
+layer_search_paths = []
+
+# Optional sky HDRI. Large binaries are not shipped in the package; if this
+# cannot be resolved the scene falls back to a default dome light rather than
+# failing.
+# hdri = "sunflowers_puresky_4k.exr"
+
+
+# -----------------------------------------------------------------------------
+# [geo] -- georeferencing and rotation conventions
+# -----------------------------------------------------------------------------
+[geo]
+# Local ENU tangent plane anchor. Cesium georeferences the terrain to the same
+# point, so this must match the scene.
+enu_reference = { lat_deg = 32.22481, lon_deg = 35.25621, alt_m = 516.7 }
+
+
+# -----------------------------------------------------------------------------
+# [cesium] -- 3D Tiles terrain
+# -----------------------------------------------------------------------------
+[cesium]
+# Tileset server. Deliberately has NO default: the previous generation baked an
+# internal IP into consts.py and nine times into earth.usda. Set it here, in your
+# own config, or with $ISAAC_CORE__CESIUM__TILESET_SERVER_URL.
+# tileset_server_url = "http://tiles.your-lan:8088"
+
+tilesets_root = "/tilesets"
+
+# Long sessions can grow ~/.cache/ov/cesium-request-cache.sqlite-wal to hundreds
+# of gigabytes, after which Isaac Sim fails to start. Enable to clear it on launch.
+delete_cache_on_launch = false
+
+
+# -----------------------------------------------------------------------------
+# [features] -- which feature layers to compose onto the scene
+# -----------------------------------------------------------------------------
+[features]
+enabled = []
+
+
+# -----------------------------------------------------------------------------
+# [vehicles] -- one entry per aircraft. Default is a single vehicle.
+# -----------------------------------------------------------------------------
+# With exactly one vehicle, topic namespacing collapses and you get the familiar
+# flat names (/isaac_core/image_rgb). Add a second and every vehicle's topics
+# become namespaced automatically (/isaac_core/lead/eo/image_rgb).
+[vehicles.drone_0]
+# udp     -- pose packets on a UDP port; physics does not matter, place it anywhere
+# ros     -- NavSatFix + PoseStamped, typically MAVROS over ArduCopter SITL
+# script  -- driven directly over the control plane
+# replay  -- played back from a recorded track
+# mavlink -- MAVLink consumed without MAVROS
+pose_source = "udp"
+
+# Defaults to 33333 + vehicle index. Set explicitly to pin it.
+# udp_port = 33333
+
+# For pose_source = "ros". Defaults derive from mavros_namespace.
+# mavros_namespace = "/mavros"
+# lla_topic = "/mavros/global_position/global"
+# orientation_topic = "/mavros/local_position/pose"
+
+# Mount point in the stage. Defaults to /Environment/<vehicle_id>.
+# mount = "/Environment/drone_0"
+
+# Frame for roll/pitch/yaw *movement commands* on the airframe.
+# world -- extrinsic, about fixed world axes (R_delta @ R_current)
+# body  -- intrinsic, about the vehicle's own axes (R_current @ R_delta)
+rotation_frame = "world"
+
+
+# -----------------------------------------------------------------------------
+# [vehicles.<id>.gimbal]
+# -----------------------------------------------------------------------------
+[vehicles.drone_0.gimbal]
+start_roll_deg = 0.0
+start_pitch_deg = 0.0
+start_yaw_deg = 0.0
+
+# Slew rate limit. Omit for instantaneous snapping, which is what the previous
+# generation did unconditionally.
+max_rate_deg_s = 60.0
+
+# A gimbal is bolted to the airframe, so body frame is the physical default.
+rotation_frame = "body"
+
+
+# -----------------------------------------------------------------------------
+# [vehicles.<id>.cameras.<id>] -- one or many cameras per vehicle
+# -----------------------------------------------------------------------------
+[vehicles.drone_0.cameras.eo]
+resolution = [1280, 720]
+fov_deg = 78.1
+focal_length_mm = 22.7885
+publish_rate_hz = 30.0
+
+# Topics default to the namespaced convention; override to publish elsewhere.
+# image_topic = "/isaac_core/image_rgb"
+# raw_topic = "/isaac_core/raw_rgb"
+
+# A second camera on the same aircraft. Uncomment to enable; topics then become
+# /isaac_core/eo/image_rgb and /isaac_core/ir/image_rgb.
+# [vehicles.drone_0.cameras.ir]
+# resolution = [640, 512]
+# fov_deg = 25.0
+
+
+# -----------------------------------------------------------------------------
+# [layers.<layer_id>] -- per-layer settings
+# -----------------------------------------------------------------------------
+# Every feature layer owns the namespace [layers.<its_id>] and declares its own
+# schema, so a third-party layer dropped into layer_search_paths extends this
+# config with zero changes to isaac_core.
+[layers.distance_sensor]
+min_range_m = 0.2
+max_range_m = 180.0
+publish_rate_hz = 30.0
+# topic = "/isaac_core/distance_sensor"
+
+[layers.bbox_publisher]
+root_prim = "/bboxes"
+publish_rate_hz = 30.0
+# topic = "/isaac_core/bbox"
+
+[layers.sat]
+# topic = "/isaac_core/sat"
+
+
+# -----------------------------------------------------------------------------
+# [ros2]
+# -----------------------------------------------------------------------------
+[ros2]
+domain_id = 13
+use_sim_time = true
+
+
+# -----------------------------------------------------------------------------
+# [sidecar] -- services that cannot run inside Isaac's interpreter
+# -----------------------------------------------------------------------------
+# Supervised as a peer process, not forked by the simulator. Started by the
+# devkit alongside the sim.
+[sidecar]
+enabled = false
+
+# [sidecar.services.image_rtp]
+# kind = "rtp_stream"
+# source_topic = "/isaac_core/image_rgb"
+# host = "127.0.0.1"
+# video_port = 5004
+# meta_port = 5005
+# bitrate_kbps = 10000
+
+
+# -----------------------------------------------------------------------------
+# [logging]
+# -----------------------------------------------------------------------------
+[logging]
+level = "info"
+
+# Forward Isaac Sim's own (very verbose) stdout.
+isaac_logs = false
+
+
+# -----------------------------------------------------------------------------
+# [[prim_overrides]] -- escape hatch
+# -----------------------------------------------------------------------------
+# Raw prim attribute writes, applied after everything else. For the case where a
+# layer author did not expose a knob you need, so you are never blocked waiting
+# on us. The tidier fix is copying the layer directory into your own
+# layer_search_paths and editing its manifest.
+#
+# [[prim_overrides]]
+# prim = "/Environment/drone_0/ROS2CameraImageExport/cameraHelperDepth"
+# attribute = "inputs:enabled"
+# value = false
