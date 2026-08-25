@@ -56,7 +56,7 @@ def test_doctor_returns_zero_in_complete_env(monkeypatch: pytest.MonkeyPatch, tm
     exts_user = fake_isaac / "extsUser"
     exts_user.mkdir()
     # Create fake extension symlinks
-    for ext in ("isaac_core_ogn.math", "isaac_core_ogn.position", "isaac_core_ogn.sensors"):
+    for ext in ("isaac_core_ogn.math", "isaac_core_ogn.position"):
         (exts_user / ext).symlink_to(tmp_path)
 
     monkeypatch.setenv("ISAACSIM_PATH", str(fake_isaac))
@@ -173,7 +173,7 @@ def test_check_extensions_linked_all_present(tmp_path: Path) -> None:
     exts_user = fake_isaac / "extsUser"
     exts_user.mkdir()
 
-    for ext in ("isaac_core_ogn.math", "isaac_core_ogn.position", "isaac_core_ogn.sensors"):
+    for ext in ("isaac_core_ogn.math", "isaac_core_ogn.position"):
         (exts_user / ext).symlink_to(tmp_path)
 
     install = IsaacInstall(fake_isaac)
@@ -213,7 +213,7 @@ def test_doctor_checks_returns_list(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     (fake_isaac / "VERSION").write_text("6.0.1\n")
     exts_user = fake_isaac / "extsUser"
     exts_user.mkdir()
-    for ext in ("isaac_core_ogn.math", "isaac_core_ogn.position", "isaac_core_ogn.sensors"):
+    for ext in ("isaac_core_ogn.math", "isaac_core_ogn.position"):
         (exts_user / ext).symlink_to(tmp_path)
 
     monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: (str(fake_isaac),))

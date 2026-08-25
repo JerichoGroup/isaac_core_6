@@ -1,0 +1,84 @@
+{
+  "EulerToQuaternion": {
+    "version": 1,
+    "description": [
+      "Convert intrinsic-XYZ Euler angles in radians to a quaternion.",
+      "",
+      "Bridges GlobalPositionToLocalPosition to Isaac's ROS 2 Publisher. The math node",
+      "emits global_orientation as a vectord[3] of [roll, pitch, yaw] in radians, while",
+      "a GeoPoseStamped publisher expects pose.orientation as four separate double",
+      "inputs, so a conversion node is required between them.",
+      "",
+      "The previous generation of this tooling instead stuffed roll, pitch and yaw",
+      "directly into the quaternion's x, y and z fields with w fixed at 1.0, which made",
+      "GeoPoseStamped carry something that was not a quaternion at all. This node emits",
+      "a real quaternion. Consumers written against the old convention need updating;",
+      "wire roll/pitch/yaw straight to the publisher's x/y/z to reproduce the old",
+      "behaviour deliberately."
+    ],
+    "language": "Python",
+    "metadata": {
+      "uiName": "Euler To Quaternion"
+    },
+    "inputs": {
+      "execIn": {
+        "type": "execution",
+        "description": "Tick input for processing",
+        "default": 0,
+        "metadata": {
+          "uiName": "Exec In"
+        }
+      },
+      "euler_r": {
+        "type": "vectord[3]",
+        "description": "Euler angles [roll, pitch, yaw] in radians, intrinsic XYZ. Wire this from GlobalPositionToLocalPosition.global_orientation",
+        "default": [0.0, 0.0, 0.0],
+        "metadata": {
+          "uiName": "Euler (radians)"
+        }
+      }
+    },
+    "outputs": {
+      "qw": {
+        "type": "double",
+        "description": "Quaternion real (w) component",
+        "default": 1.0,
+        "metadata": {
+          "uiName": "qw"
+        }
+      },
+      "qx": {
+        "type": "double",
+        "description": "Quaternion i (x) component",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "qx"
+        }
+      },
+      "qy": {
+        "type": "double",
+        "description": "Quaternion j (y) component",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "qy"
+        }
+      },
+      "qz": {
+        "type": "double",
+        "description": "Quaternion k (z) component",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "qz"
+        }
+      },
+      "quaternion": {
+        "type": "quatd[4]",
+        "description": "Quaternion in Isaac Sim IJKR component order [qx, qy, qz, qw], for wiring to quatd attributes",
+        "default": [0.0, 0.0, 0.0, 1.0],
+        "metadata": {
+          "uiName": "Quaternion"
+        }
+      }
+    }
+  }
+}

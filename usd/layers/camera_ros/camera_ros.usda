@@ -1,0 +1,939 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (5, 0, 0)
+                double radius = 5
+            }
+            dictionary Perspective = {
+                double3 position = (5, 5, 5)
+                double3 target = (-3.978038431995401e-8, -3.978038254359717e-8, 7.956076863990802e-8)
+            }
+            dictionary Right = {
+                double3 position = (0, -5, 0)
+                double radius = 5
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 5)
+                double radius = 5
+            }
+            string boundCamera = "/Root/Xform/main_camera_01"
+        }
+        dictionary omni_layer = {
+            string authoring_layer = "./camera_ros.usda"
+            dictionary locked = {
+            }
+            dictionary muteness = {
+            }
+        }
+        dictionary renderSettings = {
+        }
+    }
+    defaultPrim = "Root"
+    endTimeCode = 1000000
+    metersPerUnit = 1
+    startTimeCode = 0
+    timeCodesPerSecond = 60
+    upAxis = "Z"
+)
+
+def "Render" (
+    hide_in_stage_window = true
+    no_delete = true
+)
+{
+    def "OmniverseKit"
+    {
+        def "HydraTextures" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            def RenderProduct "omni_kit_widget_viewport_ViewportTexture_0" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </Root/Xform/main_camera_01>
+                token omni:rtx:ambientOcclusion:denoiserMode = "none"
+                token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
+                token omni:rtx:background:source:type = "domeLight"
+                bool omni:rtx:debug:view:pixelDebug:enableFixedTextPos = 1
+                token omni:rtx:directLighting:sampledLighting:denoisingTechnique = "None"
+                bool omni:rtx:dlss:frameGeneration = 0
+                float3 omni:rtx:domeLight:rotationAxis = (0, 0, 1)
+                bool omni:rtx:indirectDiffuse:denoiser:enabled = 0
+                bool omni:rtx:material:db:syncLoads = 1
+                token omni:rtx:post:dlss:execMode = "performance"
+                bool omni:rtx:post:registeredCompositing:invertColorCorrection = 1
+                bool omni:rtx:post:registeredCompositing:invertToneMap = 1
+                bool omni:rtx:pt:adaptiveSampling:filterError = 0
+                uint omni:rtx:pt:adaptiveSampling:fixedSppIterations = 2
+                uint omni:rtx:pt:maxSamplesPerLaunch = 2073600
+                uint omni:rtx:pt:mgpu:maxPixelsPerRegionExponent = 12
+                bool omni:rtx:reflections:denoiser:enabled = 0
+                token omni:rtx:rendermode = "RealTimePathTracing"
+                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
+                bool omni:rtx:rt:demoire = 0
+                bool omni:rtx:rt:ecoMode:enabled
+                bool omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts = 1
+                int omni:rtx:rt:sss:samples = 1
+                uint omni:rtx:rtpt:maxVolumeBounces = 15
+                float omni:rtx:rtpt:modulatingRoughnessThreshold = 0.08
+                bool omni:rtx:scene:hydra:materialSyncLoads = 1
+                bool omni:rtx:scene:hydra:mdlMaterialWarmup = 1
+                int omni:rtx:scene:hydra:TBNFrameMode = 1
+                rel orderedVars = </Render/Vars/LdrColor>
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (1280, 720)
+            }
+        }
+    }
+
+    def RenderSettings "OmniverseGlobalRenderSettings" (
+        prepend apiSchemas = ["OmniRtxSettingsGlobalRtAdvancedAPI_1", "OmniRtxSettingsGlobalPtAdvancedAPI_1"]
+        no_delete = true
+    )
+    {
+        rel products = </Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0>
+    }
+
+    def "Vars"
+    {
+        def RenderVar "LdrColor" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            uniform string sourceName = "LdrColor"
+            uniform token sourceType = "raw"
+        }
+    }
+}
+
+over "OmniverseKit_Persp" (
+    prepend apiSchemas = ["OmniRtxCameraAutoExposureAPI_1", "OmniRtxCameraExposureAPI_1"]
+    customData = {
+        dictionary omni = {
+            dictionary kit = {
+                bool hide_in_stage_window = 1
+                bool no_delete = 1
+            }
+        }
+    }
+    hide_in_stage_window = true
+    kind = "component"
+    no_delete = true
+)
+{
+    float2 clippingRange = (0.01, 10000000)
+    float exposure:fStop = 5
+    float exposure:responsivity = 1.1026709
+    float exposure:time = 0.02
+    float focalLength = 18.147562
+    float focusDistance = 400
+    custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -8.660254037844386)
+    float3 xformOp:rotateXYZ = (54.73561, -6.3611094e-15, 135)
+    float3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (5, 5, 5)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+}
+
+def Xform "Root"
+{
+    quatd xformOp:orient = (1, 0, 0, 0)
+    double3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+    def Xform "Xform" (
+        prepend apiSchemas = ["CesiumGlobeAnchorSchemaAPI"]
+    )
+    {
+        prepend rel cesium:anchor:georeferenceBinding = </CesiumGeoreference>
+        double cesium:anchor:height = 2733.299999999281
+        double cesium:anchor:latitude = 39.73640100507642
+        double cesium:anchor:longitude = -105.25737
+        double3 cesium:anchor:position = (-1293032.2978276282, -4740384.659004044, 4057269.1044385293)
+        quatd xformOp:orient = (1, 2.7755575615628914e-17, 4.4357392662915784e-18, -5.335959686050854e-18)
+        double3 xformOp:scale = (0.9999999999999997, 1, 0.9999999999999999)
+        double3 xformOp:translate = (8.575171149594601e-15, 4.656612873077393e-10, 483.2999999988824)
+        uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Camera "main_camera_01" (
+            prepend apiSchemas = ["OmniRtxCameraAutoExposureAPI_1", "OmniRtxCameraExposureAPI_1"]
+        )
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float exposure:fStop = 5
+            float exposure:responsivity = 1.1026709
+            float exposure:time = 0.02
+            float focalLength = 18.147562
+            float focusDistance = 400
+            quatd xformOp:orient = (0.5000000000000001, 0.5, 0.49999999999999994, 0.5)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+    }
+
+    def OmniGraph "CameraImageExport"
+    {
+        token evaluationMode = "Automatic"
+        token evaluator:type = "execution"
+        token fabricCacheBacking = "StageWithoutHistory"
+        int2 fileFormatVersion = (1, 9)
+        token pipelineStage = "pipelineStageSimulation"
+
+        def OmniGraphNode "on_playback_tick" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            token node:type = "omni.graph.action.OnPlaybackTick"
+            int node:typeVersion = 2
+            custom double outputs:deltaSeconds
+            custom double outputs:frame
+            custom uint outputs:tick (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom double outputs:time
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (-189.78589, 38.19693)
+        }
+
+        def OmniGraphNode "isaac_create_viewport" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
+            custom token inputs:name
+            custom uint inputs:viewportId
+            token node:type = "isaacsim.core.nodes.IsaacCreateViewport"
+            int node:typeVersion = 2
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom token outputs:viewport
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (93.53684, 175.15742)
+        }
+
+        def OmniGraphNode "isaac_set_viewport_resolution" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
+            custom uint inputs:height
+            custom token inputs:viewport
+            custom uint inputs:width
+            token node:type = "isaacsim.core.nodes.IsaacSetViewportResolution"
+            int node:typeVersion = 1
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (352.29684, -21.597162)
+        }
+
+        def OmniGraphNode "isaac_get_viewport_render_product" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
+            custom token inputs:viewport
+            token node:type = "isaacsim.core.nodes.IsaacGetViewportRenderProduct"
+            int node:typeVersion = 1
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom token outputs:renderProductPath
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (514.6299, 254.10864)
+        }
+
+        def OmniGraphNode "isaac_set_camera" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom rel inputs:cameraPrim = </Root/Xform/main_camera_01> (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            string relType = "target"
+                        }
+                    }
+                }
+            )
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
+            custom token inputs:renderProductPath
+            token node:type = "isaacsim.core.nodes.IsaacSetCameraOnRenderProduct"
+            int node:typeVersion = 1
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (895.0088, 218.42134)
+        }
+
+        def OmniGraphNode "ros2_camera_helper" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint64 inputs:context
+            prepend uint64 inputs:context.connect = </Root/CameraImageExport/ros2_context.outputs:context>
+            custom bool inputs:enabled
+            custom bool inputs:enableSemanticLabels
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
+            custom string inputs:frameId
+            prepend string inputs:frameId.connect = </Root/CameraImageExport/to_string.outputs:converted>
+            custom uint inputs:frameSkipCount
+            custom string inputs:nodeNamespace
+            custom string inputs:qosProfile
+            custom uint64 inputs:queueSize
+            custom token inputs:renderProductPath
+            prepend token inputs:renderProductPath.connect = </Root/CameraImageExport/isaac_get_viewport_render_product.outputs:renderProductPath>
+            custom bool inputs:resetSimulationTimeOnStop
+            custom string inputs:semanticLabelsTopicName
+            custom string inputs:srtxCompressionType
+            custom float2 inputs:stereoOffset
+            custom string inputs:topicName
+            custom token inputs:type (
+                allowedTokens = ["rgb", "rgb_h264", "depth", "depth_pcl", "instance_segmentation", "semantic_segmentation", "bbox_2d_tight", "bbox_2d_loose", "bbox_3d"]
+            )
+            custom bool inputs:useSystemTime
+            token node:type = "isaacsim.ros2.bridge.ROS2CameraHelper"
+            int node:typeVersion = 3
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (1284.0919, 134.10712)
+        }
+
+        def OmniGraphNode "counter" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
+            custom uint inputs:reset (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            token node:type = "omni.graph.action.Counter"
+            int node:typeVersion = 2
+            custom int outputs:count
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom int state:count
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (442.8347, 472.26895)
+        }
+
+        def OmniGraphNode "to_string" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom token inputs:value
+            prepend token inputs:value.connect = </Root/CameraImageExport/counter.outputs:count>
+            token node:type = "omni.graph.nodes.ToString"
+            int node:typeVersion = 1
+            custom string outputs:converted
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (833.5587, 471.31476)
+        }
+
+        def OmniGraphNode "ros2_context" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uchar inputs:domain_id
+            custom bool inputs:useDomainIDEnvVar
+            token node:type = "isaacsim.ros2.bridge.ROS2Context"
+            int node:typeVersion = 2
+            custom uint64 outputs:context
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (951.81384, 637.86865)
+        }
+    }
+
+    def OmniGraph "PoseSync"
+    {
+        token evaluationMode = "Automatic"
+        token evaluator:type = "execution"
+        token fabricCacheBacking = "StageWithoutHistory"
+        int2 fileFormatVersion = (1, 9)
+        token pipelineStage = "pipelineStageSimulation"
+
+        def OmniGraphNode "on_playback_tick" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            token node:type = "omni.graph.action.OnPlaybackTick"
+            int node:typeVersion = 2
+            custom double outputs:deltaSeconds
+            custom double outputs:frame
+            custom uint outputs:tick (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom double outputs:time
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (-897.1308, -142.79033)
+        }
+
+        def OmniGraphNode "global_position_to_local_position" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom vector3d inputs:enu_reference
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
+            custom vector3d inputs:global_orientation
+            prepend vector3d inputs:global_orientation.connect = </Root/PoseSync/quaternion_to_euler.outputs:euler_r>
+            custom vector3d inputs:global_position
+            prepend vector3d inputs:global_position.connect = </Root/PoseSync/make_3_vector.outputs:tuple>
+            custom float inputs:offset_pitch_deg
+            prepend float inputs:offset_pitch_deg.connect = </Root/PoseSync/ros2_subscriber_02.outputs:pitch>
+            custom float inputs:offset_roll_deg
+            prepend float inputs:offset_roll_deg.connect = </Root/PoseSync/ros2_subscriber_02.outputs:roll>
+            custom float inputs:offset_yaw_deg
+            prepend float inputs:offset_yaw_deg.connect = </Root/PoseSync/ros2_subscriber_02.outputs:yaw>
+            custom string inputs:rotation_frame
+            token node:type = "isaac_core_ogn.math.GlobalPositionToLocalPosition"
+            int node:typeVersion = 1
+            custom vector3d outputs:global_orientation
+            custom vector3d outputs:global_position
+            custom quatd outputs:local_orientation
+            custom vector3d outputs:local_position
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (259.60504, 74.40976)
+        }
+
+        def OmniGraphNode "write_prim_attribute" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
+            custom token inputs:layerIdentifier
+            custom token inputs:name = "xformOp:orient"
+            custom rel inputs:prim (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            string relType = "target"
+                        }
+                    }
+                }
+            )
+            custom token inputs:primPath = "/Root/Xform"
+            custom bool inputs:usdWriteBack
+            custom bool inputs:usePath = 1
+            custom token inputs:value (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            double4 attrValue = (0, 0, 0, 0)
+                            string resolvedType = "quatd[4]"
+                        }
+                    }
+                }
+            )
+            prepend token inputs:value.connect = </Root/PoseSync/global_position_to_local_position.outputs:local_orientation>
+            token node:type = "omni.graph.nodes.WritePrimAttribute"
+            int node:typeVersion = 3
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom bool state:correctlySetup
+            custom uint64 state:destAttrib
+            custom uint64 state:destPath
+            custom uint64 state:destPathToken
+            custom token state:layerIdentifier
+            custom token state:resolvedLayerIdentifier
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (1141.9387, -201.58958)
+        }
+
+        def OmniGraphNode "write_prim_attribute_01" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
+            custom token inputs:layerIdentifier
+            custom token inputs:name = "xformOp:translate"
+            custom rel inputs:prim (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            string relType = "target"
+                        }
+                    }
+                }
+            )
+            custom token inputs:primPath = "/Root/Xform"
+            custom bool inputs:usdWriteBack
+            custom bool inputs:usePath = 1
+            custom token inputs:value (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            double3 attrValue = (0, 0, 0)
+                            string resolvedType = "double[3]"
+                        }
+                    }
+                }
+            )
+            prepend token inputs:value.connect = </Root/PoseSync/global_position_to_local_position.outputs:local_position>
+            token node:type = "omni.graph.nodes.WritePrimAttribute"
+            int node:typeVersion = 3
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom bool state:correctlySetup
+            custom uint64 state:destAttrib
+            custom uint64 state:destPath
+            custom uint64 state:destPathToken
+            custom token state:layerIdentifier
+            custom token state:resolvedLayerIdentifier
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (1147.6044, 115.023056)
+        }
+
+        def OmniGraphNode "ros2_context" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uchar inputs:domain_id
+            custom bool inputs:useDomainIDEnvVar
+            token node:type = "isaacsim.ros2.bridge.ROS2Context"
+            int node:typeVersion = 2
+            custom uint64 outputs:context
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (-900.1414, 146.41508)
+        }
+
+        def OmniGraphNode "ros2_subscriber" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint64 inputs:context
+            prepend uint64 inputs:context.connect = </Root/PoseSync/ros2_context.outputs:context>
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
+            custom string inputs:messageName = "PoseStamped"
+            custom string inputs:messagePackage = "geometry_msgs"
+            custom string inputs:messageSubfolder
+            custom string inputs:nodeNamespace
+            custom string inputs:qosProfile
+            custom uint64 inputs:queueSize
+            custom string inputs:topicName = "/mavros/local_position/pose"
+            token node:type = "isaacsim.ros2.bridge.ROS2Subscriber"
+            int node:typeVersion = 1
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom token outputs:header:frame_id
+            custom uint outputs:header:stamp:nanosec
+            custom int outputs:header:stamp:sec
+            custom double outputs:pose:orientation:w
+            custom double outputs:pose:orientation:x
+            custom double outputs:pose:orientation:y
+            custom double outputs:pose:orientation:z
+            custom double outputs:pose:position:x
+            custom double outputs:pose:position:y
+            custom double outputs:pose:position:z
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (-526.99365, -343.78848)
+        }
+
+        def OmniGraphNode "ros2_subscriber_01" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint64 inputs:context
+            prepend uint64 inputs:context.connect = </Root/PoseSync/ros2_context.outputs:context>
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
+            custom string inputs:messageName = "NavSatFix"
+            custom string inputs:messagePackage = "sensor_msgs"
+            custom string inputs:messageSubfolder
+            custom string inputs:nodeNamespace
+            custom string inputs:qosProfile
+            custom uint64 inputs:queueSize
+            custom string inputs:topicName = "/mavros/global_position/global"
+            token node:type = "isaacsim.ros2.bridge.ROS2Subscriber"
+            int node:typeVersion = 1
+            custom double outputs:altitude
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom token outputs:header:frame_id
+            custom uint outputs:header:stamp:nanosec
+            custom int outputs:header:stamp:sec
+            custom double outputs:latitude
+            custom double outputs:longitude
+            custom double[] outputs:position_covariance
+            custom uint outputs:position_covariance_type
+            custom uint outputs:status:service
+            custom int outputs:status:status
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (-529.83514, 256.09177)
+        }
+
+        def OmniGraphNode "make_3_vector" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom token inputs:x
+            prepend token inputs:x.connect = </Root/PoseSync/ros2_subscriber_01.outputs:latitude>
+            custom token inputs:y (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            double attrValue = 0
+                            string resolvedType = "double"
+                        }
+                    }
+                }
+            )
+            prepend token inputs:y.connect = </Root/PoseSync/ros2_subscriber_01.outputs:longitude>
+            custom token inputs:z (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            double attrValue = 0
+                            string resolvedType = "double"
+                        }
+                    }
+                }
+            )
+            prepend token inputs:z.connect = </Root/PoseSync/ros2_subscriber_01.outputs:altitude>
+            token node:type = "omni.graph.nodes.MakeVector3"
+            int node:typeVersion = 1
+            custom token outputs:tuple
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (-141.85051, 541.7197)
+        }
+
+        def OmniGraphNode "ros2_subscriber_02" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint64 inputs:context
+            prepend uint64 inputs:context.connect = </Root/PoseSync/ros2_context.outputs:context>
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
+            custom string inputs:messageName = "Gimbal"
+            custom string inputs:messagePackage = "isaac_ros2_messages"
+            custom string inputs:messageSubfolder
+            custom string inputs:nodeNamespace
+            custom string inputs:qosProfile
+            custom uint64 inputs:queueSize
+            custom string inputs:topicName = "/isaac_core/gimbal"
+            token node:type = "isaacsim.ros2.bridge.ROS2Subscriber"
+            int node:typeVersion = 1
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom float outputs:pitch
+            custom float outputs:roll
+            custom float outputs:yaw
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (-253.12398, 80.84255)
+        }
+
+        def OmniGraphNode "break_3_vector" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom token inputs:tuple
+            prepend token inputs:tuple.connect = </Root/PoseSync/global_position_to_local_position.outputs:global_position>
+            token node:type = "omni.graph.nodes.BreakVector3"
+            int node:typeVersion = 1
+            custom token outputs:x
+            custom token outputs:y
+            custom token outputs:z
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (741.42096, 755.24835)
+        }
+
+        def OmniGraphNode "ros2_publisher" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint64 inputs:context
+            prepend uint64 inputs:context.connect = </Root/PoseSync/ros2_context.outputs:context>
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom token inputs:header:frame_id
+            custom uint inputs:header:stamp:nanosec
+            custom int inputs:header:stamp:sec
+            custom string inputs:messageName = "GeoPoseStamped"
+            custom string inputs:messagePackage = "geographic_msgs"
+            custom string inputs:messageSubfolder
+            custom string inputs:nodeNamespace
+            custom double inputs:pose:orientation:w
+            prepend double inputs:pose:orientation:w.connect = </Root/PoseSync/euler_to_quaternion.outputs:qw>
+            custom double inputs:pose:orientation:x
+            prepend double inputs:pose:orientation:x.connect = </Root/PoseSync/euler_to_quaternion.outputs:qx>
+            custom double inputs:pose:orientation:y
+            prepend double inputs:pose:orientation:y.connect = </Root/PoseSync/euler_to_quaternion.outputs:qy>
+            custom double inputs:pose:orientation:z
+            prepend double inputs:pose:orientation:z.connect = </Root/PoseSync/euler_to_quaternion.outputs:qz>
+            custom double inputs:pose:position:altitude
+            prepend double inputs:pose:position:altitude.connect = </Root/PoseSync/break_3_vector.outputs:z>
+            custom double inputs:pose:position:latitude
+            prepend double inputs:pose:position:latitude.connect = </Root/PoseSync/break_3_vector.outputs:x>
+            custom double inputs:pose:position:longitude
+            prepend double inputs:pose:position:longitude.connect = </Root/PoseSync/break_3_vector.outputs:y>
+            custom string inputs:qosProfile
+            custom uint64 inputs:queueSize
+            custom string inputs:topicName = "/isaac_core/global_pose"
+            token node:type = "isaacsim.ros2.bridge.ROS2Publisher"
+            int node:typeVersion = 1
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (1128.0763, 481.26462)
+        }
+
+        def OmniGraphNode "euler_to_quaternion" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom vector3d inputs:euler_r
+            prepend vector3d inputs:euler_r.connect = </Root/PoseSync/global_position_to_local_position.outputs:global_orientation>
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
+            token node:type = "isaac_core_ogn.math.EulerToQuaternion"
+            int node:typeVersion = 1
+            custom quatd outputs:quaternion
+            custom double outputs:qw
+            custom double outputs:qx
+            custom double outputs:qy
+            custom double outputs:qz
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (669.6504, 432.74872)
+        }
+
+        def OmniGraphNode "quaternion_to_euler" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
+            custom double inputs:qw
+            prepend double inputs:qw.connect = </Root/PoseSync/ros2_subscriber.outputs:pose:orientation:w>
+            custom double inputs:qx
+            prepend double inputs:qx.connect = </Root/PoseSync/ros2_subscriber.outputs:pose:orientation:x>
+            custom double inputs:qy
+            prepend double inputs:qy.connect = </Root/PoseSync/ros2_subscriber.outputs:pose:orientation:y>
+            custom double inputs:qz
+            prepend double inputs:qz.connect = </Root/PoseSync/ros2_subscriber.outputs:pose:orientation:z>
+            token node:type = "isaac_core_ogn.math.QuaternionToEuler"
+            int node:typeVersion = 1
+            custom vector3d outputs:euler_r
+            custom double outputs:pitch_r
+            custom double outputs:roll_r
+            custom double outputs:yaw_r
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (-47.629326, -318.0703)
+        }
+    }
+}
+
+over "OmniverseKit_Front" (
+    customData = {
+        dictionary omni = {
+            dictionary kit = {
+                bool hide_in_stage_window = 1
+                bool no_delete = 1
+            }
+        }
+    }
+    hide_in_stage_window = true
+    kind = "component"
+    no_delete = true
+)
+{
+    float2 clippingRange = (1, 10000000)
+    float horizontalAperture = 50
+    custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -5)
+    token projection = "orthographic"
+    float verticalAperture = 50
+    float3 xformOp:rotateXYZ = (90, -1.2722219e-14, 90)
+    float3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (5, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+}
+
+over "OmniverseKit_Right" (
+    customData = {
+        dictionary omni = {
+            dictionary kit = {
+                bool hide_in_stage_window = 1
+                bool no_delete = 1
+            }
+        }
+    }
+    hide_in_stage_window = true
+    kind = "component"
+    no_delete = true
+)
+{
+    float2 clippingRange = (1, 10000000)
+    float horizontalAperture = 50
+    custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -5)
+    token projection = "orthographic"
+    float verticalAperture = 50
+    float3 xformOp:rotateXYZ = (90, -1.41245e-30, 1.2722219e-14)
+    float3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, -5, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+}
+
+over "OmniverseKit_Top" (
+    customData = {
+        dictionary omni = {
+            dictionary kit = {
+                bool hide_in_stage_window = 1
+                bool no_delete = 1
+            }
+        }
+    }
+    hide_in_stage_window = true
+    kind = "component"
+    no_delete = true
+)
+{
+    float2 clippingRange = (1, 10000000)
+    float horizontalAperture = 50
+    custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -5)
+    token projection = "orthographic"
+    float verticalAperture = 50
+    float3 xformOp:rotateXYZ = (-1.2722219e-14, -7.016709e-15, -90)
+    float3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 5)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+}
+
+def CesiumDataPrim "Cesium"
+{
+    prepend rel cesium:selectedIonServer = </CesiumServers/IonOfficial>
+}
+
+def CesiumGeoreferencePrim "CesiumGeoreference"
+{
+    matrix4d cesium:ecefToUsdTransform = ( (0.9647534819407177, 0.1682239812131189, -0.20236455032458023, 0), (-0.2631553136139595, 0.6167258011721835, -0.741888513919219, 0), (2.7755575615628914e-17, 0.7689928337204038, 0.6392573986170699, 0), (-1.1260326425004901e-10, 21025.701877878048, -6371656.822771804, 1) )
+}
+
+def "CesiumServers"
+{
+    def CesiumIonServerPrim "IonOfficial"
+    {
+        string cesium:displayName = "ion.cesium.com"
+        string cesium:ionServerApiUrl = "https://api.cesium.com/"
+        int64 cesium:ionServerApplicationId = 413
+        string cesium:ionServerUrl = "https://ion.cesium.com/"
+    }
+}
+
+def PhysicsScene "PhysicsScene" (
+    prepend apiSchemas = ["NewtonSceneAPI", "PhysxSceneAPI"]
+)
+{
+}

@@ -20,7 +20,6 @@ from isaac_core.protocol import HoldLastGoodDecoder, encode
 _EXT_ROOT = Path(__file__).resolve().parents[3] / "extensions" / "isaac_core_ogn.position"
 _NODES_DIR = _EXT_ROOT / "isaac_core_ogn" / "position" / "nodes"
 _UDP_OGN = _NODES_DIR / "OgnUdpToGlobalPosition.ogn"
-_ROS2_OGN = _NODES_DIR / "OgnRos2ToGlobalPosition.ogn"
 _EXT_TOML = _EXT_ROOT / "config" / "extension.toml"
 
 
@@ -31,20 +30,10 @@ def test_udp_ogn_is_valid_json() -> None:
     json.loads(_UDP_OGN.read_text(encoding="utf-8"))
 
 
-def test_ros2_ogn_is_valid_json() -> None:
-    json.loads(_ROS2_OGN.read_text(encoding="utf-8"))
-
-
 def test_udp_ogn_key_matches_filename() -> None:
     data = json.loads(_UDP_OGN.read_text(encoding="utf-8"))
     keys = list(data.keys())
     assert keys == ["UdpToGlobalPosition"]
-
-
-def test_ros2_ogn_key_matches_filename() -> None:
-    data = json.loads(_ROS2_OGN.read_text(encoding="utf-8"))
-    keys = list(data.keys())
-    assert keys == ["Ros2ToGlobalPosition"]
 
 
 def test_udp_ogn_node_type_string() -> None:
@@ -56,17 +45,6 @@ def test_udp_ogn_node_type_string() -> None:
     node_key = list(data.keys())[0]
     full_type = f"{ext_name}.{node_key}"
     assert full_type == "isaac_core_ogn.position.UdpToGlobalPosition"
-
-
-def test_ros2_ogn_node_type_string() -> None:
-    with _EXT_TOML.open("rb") as f:
-        toml = tomllib.load(f)
-    modules = toml["python"]["module"]
-    ext_name = modules[0]["name"]
-    data = json.loads(_ROS2_OGN.read_text(encoding="utf-8"))
-    node_key = list(data.keys())[0]
-    full_type = f"{ext_name}.{node_key}"
-    assert full_type == "isaac_core_ogn.position.Ros2ToGlobalPosition"
 
 
 def test_udp_ogn_has_udp_port_input_with_correct_default() -> None:
@@ -98,40 +76,10 @@ def test_udp_ogn_declares_decode_failure_count_output() -> None:
     assert outputs["decode_failure_count"]["type"] == "int"
 
 
-def test_ros2_ogn_declares_lla_topic_input() -> None:
-    data = json.loads(_ROS2_OGN.read_text(encoding="utf-8"))
-    inputs = data["Ros2ToGlobalPosition"]["inputs"]
-    assert "lla_topic" in inputs
-    assert inputs["lla_topic"]["type"] == "string"
-    assert inputs["lla_topic"]["default"] == "/mavros/global_position/global"
-
-
-def test_ros2_ogn_declares_orientation_topic_input() -> None:
-    data = json.loads(_ROS2_OGN.read_text(encoding="utf-8"))
-    inputs = data["Ros2ToGlobalPosition"]["inputs"]
-    assert "orientation_topic" in inputs
-    assert inputs["orientation_topic"]["type"] == "string"
-    assert inputs["orientation_topic"]["default"] == "/mavros/local_position/pose"
-
-
-def test_ros2_ogn_declares_global_position_output() -> None:
-    data = json.loads(_ROS2_OGN.read_text(encoding="utf-8"))
-    outputs = data["Ros2ToGlobalPosition"]["outputs"]
-    assert "global_position" in outputs
-    assert outputs["global_position"]["type"] == "vectord[3]"
-
-
-def test_ros2_ogn_declares_global_orientation_output() -> None:
-    data = json.loads(_ROS2_OGN.read_text(encoding="utf-8"))
-    outputs = data["Ros2ToGlobalPosition"]["outputs"]
-    assert "global_orientation" in outputs
-    assert outputs["global_orientation"]["type"] == "vectord[3]"
-
-
 @pytest.mark.parametrize(
     "ogn_path",
-    [_UDP_OGN, _ROS2_OGN],
-    ids=["udp", "ros2"],
+    [_UDP_OGN],
+    ids=["udp"],
 )
 def test_ogn_all_attributes_have_descriptions(ogn_path: Path) -> None:
     data = json.loads(ogn_path.read_text(encoding="utf-8"))

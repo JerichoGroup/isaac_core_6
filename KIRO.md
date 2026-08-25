@@ -770,6 +770,8 @@ scripting and replay · deterministic seeded scenarios for regression tests.
 | D13 | All layer settings uniform under `[layers.<layer_id>]` | Lets third-party layers extend the config with zero core changes. Deliberate exception: cameras/gimbals are first-class under `[vehicles.X]` because they're tuned constantly and read far better there. |
 | D14 | Rotation frame (world vs body) is configurable | Ofer's requirement. `RotationFrame.WORLD` = extrinsic, `R_delta @ R_current`; `RotationFrame.BODY` = intrinsic, `R_current @ R_delta`. Lives in `contracts.frames` so the math node, the gimbal, and the vehicle model all honour the same setting. 2023 hardcoded body-frame for the gimbal (`qmult(q_drone, q_offset)`) and world-frame for `UdpBot` turns (`delta_R @ R`), with no way to choose. |
 | D15 | **Kiro never authors `.usda` files.** | Ofer creates all USD via the Isaac Sim 6 GUI and saves it, which guarantees valid/correct files instead of hand-written multi-thousand-line text. My job is to specify precisely *what* to create and what to put in it, then bind to it via layer manifests. |
+| D16 | `GeoPoseStamped` carries a **real quaternion** via `EulerToQuaternion` | Ofer's decision. Replaces the old repo's abuse of stuffing roll/pitch/yaw into the quaternion's x/y/z with w pinned to 1.0. Anything downstream parsing the old convention needs updating. Enforced by `tests/unit/test_usd_layers.py`. |
+| D17 | `header.frame_id` is a **coordinate frame name**, not a sequence counter | ROS 2's `std_msgs/Header` has only `stamp` and `frame_id` — ROS 1's `seq` was deliberately removed. `frame_id` is documented as "Transform frame with which this data is associated". The old repo used it as a frame counter, which required a custom rclpy republisher; that is the real reason its image path went `raw_rgb` → `image_rgb`. Correlate frames with `header.stamp` instead. |
 
 ### Working constraints
 
@@ -993,6 +995,154 @@ commands and reading the diff establishes fact.
 
   **Verified:** 789/789 pytest, 14/14 pre-commit hooks PASS, import-linter 18 contracts KEPT,
   kernel imports OK on Isaac's Python 3.12.
+
+- **2026-08-24 (h)** — **Major architectural finding, discovered by Ofer launching the GUI.**
+  Our extensions failed to load with
+  `ModuleNotFoundError: No module named 'rclpy._rclpy_pybind11'`.
+
+  Root cause, verified on disk: ROS 2 Humble ships
+  `_rclpy_pybind11.cpython-**310**-x86_64-linux-gnu.so` while Isaac Sim 6 bundles Python
+  **3.12.13**. C extension ABIs do not cross Python minor versions, so **`rclpy` can never
+  be imported inside Isaac Sim 6.** There is no import-order or configuration fix. The old
+  repo got away with rclpy in its nodes only because Isaac Sim 2023.1.1 also bundled 3.10.
+
+  Isaac Sim 6's own `isaacsim.ros2.bridge` has **zero rclpy imports** — it is C++, and
+  therefore indifferent to the Python ABI. It ships generic `ROS2Publisher` /
+  `ROS2Subscriber` nodes parameterised by `messagePackage`/`messageSubfolder`/`messageName`
+  that expose message fields as dynamic attributes.
+
+  **Resolution — five nodes deleted, all replaced by Isaac's C++ equivalents:**
+
+  | Removed (ours) | Use instead |
+  |---|---|
+  | `position.Ros2ToGlobalPosition` | 2× `isaacsim.ros2.bridge.ROS2Subscriber` (NavSatFix, PoseStamped) |
+  | `sensors.Ros2GlobalPosePublisher` | `ROS2Publisher` (geographic_msgs/GeoPoseStamped) |
+  | `sensors.Ros2RangePublisher` | `ROS2Publisher` (sensor_msgs/Range) |
+  | `sensors.Ros2Gimbal` | `ROS2Subscriber` (our Gimbal message) |
+  | `sensors.Ros2ImagePublisher` | `ROS2CameraHelper` / `ROS2PublishImage` |
+
+  The whole `isaac_core_ogn.sensors` extension is gone. **What remains is exactly two real
+  nodes** — `math.GlobalPositionToLocalPosition` and `position.UdpToGlobalPosition` — plus
+  the template, both pure computation delegating to `isaac_core.geo` / `.protocol`.
+
+  This is a *better* architecture, arrived at by force: it makes the nodes the thin compute
+  adapters they were always meant to be, and deletes an entire class of old-repo defects
+  (rclpy lifetime, per-node executors, spin threads inside nodes) by removing the code
+  rather than fixing it. It also vindicates the devkit/sidecar split — anything needing
+  rclpy runs out-of-process on system Python 3.10 where Humble works fine.
+
+  **Division of labour, now fixed:**
+  - Inside Isaac (3.12): pure computation only, no ROS.
+  - Isaac's C++ bridge: all ROS 2 publish/subscribe, wired in the graph.
+  - Host / devkit / sidecar (3.10): rclpy freely.
+
+  Added `docs/ros2_and_python.md` (the full explanation and the replacement mapping) and
+  `tests/unit/extensions/test_no_python_ros2.py`, which fails if any extension module
+  imports rclpy or any ROS message package. **I verified that guard bites** by injecting
+  `import rclpy` into a node and watching it fail, then restoring. That guard matters
+  because this failure only appears once an extension is linked into a real install and
+  the GUI is launched — expensive to rediscover.
+
+  Also corrected `docs/usd_build_sheet.md`: Stage 1's `PoseSync` graph drops to five nodes
+  and **needs no ROS at all**, so it is still the right starting point.
+
+  **Verified:** 709/709 pytest, 14/14 pre-commit hooks PASS, import-linter 18 contracts KEPT.
+
+  ⚠ **Action for Ofer:** `/home/ofer/isaacsim/extsUser/isaac_core_ogn.sensors` is now a
+  dangling symlink. Re-run `scripts/link_extensions.sh` (or delete that one symlink) before
+  relaunching, or Kit will keep complaining about a missing extension.
+
+- **2026-08-25** — Ofer authored the USD (Stages 1–3). Reviewed all three files.
+
+  **Quality is good.** 32–36 KB per camera layer versus 2.9 MB in the old repo, because
+  the embedded `OmniverseKitViewportCameraMesh` gizmo is absent. `/Root/Xform` in both
+  camera layers has `!resetXformStack!, translate, orient, scale` with a Cesium Globe
+  Anchor — correct. He also added a frame-id counter (`counter` → `to_string`) into the
+  `CameraImageExport` graph, which the sheet had not asked for and is a good addition.
+
+  **Gap he identified, and he was right about the cause.** Isaac's ROS 2 bridge exposes a
+  quaternion as **four separate `double` attributes** (`pose:orientation:w/x/y/z`), while
+  `GlobalPositionToLocalPosition` speaks `global_orientation` as `vectord[3]` radians.
+  Nothing in the bridge or OmniGraph's stock nodes closes that gap. Added two thin
+  adapters over the already-tested `isaac_core.geo`:
+  - `isaac_core_ogn.math.QuaternionToEuler` — `qw/qx/qy/qz` → `euler_r` (vectord[3]) plus
+    scalar `roll_r`/`pitch_r`/`yaw_r`. `qw` defaults to 1.0 and an all-zero quaternion is
+    treated as identity, because a subscriber legitimately reports zeros before its first
+    message and NaN must not reach the pose pipeline.
+  - `isaac_core_ogn.math.EulerToQuaternion` — `euler_r` → `qw/qx/qy/qz` plus a `quatd[4]`
+    in Isaac's IJKR order.
+
+  Node set is now five: the two above, `GlobalPositionToLocalPosition`,
+  `UdpToGlobalPosition`, and the template.
+
+  **Bug found in `camera_ros.usda`:** two connections still reference
+  `udp_to_global_position`, a node that exists only in the UDP layer — a Save-As leftover.
+  `inputs:global_orientation` points at it (which is exactly why that input reads as
+  unconnected), and `inputs:global_position` lists it *alongside* the correct
+  `make_3_vector.outputs:tuple`, leaving an ambiguous two-source input. Ofer to remove
+  both in the GUI; documented as Fix 3 in the build sheet.
+
+  **Open decision for Ofer — `GeoPoseStamped` orientation.** The old repo stuffed roll,
+  pitch and yaw into the quaternion's `x`/`y`/`z` with `w = 1.0`, so the field never held a
+  quaternion; its README documented the abuse. Wiring `EulerToQuaternion` publishes a real
+  quaternion, which is what the message type means, but breaks anything downstream parsing
+  the old convention. Both paths are documented in the build sheet; awaiting his choice
+  before making one the default.
+
+  Also worth noting: `earth.usda` ships `cesium:url = http://127.0.0.1:8088/nablus/...`.
+  Harmless as a saved default since composition rewrites it, but `[cesium]
+  tileset_server_url` has **no default** in config, so it must be set for a real run.
+
+  Stage 4 (sensor layers) deliberately not yet specified — Ofer reported the instructions
+  were unclear, and the 6.0 sensor APIs shifted enough that they should be written against
+  a stage that has actually launched.
+
+  **Verified:** 742/742 pytest, all pre-commit hooks PASS, import-linter 18 contracts KEPT.
+
+- **2026-08-25 (b)** — Ofer applied all three USD fixes; validated clean. Added
+  `tests/unit/test_usd_layers.py` (19 tests) as a permanent validator: dangling
+  connection references, two-source inputs, writers targeting `/Root/Xform`, the required
+  `orient` op, Cesium Globe Anchor, no embedded gizmo mesh, layer size, and D16's
+  real-quaternion wiring. Hand-authored USD has failure modes nothing else here catches,
+  and both of the ones already hit (Save-As leftovers, ambiguous input) were silent.
+
+  **Frame-id investigation — the API is right, our usage was wrong.**
+  `OgnROS2CameraHelper.compute` opens with `if state.initialized: return True`, so
+  `frameId` is read once into the Replicator writer's `init_params` and never again. The
+  node's *output attribute* keeps incrementing (hence the GUI showing it climb) while the
+  writer keeps its original copy; stopping calls `custom_reset()`, so replay re-bakes and
+  re-freezes. Exactly the reported symptom. `ROS2PublishImage` does take `frameId`
+  per-tick but is not hand-wirable — Isaac drives it as a Replicator writer attached to a
+  render product, and no `.ogn` in the install outputs the `dataPtr` it needs.
+
+  The deeper finding (D17): ROS 2's `std_msgs/Header` has **only** `stamp` and `frame_id`.
+  ROS 1's `seq` was deliberately removed, and `frame_id` is documented as "Transform frame
+  with which this data is associated" — a TF frame name. The old repo used it as a frame
+  counter, which is *why* its image path needed a custom rclpy republisher
+  (`raw_rgb` → `image_rgb`); the earlier catalogue of that pipeline called it "rate
+  limiting" and under-documented the real purpose.
+
+  **Ofer still wants a monotonic counter, deferred — and he raised a valid objection to
+  the sidecar idea:** a downstream re-stamper counts what *it* received, so it structurally
+  cannot detect drops upstream of itself, which is the main reason to want the counter.
+  He is right. When we return to this, the promising option is a **custom C++ OmniGraph
+  node** (C++ is immune to the Python ABI wall that killed the rclpy nodes) or accepting
+  `header.stamp`, which the writer does set per frame. Do not propose the sidecar again
+  without addressing the drop-detection objection.
+
+  Added `scripts/send_test_pose.py` — a system-Python sender with `hold`/`orbit`/`path`
+  modes, driving `vehicle` → `protocol` → `devkit.transport`, so a moving camera also
+  proves that slice of the kernel. **Verified end to end**: spawned it against a loopback
+  socket, received 51-byte packets, decoded to the expected LLA/RPY with the NED tag.
+
+  Added `docs/first_run.md`. Two prerequisites found while writing it:
+  - Neither camera layer sets a **`defaultPrim`**. A USD reference with no default prim
+    pulls in *nothing*, silently. Ofer must set `/Root` as default prim on both.
+  - The `.ogn` defaults (`udp_port=33333`, `enu_reference=[32.22481, 35.25621, 516.7]`,
+    `rotation_frame=body`) already agree with `earth.usda`'s Cesium georeference origin,
+    so the first run needs no node configuration at all.
+
+  **Verified:** 761/761 pytest, 14/14 pre-commit hooks PASS, import-linter 18 contracts KEPT.
 
 ### Pending
 

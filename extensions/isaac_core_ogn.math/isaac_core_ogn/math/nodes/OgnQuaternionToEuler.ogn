@@ -1,0 +1,98 @@
+{
+  "QuaternionToEuler": {
+    "version": 1,
+    "description": [
+      "Convert a quaternion to intrinsic-XYZ Euler angles in radians.",
+      "",
+      "Bridges Isaac's ROS 2 Subscriber to GlobalPositionToLocalPosition. The bridge",
+      "exposes a PoseStamped orientation as four separate double outputs, while",
+      "GlobalPositionToLocalPosition expects global_orientation as a vectord[3] of",
+      "[roll, pitch, yaw] in radians, so a conversion node is required between them.",
+      "",
+      "No frame conversion is applied. MAVROS publishes PoseStamped orientation",
+      "already in ENU, which is the frame GlobalPositionToLocalPosition expects. The",
+      "UDP path converts NED to ENU inside UdpToGlobalPosition instead, so neither",
+      "path double-converts."
+    ],
+    "language": "Python",
+    "metadata": {
+      "uiName": "Quaternion To Euler"
+    },
+    "inputs": {
+      "execIn": {
+        "type": "execution",
+        "description": "Tick input for processing",
+        "default": 0,
+        "metadata": {
+          "uiName": "Exec In"
+        }
+      },
+      "qw": {
+        "type": "double",
+        "description": "Quaternion real (w) component",
+        "default": 1.0,
+        "metadata": {
+          "uiName": "qw"
+        }
+      },
+      "qx": {
+        "type": "double",
+        "description": "Quaternion i (x) component",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "qx"
+        }
+      },
+      "qy": {
+        "type": "double",
+        "description": "Quaternion j (y) component",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "qy"
+        }
+      },
+      "qz": {
+        "type": "double",
+        "description": "Quaternion k (z) component",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "qz"
+        }
+      }
+    },
+    "outputs": {
+      "euler_r": {
+        "type": "vectord[3]",
+        "description": "Euler angles [roll, pitch, yaw] in radians, intrinsic XYZ. Wire this straight into GlobalPositionToLocalPosition.global_orientation",
+        "default": [0.0, 0.0, 0.0],
+        "metadata": {
+          "uiName": "Euler (radians)"
+        }
+      },
+      "roll_r": {
+        "type": "double",
+        "description": "Roll in radians, for wiring to scalar inputs",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "Roll (radians)"
+        }
+      },
+      "pitch_r": {
+        "type": "double",
+        "description": "Pitch in radians, for wiring to scalar inputs",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "Pitch (radians)"
+        }
+      },
+      "yaw_r": {
+        "type": "double",
+        "description": "Yaw in radians, for wiring to scalar inputs",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "Yaw (radians)"
+        }
+      }
+    }
+  }
+}

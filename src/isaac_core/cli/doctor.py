@@ -27,10 +27,12 @@ _RUNTIME_DEPS: tuple[tuple[str, str], ...] = (
 )
 
 # Extension directories to check in extsUser.
+# Only two extensions ship node definitions. All ROS 2 publish/subscribe work is
+# done by Isaac's own C++ isaacsim.ros2.bridge nodes, because Humble's rclpy is a
+# Python 3.10 C extension and Isaac Sim 6 runs Python 3.12 -- see docs/ros2_and_python.md.
 _EXPECTED_EXTENSIONS: tuple[str, ...] = (
     "isaac_core_ogn.math",
     "isaac_core_ogn.position",
-    "isaac_core_ogn.sensors",
 )
 
 
