@@ -63,6 +63,25 @@ repos:
         # additional_dependencies: ["types-requests", "types-PyYAML"]
         additional_dependencies: []
 
+  - repo: local
+    hooks:
+      - id: import-linter
+        name: import-linter (architecture layering)
+        # Enforces the contracts in [tool.importlinter] in pyproject.toml: the pure
+        # kernel must not import sim/devkit/sidecar/debug, and nothing outside sim may
+        # import omni/carb/pxr. Layering rot is invisible in review and expensive to
+        # unwind later, so it is checked on every commit.
+        #
+        # `language: system` because import-linter is installed system-wide from
+        # requirements-dev.txt, matching the no-venv convention. It needs PYTHONPATH=src
+        # to import the package, and it always analyses the whole graph, so
+        # pass_filenames is off and the hook runs once regardless of what changed.
+        entry: env PYTHONPATH=src lint-imports
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]
+
   - repo: https://github.com/jorisroovers/gitlint
     rev: v0.19.1
     hooks:

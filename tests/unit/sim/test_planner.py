@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from isaac_core.sim.capabilities import StageCapabilities, StageCapability
-from isaac_core.sim.manifest import LayerManifest
+from isaac_core.sim.capabilities import FakeStageInspector, StageCapabilities, StageCapability, probe
+from isaac_core.sim.manifest import LayerManifest, load_manifest
 from isaac_core.sim.planner import FeaturePlan, PlanningError, plan_features
 
 # -- Helpers ------------------------------------------------------------------
@@ -210,3 +212,38 @@ def test_multiple_unmet_requirements_all_listed_in_reason() -> None:
     reason = plan.skipped[0].reason
     assert "TILESETS_ROOT" in reason
     assert "GEOREFERENCE" in reason
+
+
+def test_resolved_bindings_render_the_instance_into_config_keys(tmp_path: Path) -> None:
+    # "Resolved" must mean resolved on every axis. Leaving {instance} in the config key
+    # produced a ConfigKeyError at compose time saying vehicles.{instance} does not
+    # exist -- a full Isaac Sim launch away from where the mistake was.
+    layer_dir = tmp_path / "demo"
+    layer_dir.mkdir()
+    (layer_dir / "layer.toml").write_text(
+        """
+id = "demo"
+usd = "demo.usda"
+mount = "/Environment/{instance}"
+requires = []
+
+[[bindings]]
+prim = "{mount}/Graph/node"
+attribute = "inputs:frame"
+config = "vehicles.{instance}.rotation_frame"
+""",
+        encoding="utf-8",
+    )
+    manifest = load_manifest(layer_dir / "layer.toml")
+
+    plan = plan_features(
+        requested_ids=["demo"],
+        manifests={"demo": manifest},
+        capabilities=probe(FakeStageInspector(prims=frozenset())),
+        instance="wing_1",
+    )
+
+    binding = plan.enabled[0].resolved_bindings[0]
+    assert binding.prim == "/Environment/wing_1/Graph/node"
+    assert binding.config == "vehicles.wing_1.rotation_frame"
+    assert "{instance}" not in binding.config

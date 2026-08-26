@@ -74,7 +74,7 @@ def Xform "World"
             string cesium:ionAccessToken = ""
             int64 cesium:ionAssetId = 0
             uniform token cesium:sourceType = "url"
-            string cesium:url = "http://127.0.0.1:8088/nablus/tileset.json"
+            string cesium:url = "http://10.44.134.160:8088/nablus/tileset.json"
             float3[] extent = [(-7982.7725, -5877.865, -751.89636), (8347.764, 3756.5452, 699.53015)]
         }
     }

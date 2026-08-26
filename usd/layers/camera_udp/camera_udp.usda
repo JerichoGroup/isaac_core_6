@@ -148,37 +148,6 @@ def Xform "Root"
     double3 xformOp:translate = (0, 0, 0)
     uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
-    def Xform "Xform" (
-        prepend apiSchemas = ["CesiumGlobeAnchorSchemaAPI"]
-    )
-    {
-        prepend rel cesium:anchor:georeferenceBinding = </CesiumGeoreference>
-        double cesium:anchor:height = 2733.299999999281
-        double cesium:anchor:latitude = 39.73640100507642
-        double cesium:anchor:longitude = -105.25737
-        double3 cesium:anchor:position = (-1293032.2978276282, -4740384.659004044, 4057269.1044385293)
-        quatd xformOp:orient = (0.7071067811865476, -4.086612715694623e-17, -1.613815689851819e-18, 0.7071067811865475)
-        double3 xformOp:scale = (0.9999999999999993, 0.9999999999999997, 0.9999999999999998)
-        double3 xformOp:translate = (8.575171149594601e-15, 4.656612873077393e-10, 483.2999999988824)
-        uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
-
-        def Camera "main_camera_01" (
-            prepend apiSchemas = ["OmniRtxCameraAutoExposureAPI_1", "OmniRtxCameraExposureAPI_1"]
-        )
-        {
-            float2 clippingRange = (0.01, 10000000)
-            float exposure:fStop = 5
-            float exposure:responsivity = 1.1026709
-            float exposure:time = 0.02
-            float focalLength = 18.147562
-            float focusDistance = 400
-            quatd xformOp:orient = (0.5000000000000001, 0.5, 0.49999999999999994, 0.5)
-            double3 xformOp:scale = (1, 1, 1)
-            double3 xformOp:translate = (0, 0, 0)
-            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-        }
-    }
-
     def OmniGraph "CameraImageExport"
     {
         token evaluationMode = "Automatic"
@@ -489,7 +458,7 @@ def Xform "Root"
             prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
             custom token inputs:layerIdentifier
             custom token inputs:name = "xformOp:orient"
-            custom rel inputs:prim (
+            custom rel inputs:prim = </Root/Xform> (
                 customData = {
                     dictionary omni = {
                         dictionary graph = {
@@ -498,9 +467,9 @@ def Xform "Root"
                     }
                 }
             )
-            custom token inputs:primPath = "/Root/Xform"
+            custom token inputs:primPath = ""
             custom bool inputs:usdWriteBack
-            custom bool inputs:usePath = 1
+            custom bool inputs:usePath = 0
             custom token inputs:value (
                 customData = {
                     dictionary omni = {
@@ -541,7 +510,7 @@ def Xform "Root"
             prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
             custom token inputs:layerIdentifier
             custom token inputs:name = "xformOp:translate"
-            custom rel inputs:prim (
+            custom rel inputs:prim = </Root/Xform> (
                 customData = {
                     dictionary omni = {
                         dictionary graph = {
@@ -550,9 +519,9 @@ def Xform "Root"
                     }
                 }
             )
-            custom token inputs:primPath = "/Root/Xform"
+            custom token inputs:primPath = ""
             custom bool inputs:usdWriteBack
-            custom bool inputs:usePath = 1
+            custom bool inputs:usePath = 0
             custom token inputs:value (
                 customData = {
                     dictionary omni = {
@@ -638,9 +607,12 @@ def Xform "Root"
                     bool isExecution = 1
                 }
             )
+            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
             custom token inputs:header:frame_id
             custom uint inputs:header:stamp:nanosec
+            prepend uint inputs:header:stamp:nanosec.connect = </Root/PoseSync/seconds_to_ros_stamp.outputs:nanosec>
             custom int inputs:header:stamp:sec
+            prepend int inputs:header:stamp:sec.connect = </Root/PoseSync/seconds_to_ros_stamp.outputs:sec>
             custom string inputs:messageName = "GeoPoseStamped"
             custom string inputs:messagePackage = "geographic_msgs"
             custom string inputs:messageSubfolder
@@ -670,7 +642,7 @@ def Xform "Root"
                 }
             )
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (1412.4822, 380.63904)
+            uniform float2 ui:nodegraph:node:pos = (1307.6208, 491.30783)
         }
 
         def OmniGraphNode "break_3_vector" (
@@ -685,7 +657,7 @@ def Xform "Root"
             custom token outputs:y
             custom token outputs:z
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (962.2685, 768.3157)
+            uniform float2 ui:nodegraph:node:pos = (911.8163, 776.7244)
         }
 
         def OmniGraphNode "euler_to_quaternion" (
@@ -708,7 +680,65 @@ def Xform "Root"
             custom double outputs:qy
             custom double outputs:qz
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (1021.6742, 516.54614)
+            uniform float2 ui:nodegraph:node:pos = (926.37555, 524.9549)
+        }
+
+        def OmniGraphNode "seconds_to_ros_stamp" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
+            custom double inputs:seconds
+            prepend double inputs:seconds.connect = </Root/PoseSync/isaac_read_simulation_time.outputs:simulationTime>
+            token node:type = "isaac_core_ogn.math.SecondsToRosStamp"
+            int node:typeVersion = 1
+            custom uint outputs:nanosec
+            custom int outputs:sec
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (573.72174, 611.6344)
+        }
+
+        def OmniGraphNode "isaac_read_simulation_time" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom uint64 inputs:referenceTimeDenominator
+            custom int64 inputs:referenceTimeNumerator
+            custom bool inputs:resetOnStop
+            token node:type = "isaacsim.core.nodes.IsaacReadSimulationTime"
+            int node:typeVersion = 1
+            custom double outputs:simulationTime
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (179.88712, 660.822)
+        }
+    }
+
+    def Xform "Xform"
+    {
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Camera "main_camera_01" (
+            prepend apiSchemas = ["OmniRtxCameraAutoExposureAPI_1", "OmniRtxCameraExposureAPI_1"]
+        )
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float exposure:fStop = 5
+            float exposure:responsivity = 1.1026709
+            float exposure:time = 0.02
+            float focalLength = 18.147562
+            float focusDistance = 400
+            quatd xformOp:orient = (0.5000000000000001, 0.5, -0.5, -0.5)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
         }
     }
 }
@@ -795,7 +825,10 @@ def CesiumDataPrim "Cesium"
 
 def CesiumGeoreferencePrim "CesiumGeoreference"
 {
-    matrix4d cesium:ecefToUsdTransform = ( (0.9647534819407177, 0.1682239812131189, -0.20236455032458023, 0), (-0.2631553136139595, 0.6167258011721835, -0.741888513919219, 0), (2.7755575615628914e-17, 0.7689928337204038, 0.6392573986170699, 0), (-1.1260326425004901e-10, 21025.701877878048, -6371656.822771804, 1) )
+    matrix4d cesium:ecefToUsdTransform = ( (-0.5772336982984184, -0.4354349110063949, 0.6907949737987268, 0), (0.816578996514563, -0.3078057421526901, 0.4883178959951203, 0), (0, 0.8459622115524339, 0.5332428495772966, 0), (4.656612873077393e-10, 19280.982657559216, -6372580.310832208, 1) )
+    double cesium:georeferenceOrigin:height = 516.7
+    double cesium:georeferenceOrigin:latitude = 32.22481
+    double cesium:georeferenceOrigin:longitude = 35.25621
 }
 
 def "CesiumServers"
@@ -807,10 +840,4 @@ def "CesiumServers"
         int64 cesium:ionServerApplicationId = 413
         string cesium:ionServerUrl = "https://ion.cesium.com/"
     }
-}
-
-def PhysicsScene "PhysicsScene" (
-    prepend apiSchemas = ["NewtonSceneAPI", "PhysxSceneAPI"]
-)
-{
 }

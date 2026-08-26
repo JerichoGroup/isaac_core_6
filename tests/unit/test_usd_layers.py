@@ -19,6 +19,7 @@ deliberate: importing `pxr` would restrict these to Isaac's interpreter.
 from pathlib import Path
 import re
 
+import numpy as np
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -60,6 +61,20 @@ def _connections_for(text: str, node: str, attribute: str) -> list[str]:
     return re.findall(r"</[^>]+>", conn.group(1))
 
 
+def _prim_block(text: str, prim_type: str, name: str) -> str | None:
+    """
+    Return the body of a prim definition, or ``None`` if absent.
+
+    The parenthetical metadata block after a prim name is optional in USD -- removing
+    a Globe Anchor removes the `(prepend apiSchemas = [...])` that came with it. An
+    earlier version of this helper required the parentheses and so silently stopped
+    matching, turning real checks into false failures.
+    """
+    pattern = rf'def {prim_type} "{name}"(?:\s*\([^)]*\))?\s*\{{(.*?)\n(?:    |        )\}}'
+    match = re.search(pattern, text, re.DOTALL)
+    return match.group(1) if match else None
+
+
 def test_usd_files_were_found() -> None:
     # Without this, every parametrised test below would pass vacuously.
     assert CAMERA_LAYERS, f"no camera layers found under {USD_ROOT}"
@@ -91,10 +106,13 @@ def test_math_node_inputs_have_exactly_one_source(layer: Path) -> None:
 
 @pytest.mark.parametrize("layer", CAMERA_LAYERS, ids=lambda p: p.stem)
 def test_pose_writers_target_the_moved_prim(layer: Path) -> None:
+    # Targeting is by USD relationship, not by path string, so that the layer survives
+    # being referenced under any mount point. This assertion used to check
+    # `inputs:primPath` and went stale the moment that was correctly cleared.
     text = _text(layer)
     for op in REQUIRED_XFORM_OPS:
         assert f'inputs:name = "{op}"' in text, f"{layer.name}: no writer targets {op}"
-    assert f'inputs:primPath = "{MOVED_PRIM}"' in text
+    assert f"inputs:prim = <{MOVED_PRIM}>" in text, f"{layer.name}: no writer targets {MOVED_PRIM} by relationship"
 
 
 @pytest.mark.parametrize("layer", CAMERA_LAYERS, ids=lambda p: p.stem)
@@ -102,10 +120,10 @@ def test_moved_prim_declares_translate_and_orient(layer: Path) -> None:
     # An orient op is required: writing a quaternion to a prim that only has
     # rotateXYZ silently does nothing.
     text = _text(layer)
-    block = re.search(r'def Xform "Xform"\s*\([^)]*\)\s*\{(.*?)\n    \}', text, re.DOTALL)
-    assert block is not None, f"{layer.name}: could not find {MOVED_PRIM}"
+    body = _prim_block(text, "Xform", "Xform")
+    assert body is not None, f"{layer.name}: could not find {MOVED_PRIM}"
     for op in REQUIRED_XFORM_OPS:
-        assert op in block.group(1), f"{layer.name}: {MOVED_PRIM} lacks {op}"
+        assert op in body, f"{layer.name}: {MOVED_PRIM} lacks {op}"
 
 
 @pytest.mark.parametrize("layer", CAMERA_LAYERS, ids=lambda p: p.stem)
@@ -127,11 +145,27 @@ def test_published_orientation_is_a_real_quaternion(layer: Path) -> None:
 
 
 @pytest.mark.parametrize("layer", CAMERA_LAYERS, ids=lambda p: p.stem)
-def test_moved_prim_has_a_cesium_globe_anchor(layer: Path) -> None:
-    # Without an anchor the camera moves in local ENU while the terrain is
-    # georeferenced, and the two drift apart.
+def test_moved_prim_has_no_cesium_globe_anchor(layer: Path) -> None:
+    # This test asserted the OPPOSITE until 2026-08-25, because the build sheet wrongly
+    # told the author to add a Globe Anchor here. It cost a debugging session: composed
+    # under a scene georeferenced elsewhere, the anchor put the camera 9,700 km away.
+    # The layer had been authored standalone, where its own CesiumGeoreference had no
+    # origin authored, so Cesium fell back to its Denver default and the anchor recorded
+    # the Xform as being in Colorado.
+    #
+    # No anchor is needed: the graph writes local ENU into xformOp:translate every tick
+    # and the scene's CesiumGeoreference already maps stage origin to a lat/lon, so a
+    # local translate fully describes the camera. An anchor is a second writer fighting
+    # the first. The old repo anchored nothing on its camera Xforms either.
     text = _text(layer)
-    assert "cesium:anchor" in text or "GlobeAnchor" in text, f"{layer.name}: {MOVED_PRIM} needs a Cesium Globe Anchor"
+    body = _prim_block(text, "Xform", "Xform")
+    assert body is not None, f"{layer.name}: could not find {MOVED_PRIM}"
+    anchors = sorted(set(re.findall(r"cesium:anchor:\w+", body)))
+    assert not anchors, (
+        f"{layer.name}: {MOVED_PRIM} carries a Cesium Globe Anchor ({anchors}). "
+        f"Remove it — it fights the pose graph and captures whichever georeference "
+        f"origin happened to be active when the layer was authored."
+    )
 
 
 @pytest.mark.parametrize("layer", CAMERA_LAYERS, ids=lambda p: p.stem)
@@ -159,3 +193,71 @@ def test_scene_declares_the_mount_and_capability_roots(scene: Path) -> None:
 @pytest.mark.parametrize("scene", SCENES, ids=lambda p: p.stem)
 def test_scene_has_a_cesium_georeference(scene: Path) -> None:
     assert "CesiumGeoreferencePrim" in _text(scene)
+
+
+@pytest.mark.parametrize("layer", CAMERA_LAYERS, ids=lambda p: p.stem)
+def test_writers_target_the_prim_by_relationship_not_by_path(layer: Path) -> None:
+    # USD remaps relationship targets when a layer is referenced; a string path does
+    # not remap. Using primPath meant /Root/Xform was wrong once the layer was mounted
+    # under /World/Environment/drone_0, and hardcoding the composed path instead would
+    # pin the layer to one mount point, breaking swarm instances.
+    text = _text(layer)
+    assert "inputs:usePath = 1" not in text, (
+        f"{layer.name}: a writer has usePath=true, so it targets a hardcoded string "
+        f"path. Set the `prim` relationship to /Root/Xform and usePath=false."
+    )
+    assert (
+        "inputs:prim = </Root/Xform>" in text or "inputs:prim.connect" in text
+    ), f"{layer.name}: no writer targets /Root/Xform by relationship"
+
+
+@pytest.mark.parametrize("layer", CAMERA_LAYERS, ids=lambda p: p.stem)
+def test_camera_sits_at_its_parent_origin(layer: Path) -> None:
+    # The graph writes the PARENT's translate; the camera's own translate is never
+    # touched, so any offset here is permanent and adds to the commanded altitude.
+    text = _text(layer)
+    body = _prim_block(text, "Camera", "main_camera_01")
+    assert body is not None, f"{layer.name}: could not find main_camera_01"
+    translate = re.search(r"xformOp:translate = \(([^)]*)\)", body)
+    if translate is None:
+        return
+    components = [float(v) for v in translate.group(1).split(",")]
+    assert all(abs(v) < 1e-6 for v in components), (
+        f"{layer.name}: main_camera_01 translate is {components}, expected ~(0,0,0). "
+        f"A non-zero offset here doubles the commanded altitude."
+    )
+
+
+@pytest.mark.parametrize("layer", CAMERA_LAYERS, ids=lambda p: p.stem)
+def test_camera_looks_along_the_body_forward_axis(layer: Path) -> None:
+    # In the parent frame the body axes are +X nose, +Y left wing, +Z up (verified
+    # numerically from ned_to_enu: yaw_ned=0 puts +X North, 90 puts it East). A USD
+    # camera looks down its own -Z, so the camera rotation must map -Z to +X and +Y to
+    # +Z, i.e. rotateXYZ (90, 0, -90). The first build had it pointing 90 degrees off,
+    # which is invisible while hovering and only shows up in motion.
+    from transforms3d.quaternions import quat2mat
+
+    body_forward = np.array([1.0, 0.0, 0.0])
+    body_up = np.array([0.0, 0.0, 1.0])
+
+    body = _prim_block(_text(layer), "Camera", "main_camera_01")
+    assert body is not None, f"{layer.name}: could not find main_camera_01"
+
+    orient = re.search(r"xformOp:orient = \(([^)]*)\)", body)
+    assert orient is not None, (
+        f"{layer.name}: main_camera_01 has no xformOp:orient. The camera needs an "
+        f"explicit orientation, since a USD camera at identity looks straight down."
+    )
+
+    # USD stores quatd in .usda text as (real, i, j, k) = (w, x, y, z).
+    rotation = quat2mat([float(v) for v in orient.group(1).split(",")])
+    view = rotation @ np.array([0.0, 0.0, -1.0])
+    image_up = rotation @ np.array([0.0, 1.0, 0.0])
+
+    assert np.allclose(view, body_forward, atol=1e-6), (
+        f"{layer.name}: camera looks along {np.round(view, 3)}, expected the body "
+        f"forward axis {body_forward}. Set rotateXYZ = (90, 0, -90)."
+    )
+    assert np.allclose(
+        image_up, body_up, atol=1e-6
+    ), f"{layer.name}: camera image-up is {np.round(image_up, 3)}, expected {body_up}"

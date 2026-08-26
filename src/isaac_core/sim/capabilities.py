@@ -73,6 +73,25 @@ class StageInspector(Protocol):
         """
         ...
 
+    def read_double(self, path: str, attribute: str) -> float | None:
+        """
+        Read a double-valued attribute from a prim.
+
+        Needed so composition can read the scene's Cesium georeference origin and
+        derive ``geo.enu_reference`` from it, rather than requiring the two to be
+        kept in agreement by hand.
+
+        Args:
+            path: Absolute USD prim path.
+            attribute: Attribute name.
+
+        Returns:
+            The value, or ``None`` if the prim or attribute does not exist or is
+            not a double.
+
+        """
+        ...
+
 
 class FakeStageInspector:
     """
@@ -88,10 +107,16 @@ class FakeStageInspector:
         self,
         prims: frozenset[str] | None = None,
         attributes: dict[tuple[str, str], bool] | None = None,
+        doubles: dict[tuple[str, str], float] | None = None,
     ) -> None:
-        """Initialise with known prims and attributes."""
+        """Initialise with known prims, attributes and double values."""
         self._prims: frozenset[str] = prims or frozenset()
+        self._doubles: dict[tuple[str, str], float] = doubles or {}
         self._attributes: dict[tuple[str, str], bool] = attributes or {}
+        # A supplied double implies the attribute exists, so callers do not have to
+        # declare it twice.
+        for key in self._doubles:
+            self._attributes.setdefault(key, True)
 
     def prim_exists(self, path: str) -> bool:
         """Report whether the path is in the known set."""
@@ -100,6 +125,10 @@ class FakeStageInspector:
     def has_attribute(self, path: str, attribute: str) -> bool:
         """Report whether the (path, attribute) pair is in the known set."""
         return self._attributes.get((path, attribute), False)
+
+    def read_double(self, path: str, attribute: str) -> float | None:
+        """Return the configured double for the pair, or ``None``."""
+        return self._doubles.get((path, attribute))
 
 
 class StageCapabilities:

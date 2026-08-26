@@ -58,6 +58,7 @@ _SCRIPTABLE_PACKAGES = (
     "isaac_core.control",
     "isaac_core.cli",
     "isaac_core.devkit",
+    "isaac_core.debug",
 )
 
 # The src directory needs to be on PYTHONPATH for the subprocess.
@@ -97,3 +98,35 @@ def test_scriptable_packages_import_without_sim_or_ros(package: str) -> None:
     assert result.returncode == 0, (
         f"Importing {package} failed with blocked modules.\n" f"stdout: {result.stdout}\n" f"stderr: {result.stderr}"
     )
+
+
+def test_debug_imports_without_tkinter() -> None:
+    # python3-tk is a separate apt package, so it may be absent on a headless machine or
+    # in CI. Importing the module must still work: the inspector needs no GUI at all, and
+    # the sender must be able to report a clear "install python3-tk" message rather than
+    # dying with an ImportError at import time.
+    blocked = (*_BLOCKED_MODULES, "tkinter")
+    script = _BLOCKER_SCRIPT.format(blocked=blocked, target="isaac_core.debug.pose_sender_gui")
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": _SRC_DIR, "PATH": ""},
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, f"import failed with tkinter blocked:\n{result.stderr}"
+
+
+def test_inspector_imports_without_tkinter() -> None:
+    blocked = (*_BLOCKED_MODULES, "tkinter")
+    script = _BLOCKER_SCRIPT.format(blocked=blocked, target="isaac_core.debug.inspector")
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": _SRC_DIR, "PATH": ""},
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, f"import failed with tkinter blocked:\n{result.stderr}"

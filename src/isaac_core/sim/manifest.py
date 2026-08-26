@@ -100,8 +100,26 @@ class LayerManifest(BaseModel):
     @field_validator("mount")
     @classmethod
     def _validate_mount_placeholders(cls, value: str) -> str:
-        """Reject mount templates referencing unknown placeholders."""
-        unknown = placeholders(value) - KNOWN_PLACEHOLDERS
+        """
+        Reject mount templates with unknown or self-referential placeholders.
+
+        ``{mount}`` is specifically forbidden here, even though it is a valid
+        placeholder in *bindings*. The mount field defines what ``{mount}`` resolves
+        to, so referencing it produces a circular template. That previously passed
+        validation and then failed at compose time with a bare ``KeyError: 'mount'``,
+        which says nothing about the actual mistake.
+        """
+        found = placeholders(value)
+
+        if MOUNT in found:
+            msg = (
+                f"mount template {value!r} references {{{MOUNT}}}, which is circular: "
+                f"this field defines what {{{MOUNT}}} means. Use {{{INSTANCE}}} instead, "
+                f'e.g. "/Environment/{{{INSTANCE}}}".'
+            )
+            raise ValueError(msg)
+
+        unknown = found - KNOWN_PLACEHOLDERS
         if unknown:
             msg = (
                 f"mount template {value!r} uses unknown placeholder(s): "

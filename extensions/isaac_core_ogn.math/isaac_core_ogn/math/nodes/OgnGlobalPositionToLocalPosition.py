@@ -100,7 +100,7 @@ class OgnGlobalPositionToLocalPosition:
     @staticmethod
     def compute(db: OgnGlobalPositionToLocalPositionDatabase) -> bool:
         """Compute local ENU position and composed quaternion."""
-        state: _InternalState = db.internal_state
+        state: _InternalState = db.per_instance_state
         global_position = tuple(db.inputs.global_position)
         global_orientation = tuple(db.inputs.global_orientation)
         reference = tuple(db.inputs.enu_reference)
@@ -149,7 +149,7 @@ class OgnGlobalPositionToLocalPosition:
         """Release per-node resources."""
         carb.log_info(f"{_LOG_PREFIX} Node release triggered")
         try:
-            state = OgnGlobalPositionToLocalPositionDatabase.per_node_internal_state(node)
+            state = OgnGlobalPositionToLocalPositionDatabase.per_instance_internal_state(node)
         except Exception as exc:
             carb.log_error(f"{_LOG_PREFIX} Node release error: {exc}")
             return

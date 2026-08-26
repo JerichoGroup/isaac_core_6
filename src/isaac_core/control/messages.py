@@ -44,6 +44,7 @@ class Method(str, Enum):
     STEP = "step"
     CAPTURE_FRAME = "capture_frame"
     SET_POSE = "set_pose"
+    GET_POSE = "get_pose"
     PING = "ping"
 
 

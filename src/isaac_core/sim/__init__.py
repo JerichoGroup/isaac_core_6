@@ -19,10 +19,20 @@ from isaac_core.sim.capabilities import (
     probe,
 )
 from isaac_core.sim.discovery import discover_layers
+from isaac_core.sim.georeference import (
+    ResolvedEnuReference,
+    describe_mismatch,
+    read_scene_georeference,
+    resolve_enu_reference,
+)
 from isaac_core.sim.manifest import Binding, LayerManifest, load_manifest
 from isaac_core.sim.planner import FeaturePlan, plan_features
 
 __all__ = [
+    "resolve_enu_reference",
+    "read_scene_georeference",
+    "describe_mismatch",
+    "ResolvedEnuReference",
     "Binding",
     "FakeStageInspector",
     "FeaturePlan",

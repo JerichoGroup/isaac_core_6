@@ -111,3 +111,19 @@ for ext_dir in "$EXTENSIONS_DIR"/isaac_core_ogn.*; do
 done
 
 echo "Done. $linked extension(s) linked."
+
+# Clear stale generated OmniGraph databases for our extensions.
+#
+# When a node is removed or renamed, its GENERATED database survives in the OGN cache.
+# Isaac then registers the stale node type, imports an implementation that no longer
+# exists, and can take the whole process down -- this caused a segfault that took a
+# five-way extension bisect to find. Clearing here is cheap: the cache regenerates on
+# the next launch.
+OGN_CACHE="${HOME}/.cache/ov/ogn_generated"
+if [ -d "${OGN_CACHE}" ]; then
+  for stale in "${OGN_CACHE}"/*/isaac_core_ogn.*; do
+    [ -e "${stale}" ] || continue
+    echo "  clearing stale OGN cache: ${stale}"
+    rm -rf "${stale}"
+  done
+fi

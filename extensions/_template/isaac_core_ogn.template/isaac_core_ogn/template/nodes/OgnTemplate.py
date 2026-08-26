@@ -33,7 +33,7 @@ class OgnTemplate:
         """Greet and increment frame counter."""
         carb.log_info(f"{_LOG_PREFIX} compute triggered")
 
-        state: _InternalState = db.internal_state
+        state: _InternalState = db.per_instance_state
         name = str(db.inputs.name)
 
         carb.log_info(f"{_LOG_PREFIX} Hello {name}! frame={state.frame_id}")
@@ -47,7 +47,7 @@ class OgnTemplate:
         """Release per-node resources."""
         carb.log_info(f"{_LOG_PREFIX} Node release triggered")
         try:
-            state = OgnTemplateDatabase.per_node_internal_state(node)
+            state = OgnTemplateDatabase.per_instance_internal_state(node)
         except Exception as exc:
             carb.log_error(f"{_LOG_PREFIX} Node release error: {exc}")
             return

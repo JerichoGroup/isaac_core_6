@@ -1,0 +1,62 @@
+{
+  "SecondsToRosStamp": {
+    "version": 1,
+    "description": [
+      "Split a seconds value into a ROS 2 message timestamp (sec, nanosec).",
+      "",
+      "Pairs isaacsim.core.nodes.IsaacReadSimulationTime with any ROS 2 publisher that",
+      "carries a std_msgs/Header. Isaac reports simulation time as a single double in",
+      "seconds, while builtin_interfaces/Time is a signed int32 sec plus an unsigned",
+      "int32 nanosec that must stay inside [0, 1e9). Nothing in the shipped node set",
+      "converts between those two shapes.",
+      "",
+      "Without this node in the graph, GeoPoseStamped publishes with",
+      "stamp: {sec: 0, nanosec: 0} -- a message that looks valid but carries no usable",
+      "time, so a consumer cannot order or correlate samples.",
+      "",
+      "The alternative was a chain of four generic math nodes per layer to floor,",
+      "subtract, scale and cast. One node keeps the arithmetic in one tested place; see",
+      "isaac_core.contracts.stamp."
+    ],
+    "language": "Python",
+    "metadata": {
+      "uiName": "Seconds To ROS Stamp"
+    },
+    "inputs": {
+      "execIn": {
+        "type": "execution",
+        "description": "Tick input. Required: the timestamp must be recomputed every frame, so this node is driven rather than pulled",
+        "default": 0,
+        "metadata": {
+          "uiName": "Exec In"
+        }
+      },
+      "seconds": {
+        "type": "double",
+        "description": "Time in seconds. Wire this from IsaacReadSimulationTime.simulationTime",
+        "default": 0.0,
+        "metadata": {
+          "uiName": "Seconds"
+        }
+      }
+    },
+    "outputs": {
+      "sec": {
+        "type": "int",
+        "description": "Whole seconds, floored. Wire to the publisher's header:stamp:sec",
+        "default": 0,
+        "metadata": {
+          "uiName": "sec"
+        }
+      },
+      "nanosec": {
+        "type": "uint",
+        "description": "Nanosecond remainder in [0, 1e9). Wire to the publisher's header:stamp:nanosec",
+        "default": 0,
+        "metadata": {
+          "uiName": "nanosec"
+        }
+      }
+    }
+  }
+}

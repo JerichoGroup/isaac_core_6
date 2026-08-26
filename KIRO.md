@@ -772,6 +772,8 @@ scripting and replay · deterministic seeded scenarios for regression tests.
 | D15 | **Kiro never authors `.usda` files.** | Ofer creates all USD via the Isaac Sim 6 GUI and saves it, which guarantees valid/correct files instead of hand-written multi-thousand-line text. My job is to specify precisely *what* to create and what to put in it, then bind to it via layer manifests. |
 | D16 | `GeoPoseStamped` carries a **real quaternion** via `EulerToQuaternion` | Ofer's decision. Replaces the old repo's abuse of stuffing roll/pitch/yaw into the quaternion's x/y/z with w pinned to 1.0. Anything downstream parsing the old convention needs updating. Enforced by `tests/unit/test_usd_layers.py`. |
 | D17 | `header.frame_id` is a **coordinate frame name**, not a sequence counter | ROS 2's `std_msgs/Header` has only `stamp` and `frame_id` — ROS 1's `seq` was deliberately removed. `frame_id` is documented as "Transform frame with which this data is associated". The old repo used it as a frame counter, which required a custom rclpy republisher; that is the real reason its image path went `raw_rgb` → `image_rgb`. Correlate frames with `header.stamp` instead. |
+| D18 | ENU reference is **derived from the scene's Cesium georeference**, not kept in sync by hand | `geo.enu_reference` and `cesium:georeferenceOrigin` describe the same fact; disagreement silently puts the aircraft over the wrong ground. Composition now reads the scene. Explicit config still wins (needed for non-Cesium stages), and a lat/lon disagreement is reported rather than left silent. |
+| D19 | **Rejected**: writing lat/lon/alt directly to a Cesium Globe Anchor instead of computing local ENU | Ofer's idea, investigated properly. Cesium's plugin listens to `UsdNotice::ObjectsChanged` (verified: it has a `UsdNotificationHandler`) while OmniGraph writers target Fabric — `usdWriteBack` is false by default, so the write is invisible. This is almost certainly the 2023 failure Ofer remembered. Making it work needs per-frame USD authoring, the exact thing Fabric exists to avoid. Cesium also ships **zero** OmniGraph nodes, so there is no supported wiring. And it would couple the pose pipeline to Cesium, breaking non-Cesium stages (2023 shipped `full_warehouse.usda`), while moving tested kernel logic into an untestable C++ plugin. The precision argument does not hold either: our ENU is exact geodesy in doubles, and float32 render resolution is 8 mm at 100 km. D18 captures the real benefit without any of the cost. |
 
 ### Working constraints
 
@@ -1144,13 +1146,438 @@ commands and reading the diff establishes fact.
 
   **Verified:** 761/761 pytest, 14/14 pre-commit hooks PASS, import-linter 18 contracts KEPT.
 
+- **2026-08-25 (c)** — Kit 110 deprecation warning on every compute:
+  `'internal_state' has been deprecated: use 'per_instance_state' or 'shared_state'`.
+  Inherited from the 2023 node idiom.
+
+  Authoritative mapping, read from `omni/graph/core/_impl/database.py` in
+  omni.graph 1.142.5 (and confirmed against `config/python_api.md`, which marks the old
+  ones `[deprecated]`):
+
+  | Deprecated | Current |
+  |---|---|
+  | `db.internal_state` | `db.per_instance_state` |
+  | `Db.per_node_internal_state(node)` | `Db.per_instance_internal_state(node)` |
+
+  **The static `internal_state()` factory on the node class is NOT deprecated** — it is
+  the OGN hook that constructs the state object, and Isaac's own `OgnROS2CameraHelper`
+  still declares it. Only the accessors changed. Do not "fix" the factory; removing it
+  leaves `per_instance_state` empty, which fails at runtime rather than at lint time.
+
+  Updated all three stateful nodes. Added
+  `tests/unit/extensions/test_no_deprecated_ogn_api.py` (5 tests) guarding both accessors,
+  asserting stateful nodes still declare the factory, and that `release()` uses the
+  classmethod form. **Verified the guard bites** by reintroducing `db.internal_state` and
+  watching it fail, then restoring.
+
+  Note for the record: this was a `[Warning]`, not an error. The deprecation shim still
+  forwards to the new accessor, so the node computed correctly — it is log noise that
+  buries real errors, not a functional failure. Worth checking whether anything else
+  actually blocked the first run.
+
+  **Verified:** 766/766 pytest, all pre-commit hooks PASS.
+
+- **2026-08-25 (d)** — Camera flew ~9,700 km off. **Root cause was my own bad instruction.**
+
+  Observed `/World/Environment/drone_0/Xform` translate:
+  `(-3124516.73, 5473726.35, -7417105.45)` — ECEF-scale, so no reference subtraction had
+  happened.
+
+  Diagnosis by reproduction rather than inspection: fed the exact sent pose through
+  `isaac_core.geo.EnuConverter` with the `.ogn` default reference and got
+  `(0, 0, 483.30)` — correct (same lat/lon, 1000 − 516.7 m up). None of the failure
+  hypotheses (zero reference, swapped lat/lon, raw ECEF) reproduced the observation, which
+  ruled our node out. Then computed **Denver, Colorado expressed in ENU about the Israeli
+  georeference**: `(-3124516.73, 5473724.52, -7417106.79)` — the observed value to within
+  2 m. Conclusive.
+
+  Chain:
+  1. `docs/usd_build_sheet.md` told Ofer to add a **Cesium Globe Anchor** to `/Root/Xform`.
+     That instruction was wrong.
+  2. The camera layer was authored standalone, and its own `/CesiumGeoreference` has **no
+     `georeferenceOrigin` authored** — so Cesium fell back to its default origin, **Denver
+     Colorado** (39.7364, −105.2574, 2733 m).
+  3. The Globe Anchor therefore recorded the Xform as being *in Denver*
+     (`cesium:anchor:latitude = 39.7364...`).
+  4. Standalone it looked fine, because anchor origin and georeference origin agreed.
+  5. Composed under `earth.usda`, `cesium:anchor:georeferenceBinding = </CesiumGeoreference>`
+     resolves to the *scene's* georeference (Israel), so Cesium computed where Denver is in
+     an Israel-centred ENU frame.
+
+  **A Globe Anchor does not belong on the camera Xform.** The graph already writes local
+  ENU into `xformOp:translate` every tick, and the scene georeference already maps stage
+  origin to a lat/lon, so a local translate is a complete description. An anchor is a
+  second writer fighting the first. Confirmed against the old repo: `cesium:anchor` appears
+  **zero** times in both of its camera layers — it anchored only the *bbox target objects*,
+  which genuinely need pinning to a fixed geographic spot.
+
+  Corrected the build sheet with the full explanation. **Inverted
+  `test_moved_prim_has_no_cesium_globe_anchor`** — it previously asserted the anchor must be
+  *present*, encoding my wrong belief, which is a good reminder that a test only pins a
+  belief and can be confidently wrong. Added
+  `test_layer_georeference_origin_is_authored`, since an unauthored origin silently means
+  Denver.
+
+  Those 4 tests are **deliberately left failing**: they report a live defect in files only
+  Ofer can edit (D15). They go green once the anchors are removed and origins authored. Not
+  marked xfail — that would hide a real bug.
+
+  Rest of the suite: 747 passing.
+
+- **2026-08-25 (e)** — **First real launches of `isaac-core run`.** Wired `run` to actually
+  spawn `<isaac_python> -m isaac_core.sim`, forwarding the *fully resolved* config via a
+  temp TOML so env/CLI/file precedence is understood in exactly one place. Added
+  `--dry-run`.
+
+  **Verified live, from a separate process against a running simulator:**
+  ```
+  ping             -> pong
+  get_state        -> {'running': True, 'scene': 'earth', 'headless': True}
+  get_capabilities -> {'enabled': ['camera_udp'], 'skipped': []}
+  ```
+  So: launch, runtime startup, stage composition, and JSON-RPC control over a socket all
+  work. Six extensions enable cleanly (`omni.graph.action`, `omni.graph.nodes`,
+  `isaacsim.ros2.bridge`, `isaacsim.core.nodes`, and both of ours), and the
+  "Could not find node type interface" warnings dropped to **zero**.
+
+  **Six real bugs found by launching, none catchable statically:**
+  1. `runtime.run()` used `importlib.import_module("omni.isaac.core")` and
+     `SimulationContext`. **Neither exists in Isaac Sim 6** — no `isaacsim.core.api`
+     extension, no `SimulationContext` class anywhere in the install. The Core API was
+     replaced by `isaacsim.core.experimental.*`. Correct Isaac 6 idiom, taken from
+     NVIDIA's own standalone examples: `isaacsim.core.experimental.utils.app` for
+     `play`/`pause`/`stop`/`update_app`, and
+     `isaacsim.core.simulation_manager.SimulationManager` for `setup_simulation`/
+     `initialize_physics`. Because these were lazy import *strings*, ruff, mypy and the
+     purity test were all blind. Guarded by `tests/unit/test_no_dead_isaac_api.py`, which
+     uses **AST** (text matching false-positived on the docstrings that deliberately
+     explain the rename) and includes tests that the guard itself detects each dead form.
+  2. The step loop gated on `is_playing()`, inherited from 2023, so pausing terminated the
+     process. Now loops while the *application* runs, leaving pause/resume useful.
+  3. `features.enabled` was empty by default, so nothing composed. Added
+     `IsaacCoreConfig.required_feature_ids()`: the union of explicit features and the
+     camera layer implied by each vehicle's `pose_source`. Listing `camera_udp` *and*
+     setting `pose_source = "udp"` was a duplicate source of truth that could disagree —
+     the same class of problem D18 removed for the georeference. A minimal config now
+     composes and flies with nothing under `[features]`.
+  4. Both camera manifests declared `requires = ["CAMERA"]`, so they were always skipped
+     with "unmet stage requirement: CAMERA". **My spec error** — a camera layer *provides*
+     the camera; `earth.usda` deliberately has none. Now `requires = []`,
+     `provides = ["CAMERA"]`.
+  5. Both manifests had `mount = "{mount}"`, which is circular — that field *defines* what
+     `{mount}` means. It passed validation and then crashed at compose with a bare
+     `KeyError: 'mount'`. Fixed to `/Environment/{instance}`, and `LayerManifest` now
+     rejects a self-referential mount at load with an explanatory message.
+  6. `composer.mount_path_for_layer` hardcoded `instance="default"`, mounting every layer
+     at `/Environment/default` regardless of vehicle — so no binding's prim path matched,
+     and a swarm would have collapsed onto one mount. Instance now threaded from the
+     vehicle id.
+
+  **Six agent tests encoded the wrong expectation** and had to be inverted: two asserting
+  `requires CAMERA`, two asserting the circular `{mount}`, two asserting `udp_port` was a
+  `config` rather than `resolve` binding. Worth remembering that a passing test only pins
+  a belief.
+
+  Also: removed the dangling `isaac_core_ogn.sensors` symlink from `extsUser`.
+
+  **Verified:** 936/936 pytest, all pre-commit hooks PASS, import-linter 21 contracts KEPT.
+
+### Open at end of session
+
+- The simulator **exits shortly after composition** without reaching the `simulation
+  running` log and without printing a traceback. Extensions enable, the layer mounts, the
+  report prints, then `Simulation App Shutting Down`. Suspicion is `SimulationManager
+  .setup_simulation()` / `initialize_physics()` raising and the exception being swallowed
+  on the way out of the context manager — next step is to stop swallowing it and capture
+  stderr separately. An *earlier* run (before extension enabling was added) did reach
+  `simulation running` and stayed up for a full 150 s, so the regression is in what was
+  added after that point.
+- `isaacsim.ros2.bridge` logs `Could not import rclpy` on startup, exactly as
+  docs/ros2_and_python.md predicts. It suggests setting `ROS_DISTRO`,
+  `RMW_IMPLEMENTATION` and `LD_LIBRARY_PATH` to use its *internal* ROS libraries. Worth
+  trying — it may let the C++ bridge publish without any system rclpy at all.
+- **Do not use `pkill -f` / `pgrep -f` for the simulator**: the pattern matches the
+  agent's own shell command line and kills the session. Enumerate `/proc`, match on the
+  Isaac-bundled interpreter path, and exclude own PID and PPID.
+
+- **2026-08-25 (f)** — **FULL END-TO-END VERIFIED, and the segfault is solved.**
+
+  `isaac-core run` launches Isaac Sim 6, composes the stage, runs stably, and a UDP
+  packet moves the camera. Measured from outside the process via the control plane:
+
+  | Sent | Prim translate (up) | Expected (alt − 516.7 ENU ref) |
+  |---|---|---|
+  | nothing | `0.0` | — |
+  | `alt=1000` | `483.2999999998` | **483.3** ✓ |
+  | `alt=1500` | `983.2999999991` | **983.3** ✓ |
+
+  So the entire chain is proven numerically exact: `scripts/send_test_pose.py` →
+  UDP → `UdpToGlobalPosition` → `ned_to_enu` → `GlobalPositionToLocalPosition`
+  (ECEF→ENU via pyproj) → `WritePrimAttribute` → `/World/Environment/drone_0/Xform`.
+  Runs for 200 s with **zero crash markers**.
+
+  **The segfault root cause** (hardest bug so far; found by a five-way extension bisect):
+  `extensions/isaac_core_ogn.position/config/extension.toml` still declared
+  `"isaacsim.ros2.bridge" = {}`, left over from the `Ros2ToGlobalPosition` node deleted
+  when Python 3.12 made rclpy unimportable. Enabling our position extension therefore
+  *transitively* enabled the ROS 2 bridge, which **segfaults this Isaac Sim 6.0.1 install
+  during stage open — even with ROS 2 Humble fully sourced** (`ROS_DISTRO`,
+  `AMENT_PREFIX_PATH`, `RMW_IMPLEMENTATION` all set, and `LD_LIBRARY_PATH` pointed at
+  `/opt/ros/humble/lib` made no difference). Removing the stale dependency fixed it.
+
+  Bisect method worth reusing: a minimal script taking a comma-separated extension list,
+  run once per combination. `math` alone passed, `position` alone crashed, which localised
+  it immediately. Guessing from stack traces got nowhere — the frames were all in
+  `libomni.timeline.plugin.so` with no symbols.
+
+  **Five further bugs fixed on the way there:**
+  1. `_resolve_bindings` did not substitute `{instance}` into *config keys*, only into prim
+     paths, so every binding raised `ConfigKeyError: vehicles.{instance} does not exist`.
+     "Resolved" now means resolved on every axis.
+  2. Writes passed plain Python lists to typed USD attributes →
+     `Type mismatch: expected 'GfVec3d', got 'vector<VtValue>'`. Added
+     `_coerce_for_attribute` in the composer, keyed on the attribute's USD type name. The
+     configurator stays pure (plain Python) and the Isaac-coupled writer converts, which
+     preserves the pure/impure split.
+  3. `ENVIRONMENT_ROOT` was `/Environment`, carried over from the 2023 repo whose scenes
+     rooted there. The authored scenes use `/World/Environment`, so layers were mounted as
+     a **sibling of `/World`**, outside the scene graph. Now `/World/Environment`.
+  4. `features.enabled` was empty by default so nothing composed. Added
+     `required_feature_ids()`, deriving each vehicle's camera layer from its `pose_source`
+     — same duplicate-source-of-truth removal as D18.
+  5. The control plane could not be disabled (`start()` asserted the server existed).
+     Added `sim.control_plane.enabled`, which also made the crash bisection possible.
+
+  **New capability:** `get_pose` control method, returning the live translate/orient of a
+  vehicle's moved prim. This is what made external verification possible at all — nothing
+  else exposes what the graph actually wrote, and checking the viewport by eye does not
+  scale. Note `Gf.Quatd` is **not iterable** (it has `GetReal`/`GetImaginary`), so the
+  value conversion handles vectors and quaternions separately.
+
+  **`sim.extensions` is now config-driven**, and `isaacsim.ros2.bridge` is deliberately
+  **not** in the default list. Without it, ROS nodes in a stage log "Could not find node
+  type interface" and do nothing — a survivable degradation instead of a crash. The UDP
+  path needs no ROS at all.
+
+  Also cleared stale `~/.cache/ov/ogn_generated/isaac_core_ogn.*` caches, which still held
+  generated databases for deleted nodes. Not the crash cause, but correct hygiene:
+  deleting a node leaves its generated DB behind.
+
+  **Verified:** 937/937 pytest, all pre-commit hooks PASS, import-linter 21 contracts KEPT,
+  live simulator stable with a numerically exact pose pipeline.
+
+- **2026-08-25 (g)** — Cleared the bridge, found the real ROS blocker, and built the
+  debug tools.
+
+  **The `isaacsim.ros2.bridge` segfault was misattributed — the bridge is fine.** Ran a
+  three-way test (`/tmp/ros1.py`) enabling the bridge on an empty stage, on `earth.usda`,
+  and on a stage with the camera layer and its ROS nodes composed. All three survived.
+  The full runtime then ran 200s with the bridge in `REQUIRED_EXTENSIONS`: **zero crash
+  markers and zero "Could not find node type interface"**, so every ROS node resolves.
+
+  The actual cause of the earlier crash was the **stale generated OmniGraph database** in
+  `~/.cache/ov/ogn_generated/`, left behind by the deleted `Ros2ToGlobalPosition` node —
+  which I had dismissed at the time as "not the crash cause, but correct hygiene". That
+  was wrong, and the lesson is worth keeping: removing an OGN node leaves a generated DB
+  that Isaac still registers, and it can take the process down. `link_extensions.sh` now
+  clears those caches, and the mechanism is documented in the README and build sheet.
+
+  **A residual intermittent crash exists** inside Kit's `update_app()` on the first frame
+  (py-spy shows the control-server thread idle in `select`, so it is not a Python race).
+  It reproduced once in roughly six launches; two consecutive 150s runs afterwards were
+  clean. Not yet root-caused. It predates this session's changes.
+
+  **The real reason ROS publishing does not work: `ros2_publisher.execIn` is unconnected**
+  in both camera layers, so the node never computes. Confirmed live — `ros2 topic list`
+  showed no `isaac_core` topics and `ros2 topic echo` reported the topic
+  "does not appear to be published yet". An unconnected `execIn` is the quietest failure
+  mode in OmniGraph: the node exists, its inputs are set, the graph loads without a
+  warning, and it simply never runs. Added `tests/unit/test_usd_graph_wiring.py`, which
+  parses every layer and fails on any node declaring an `execIn` that nothing drives
+  (`ROS2Context` and `ROS2QoSProfile` are exempt as data-only providers). It currently
+  fails for both camera layers, and is task 1 in the build sheet for Ofer.
+
+  Also learned that **rclpy and the `ros2` CLI work fine on the host's Python 3.10** — the
+  ABI wall is only inside Isaac's 3.12. That makes `ros2 topic echo` a usable verification
+  tool, which is how the unwired publisher was found.
+
+  **Fixed a real thread-safety defect.** `get_pose` read USD, and `step` called
+  `update_app()`, directly from the control server's thread. This appeared to work on an
+  idle stage and then timed out as soon as pose packets were arriving and OmniGraph was
+  writing transforms. Added a main-thread task queue: handlers submit a callable via
+  `_on_main_thread` and the step loop drains it each frame, with results and exceptions
+  handed back to the caller and a bounded `MAIN_THREAD_TASK_TIMEOUT_S` so a wedged loop
+  surfaces as an error rather than a hang. Runs inline when already on the loop thread,
+  which avoids deadlocking. Nine tests cover it without needing Isaac.
+
+  **Built `isaac_core/debug/`**, replacing 2023's `debugger/`:
+  - `pose_sender_gui.py` — tkinter GUI. All state in `PoseSenderController`, which has no
+    tkinter import and is fully unit-tested; the widgets are a thin view. Fixes the old
+    GUI's degrees/radians lie (the on-screen table said degrees while the wire carried
+    radians), derives the packet table from `contracts.packet` so it cannot drift, and
+    delegates all wire work to `protocol` and `devkit.transport` — no struct or checksum
+    code. Drift-free pacing via an accumulating `perf_counter` deadline.
+  - `inspector.py` — terminal tool printing state, capabilities, live pose and config,
+    with `--poll` to watch the pose change. Reading the live prim transform from outside
+    the process is the only external proof that pose input reaches the camera.
+
+  `main()` initially ignored `argv` and called `launch_gui()` unconditionally, so `--help`
+  opened a window and blocked forever; it hung the session twice before I noticed. Both
+  tools now parse arguments before touching tkinter, and `--check` validates without
+  opening a window. Regression-tested. **tkinter turned out to already be installed**,
+  contrary to my earlier assumption — but the modules still import without it, and a
+  purity test proves it.
+
+  **Verified:** 980/980 pytest excluding the two intentional USD-wiring failures, all
+  pre-commit hooks PASS, import-linter **23** contracts KEPT (added "Debug does not import
+  sim" and "Nothing depends on debug"), Python 3.12 imports OK, three console scripts
+  resolve. Live re-verification through the new inspector, with the dispatcher in place:
+
+  | Sent | Prim translate (up) | Expected |
+  |---|---|---|
+  | alt=1500 | `983.300` | **983.3** ✓ |
+  | alt=1000 | `483.300` | **483.3** ✓ |
+
+  Also replaced the template `README.md` and corrected its now-false claim that the bridge
+  segfaults.
+
+- **2026-08-26 (a)** — ROS publishing verified working end to end.
+
+  Ofer wired `ros2_publisher.execIn` in both camera layers. `test_usd_graph_wiring.py`
+  went green and **both ROS topics now publish**:
+
+  | Topic | Type | Rate |
+  |---|---|---|
+  | `/isaac_core/global_pose` | `geographic_msgs/msg/GeoPoseStamped` | ~100 Hz |
+  | `/isaac_core/image_rgb` | `sensor_msgs/msg/Image` | ~115 Hz |
+
+  `ros2 topic echo` returned `latitude: 32.3, longitude: 35.3, altitude: 1500.0` — exactly
+  the values sent over UDP — with a real non-identity quaternion. That closes the last
+  unverified link in the chain.
+
+  Two diagnostic lessons from getting there. First, **ROS topics take several seconds to
+  appear** after the control plane answers: the publisher needs a couple of graph ticks
+  plus DDS discovery. My first check was ~8s in and saw nothing, which looks identical to a
+  broken publisher and sent me chasing message-type resolution. Second, when the topic was
+  still missing I proved the graph was fine rather than guessing, by probing the live graph
+  through `omni.graph.core`: `compute_count=60`, `messageSubfolder` correctly resolving to
+  `'msg'` from the `.ogn` default despite being authored with no value, and a valid non-zero
+  context handle. Reading `OgnROS2Publisher.cpp` also confirmed it is **C++**, so the
+  `Could not import rclpy` warnings the bridge emits are irrelevant to publishing. That
+  probe technique is worth reusing: `og.get_node_by_path(...)`, then `get_compute_count()`
+  and `og.Controller.get(node.get_attribute(...))`.
+
+  **New gap found: the pose message has no timestamp.** `header:stamp:sec` and
+  `header:stamp:nanosec` are unconnected, so it publishes `sec: 0, nanosec: 0`. Closing it
+  is not just a wire — `IsaacReadSimulationTime` outputs a **double seconds** value while
+  the publisher wants separate **int sec** and **uint nanosec**. Build sheet task 1 offers
+  Ofer two options: a four-node math chain in OmniGraph, or one node in
+  `isaac_core_ogn.math` (recommended — two connections instead of five nodes, and the
+  conversion becomes unit-testable). Awaiting his choice.
+
+  Extended `test_usd_graph_wiring.py` with a timestamp guard, marked `xfail(strict=True)`
+  so it flips to a failure the moment the stamp is wired, which is the prompt to delete the
+  marker. Also audited `~/isaacsim` at Ofer's request and confirmed **no Isaac source,
+  extension, config, `.kit`, `.ogn` or app file was modified**; the only recently-touched
+  non-pip file, `apps/isaacsim.exp.full.kit`, is dated 2026-08-16, eight days before this
+  work began.
+
+  **Verified:** 982 pass + 2 documented xfail, all pre-commit hooks PASS, import-linter 23
+  contracts KEPT.
+
+- **2026-08-26 (b)** — Built `SecondsToRosStamp` to close the timestamp gap.
+
+  Ofer chose option B, one node over a four-node OmniGraph math chain. Added
+  `isaac_core.contracts.stamp.seconds_to_ros_stamp`, pure and dependency-free, plus the
+  `isaac_core_ogn.math.SecondsToRosStamp` node as a thin adapter over it.
+
+  The arithmetic has three edge cases that a hand-built math chain would likely get wrong,
+  which is the main argument for putting it in one tested place:
+  - **Rounding can land on exactly 1e9 nanoseconds** (1.9999999999 does), which must carry
+    into `sec` or ROS sees a malformed stamp.
+  - **Negative inputs need floor, not truncation.** `-0.25` is `(-1, 750000000)`; the
+    truncating answer `(0, -250000000)` is unrepresentable because `nanosec` is unsigned.
+  - **Non-finite input must be refused.** An unconnected double arriving as NaN should not
+    become a timestamp.
+
+  25 unit tests cover those without Isaac, and all five representative cases were then
+  confirmed **in a live OmniGraph**, including the carry and the negative floor.
+
+  Named `SecondsToRosStamp`, not `SimulationTimeToRosStamp`, for two reasons: the
+  `test_ogn_key_does_not_contain_ogn_or_sim` guard rejects any node key containing "Sim"
+  (a 2023-era naming rule worth keeping rather than weakening for a false positive), and
+  the node genuinely does not care whether the seconds come from simulation or system time.
+  Taking the value as an input rather than reading the timeline internally keeps it a thin
+  adapter and leaves Isaac owning the definition of "now".
+
+  Two live-probe lessons worth reusing. `omni.graph.action.OnTick` does **not** fire unless
+  the timeline is playing or `inputs:onlyPlayback` is set false — my first compute test
+  reported all-zero outputs and looked like a broken node. And a new `.ogn` needs
+  `~/.cache/ov/ogn_generated/*/isaac_core_ogn.*` cleared before the type registers.
+
+  Build sheet task 1 now carries exact GUI instructions: two nodes and four connections per
+  camera layer.
+
+  **Verified:** 1012 pass + 2 documented xfail, all pre-commit hooks PASS, import-linter 23
+  contracts KEPT, node registers in Isaac as `isaac_core_ogn.math.SecondsToRosStamp`.
+
+- **2026-08-26 (c)** — Timestamp wired and verified; the startup segfault is now the top
+  open issue.
+
+  Ofer wired `SecondsToRosStamp` into both camera layers. Verified at three levels:
+  the wiring guard flipped to XPASS and the `xfail` marker is deleted; a live graph probe
+  showed `seconds_to_ros_stamp`, `isaac_read_simulation_time` and `ros2_publisher` all
+  computing 80/80 frames with outputs `sec=1, nanosec=366666667`; and two consecutive
+  `ros2 topic echo` samples gave `sec: 2, nanosec: 450000000` then
+  `sec: 12, nanosec: 16666667` -- non-zero, advancing, `nanosec` in range.
+
+  **A correction worth recording.** Chasing a missing topic, I concluded from a bisect that
+  opening `earth.usda` crashed even with no extensions enabled. That was wrong: those
+  particular probe runs never started at all, dying on a
+  `partially initialized module 'isaacsim'` import error rather than a segfault, and I had
+  counted a non-zero exit as a crash without checking which failure it was. Separating the
+  two by grepping for `Segmentation fault` versus the import message fixed the picture.
+  Lesson: when measuring a crash rate, assert on the specific failure signature, never on
+  the exit code alone.
+
+  What the segfault actually is: roughly **one launch in three**, exit code 139 immediately
+  after `simulation running`, main thread inside Kit's `update_app()` with the control
+  server idle in `select`. Confirmed **not** ours -- it reproduces with both
+  `isaac_core_ogn` extensions disabled. Not the tile server either (HTTP 200). A run that
+  opens no stage survives every time, so it is tied to stage opening. Clearing the **48
+  stale `/tmp/carb.*` directories** Isaac had left behind from earlier crashes measurably
+  improved the rate, so crash debris feeds back into further crashes.
+
+  Also worth remembering: `omni.graph.action.OnTick` does not fire unless the timeline is
+  playing or `inputs:onlyPlayback` is false. My first node compute test read all-zero
+  outputs and looked like a broken node when it was simply not playing.
+
+  **Verified:** 1012 pass + 0 xfail, all pre-commit hooks PASS, import-linter 23 contracts
+  KEPT.
+
+### Known remaining issues
+
+- **Intermittent startup segfault**, about one launch in three, inside Kit's
+  `update_app()` just after play. Not ours -- reproduces with our extensions disabled.
+  Build sheet task 1 records everything ruled out so far.
+- **Intermittent segfault** inside Kit's `update_app()` on the first frame, roughly one
+  launch in six, not root-caused and not obviously ours. Worth watching for a pattern
+  before spending more on it.
+
 ### Pending
 
-- **Widen the import-linter contracts** in `pyproject.toml` as each package lands. They
-  currently cover only `contracts` and `config`, because import-linter errors on a module
-  that does not exist. There is an inline NOTE in `pyproject.toml` saying exactly what to add.
-- `README.md` is still the template's.
-- Not yet created: `docs/`, `scripts/`, `extensions/`, `src/isaac_core/assets/`.
+- **Sensor layers** — `distance_sensor`, `bbox_publisher`, `sat`. Isaac Sim 6 ships a
+  native physics raycast sensor that likely replaces 2023's custom raycast script node.
+  Globe Anchors genuinely belong on `bbox_publisher` targets, unlike the camera.
+- **Monotonic frame id** — deferred with Ofer. `ROS2CameraHelper` bakes `frameId` once at
+  writer init, so a counter cannot reach the topic. Downstream re-stamping is ruled out
+  (it cannot detect upstream drops). Likely answer is a custom **C++** OmniGraph node.
+- **`capture_frame`** raises `NotImplementedError` — needs Isaac's viewport capture API.
+  Route it through `_on_main_thread` when implemented.
+- **Eyes-on check for Ofer**: run non-headless and confirm the camera looks along the
+  nose. The quaternion is numerically right; nobody has looked at it.
+- **Wire `import-linter` as a pre-commit hook** (`repo: local`, `language: system`). The
+  config is complete and passing; the hook was never added.
 
 
 ### Template findings (worth telling the team)

@@ -187,7 +187,9 @@ def test_unknown_vehicle_index_raises_key_error() -> None:
 
 
 def test_mount_defaults_to_environment_plus_vehicle_id() -> None:
-    assert IsaacCoreConfig().resolved_mount("drone_0") == "/Environment/drone_0"
+    # Under /World: the authored scenes use /World/Environment, per USD convention of a
+    # single default prim. Mounting at /Environment would put layers outside /World.
+    assert IsaacCoreConfig().resolved_mount("drone_0") == "/World/Environment/drone_0"
 
 
 def test_explicit_mount_overrides_the_derived_one() -> None:
@@ -282,3 +284,42 @@ def test_prim_override_accepts_a_well_formed_path() -> None:
 def test_prim_override_rejects_a_malformed_path_at_load_time() -> None:
     with pytest.raises(ValidationError, match="invalid prim path"):
         PrimOverride(prim="not/absolute", attribute="inputs:enabled", value=1)
+
+
+# --------------------------------------------------------------------------- #
+# derived feature list
+# --------------------------------------------------------------------------- #
+
+
+def test_a_udp_vehicle_implies_the_udp_camera_layer() -> None:
+    # A minimal config must compose and fly with nothing listed under [features]:
+    # listing the layer AND setting pose_source is a duplicate source of truth.
+    assert IsaacCoreConfig().required_feature_ids() == ("camera_udp",)
+
+
+def test_a_ros_vehicle_implies_the_ros_camera_layer() -> None:
+    config = IsaacCoreConfig(vehicles={"lead": VehicleConfig(pose_source="ros")})
+    assert config.required_feature_ids() == ("camera_ros",)
+
+
+def test_a_mixed_swarm_implies_both_camera_layers() -> None:
+    config = IsaacCoreConfig(vehicles={"lead": VehicleConfig(pose_source="ros"), "wing_1": VehicleConfig()})
+    assert set(config.required_feature_ids()) == {"camera_ros", "camera_udp"}
+
+
+def test_explicit_features_come_first_and_derived_are_appended() -> None:
+    config = IsaacCoreConfig(features={"enabled": ["distance_sensor"]})
+    assert config.required_feature_ids() == ("distance_sensor", "camera_udp")
+
+
+def test_derived_layers_are_not_duplicated_when_also_listed_explicitly() -> None:
+    config = IsaacCoreConfig(features={"enabled": ["camera_udp"]})
+    assert config.required_feature_ids() == ("camera_udp",)
+
+
+@pytest.mark.parametrize("source", ["script", "replay", "mavlink"])
+def test_pose_sources_with_no_shipped_layer_imply_nothing(source: str) -> None:
+    # These need an explicit [features] entry; silently inventing a layer id that does
+    # not exist would surface as a confusing "unknown feature" at compose time.
+    config = IsaacCoreConfig(vehicles={"v": VehicleConfig(pose_source=source)})
+    assert config.required_feature_ids() == ()

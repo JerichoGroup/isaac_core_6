@@ -99,6 +99,7 @@ def test_surviving_nodes_are_the_pure_compute_ones() -> None:
         "OgnGlobalPositionToLocalPosition",
         "OgnQuaternionToEuler",
         "OgnEulerToQuaternion",
+        "OgnSecondsToRosStamp",
         "OgnUdpToGlobalPosition",
         "OgnTemplate",
     }, f"unexpected node set: {sorted(node_files)}"

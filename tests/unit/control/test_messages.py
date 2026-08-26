@@ -32,6 +32,7 @@ def test_method_enum_contains_all_required_names() -> None:
         "capture_frame",
         "set_pose",
         "ping",
+        "get_pose",
     }
     actual = {m.value for m in Method}
     assert actual == expected

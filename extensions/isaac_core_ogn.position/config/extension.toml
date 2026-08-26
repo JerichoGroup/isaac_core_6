@@ -19,6 +19,9 @@ path = "isaac_core_ogn/position/nodes"
 include = ["*.ogn", "*.py"]
 exclude = ["Ogn*Database.py"]
 
+# Only omni.graph. The ROS 2 bridge dependency was left over from the
+# Ros2ToGlobalPosition node, which was removed when Isaac Sim 6's Python 3.12 made
+# rclpy unimportable. Declaring it transitively enabled the bridge, which crashed
+# the process on stage open.
 [dependencies]
 "omni.graph" = {}
-"isaacsim.ros2.bridge" = {}

@@ -15,6 +15,8 @@ dependencies = [
 
 [project.scripts]
 isaac-core = "isaac_core.cli.main:cli"
+isaac-core-pose-sender = "isaac_core.debug.pose_sender_gui:main"
+isaac-core-inspect = "isaac_core.debug.inspector:main"
 
 [project.optional-dependencies]
 # Installed into Isaac Sim's bundled interpreter:
@@ -286,10 +288,12 @@ layers = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "Sim depends only on contracts"
+name = "Sim depends on contracts, config and control"
 type = "layers"
 layers = [
     "isaac_core.sim",
+    "isaac_core.control",
+    "isaac_core.config",
     "isaac_core.contracts",
 ]
 
@@ -304,6 +308,11 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
+# `sim` legitimately depends on `config` -- layer manifests bind config keys to prim
+# attributes, and georeference resolution needs the config object -- so config is NOT
+# forbidden here. What sim must not touch is the kernel's behavioural layers: it
+# composes a stage and configures nodes, it does not do geodesy (that is the
+# OmniGraph node's job), decode packets, or drive vehicles (that is the devkit's).
 name = "Sim does not import vehicle, protocol or geo"
 type = "forbidden"
 source_modules = ["isaac_core.sim"]
@@ -311,7 +320,6 @@ forbidden_modules = [
     "isaac_core.vehicle",
     "isaac_core.protocol",
     "isaac_core.geo",
-    "isaac_core.config",
 ]
 
 [[tool.importlinter.contracts]]
@@ -394,14 +402,79 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "Control, CLI, install and devkit do not import omni/carb/pxr"
+name = "Control, CLI, install, devkit and debug do not import omni/carb/pxr"
 type = "forbidden"
 source_modules = [
     "isaac_core.control",
     "isaac_core.cli",
     "isaac_core.install",
     "isaac_core.devkit",
+    "isaac_core.debug",
 ]
+forbidden_modules = [
+    "omni",
+    "carb",
+    "pxr",
+]
+
+# --- Debug contracts ---
+
+[[tool.importlinter.contracts]]
+name = "Debug does not import sim"
+type = "forbidden"
+source_modules = ["isaac_core.debug"]
+forbidden_modules = [
+    "isaac_core.sim",
+    "isaac_core.sidecar",
+]
+
+[[tool.importlinter.contracts]]
+# The debug tools are end-user entry points, so nothing else may depend on them.
+# Without this a helper could quietly migrate into debug/ and become load-bearing.
+name = "Nothing depends on debug"
+type = "forbidden"
+source_modules = [
+    "isaac_core.contracts",
+    "isaac_core.config",
+    "isaac_core.geo",
+    "isaac_core.protocol",
+    "isaac_core.vehicle",
+    "isaac_core.control",
+    "isaac_core.devkit",
+    "isaac_core.sim",
+    "isaac_core.cli",
+    "isaac_core.sidecar",
+]
+forbidden_modules = ["isaac_core.debug"]
+
+# --- Sidecar contracts ---
+
+[[tool.importlinter.contracts]]
+name = "Sidecar depends only on config and contracts"
+type = "layers"
+layers = [
+    "isaac_core.sidecar",
+    "isaac_core.config",
+    "isaac_core.contracts",
+]
+
+[[tool.importlinter.contracts]]
+name = "Sidecar does not import sim, vehicle, geo or protocol"
+type = "forbidden"
+source_modules = ["isaac_core.sidecar"]
+forbidden_modules = [
+    "isaac_core.sim",
+    "isaac_core.vehicle",
+    "isaac_core.geo",
+    "isaac_core.protocol",
+]
+
+[[tool.importlinter.contracts]]
+# The sidecar runs on system python3, NOT inside Isaac. It must never import
+# omni/carb/pxr, which only exist in Isaac's bundled interpreter.
+name = "Sidecar does not import omni/carb/pxr"
+type = "forbidden"
+source_modules = ["isaac_core.sidecar"]
 forbidden_modules = [
     "omni",
     "carb",

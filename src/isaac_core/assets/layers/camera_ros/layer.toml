@@ -1,0 +1,58 @@
+id = "camera_ros"
+usd = "camera_ros.usda"
+# Where this layer is referenced into the stage. {instance} is the vehicle id, so
+# the same layer mounts once per aircraft in a swarm. Note {mount} is NOT valid
+# here -- that placeholder exists for BINDINGS, which refer back to this path.
+mount = "/World/Environment/{instance}"
+# Requires nothing of the base scene: this layer brings its own camera.
+requires = []
+provides = ["CAMERA"]
+
+# --- PoseSync graph bindings -------------------------------------------------
+
+[[bindings]]
+prim = "{mount}/PoseSync/global_position_to_local_position"
+attribute = "inputs:enu_reference"
+resolve = "enu_origin"
+
+[[bindings]]
+prim = "{mount}/PoseSync/global_position_to_local_position"
+attribute = "inputs:rotation_frame"
+config = "vehicles.{instance}.rotation_frame"
+
+[[bindings]]
+prim = "{mount}/PoseSync/ros2_subscriber"
+attribute = "inputs:topicName"
+resolve = "orientation_topic"
+
+[[bindings]]
+prim = "{mount}/PoseSync/ros2_subscriber_01"
+attribute = "inputs:topicName"
+resolve = "lla_topic"
+
+[[bindings]]
+prim = "{mount}/PoseSync/ros2_publisher"
+attribute = "inputs:topicName"
+resolve = "global_pose_topic"
+
+# --- CameraImageExport graph bindings ----------------------------------------
+
+[[bindings]]
+prim = "{mount}/CameraImageExport/isaac_set_viewport_resolution"
+attribute = "inputs:width"
+config = "vehicles.{instance}.cameras.eo.width"
+
+[[bindings]]
+prim = "{mount}/CameraImageExport/isaac_set_viewport_resolution"
+attribute = "inputs:height"
+config = "vehicles.{instance}.cameras.eo.height"
+
+[[bindings]]
+prim = "{mount}/CameraImageExport/ros2_camera_helper"
+attribute = "inputs:topicName"
+resolve = "image_topic"
+
+[[bindings]]
+prim = "{mount}/Xform/main_camera_01"
+attribute = "focalLength"
+config = "vehicles.{instance}.cameras.eo.focal_length_mm"

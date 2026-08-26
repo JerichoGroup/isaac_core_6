@@ -1,314 +1,318 @@
-# Dingo's Python Project Template
+# isaac_core_6
 
-This repository is a **template** for creating high‑quality Python projects with a fully configured development environment.
-It includes strict linting, formatting, type checking, and commit‑message validation — all automated through **pre‑commit**.
+Team infrastructure for NVIDIA Isaac Sim 6. A plug-and-play sandbox that drives a camera over real Cesium 3D Tiles terrain from LLA + orientation supplied over UDP or ROS 2/MAVROS. Replaces `isaac_core_2023` with a cleaner architecture, stronger typing, full test coverage, and no forking required to add features.
 
-Use this template to start new Python projects with consistent, modern, and maintainable standards.
-
----
-
-## Features Included
-
-### Ruff (Linter + Formatter)
-Ruff is configured to enforce:
-
-- **PEP8 errors & warnings** (`E`, `W`)
-- **Pyflakes** (`F`)
-- **Import sorting** (`I`)
-- **Naming conventions** (`N`)
-- **Type annotation rules** (`ANN`)
-- **Quote consistency** (`Q`)
-- **No commented‑out code** (`ERA`)
-- **Refactor rules** (`PLR`)
-- **No shadowing builtins** (`A`)
-- **Async best practices** (`ASYNC`)
-- **Pathlib enforcement (no os.path)** (`PTH`)
-- **No FIXME / XXX** (`FIX`)
-- **TODO rules** (`TD`)
-- **Docstring rules** (`D`)
-
-Formatting is handled by `ruff-format`, enforcing:
-
-- double quotes
-- 4‑space indentation
-- consistent whitespace
-- consistent import formatting
-
-All configuration lives in `pyproject.toml`.
+The simulator works end to end: `isaac-core run` launches Isaac Sim 6, composes the stage
+from layer manifests, a UDP pose packet moves the camera, and both ROS topics publish —
+`/isaac_core/global_pose` (`geographic_msgs/msg/GeoPoseStamped`, ~100 Hz) and
+`/isaac_core/image_rgb` (`sensor_msgs/msg/Image`), both carrying a real advancing
+timestamp. Verified numerically against the geodetic math and with `ros2 topic echo`.
 
 ---
 
 ## Requirements
 
-- **Python 3.10+**
-- **pre-commit >= 3.2** — install via `pip install pre-commit`, not your OS package manager.
-  Distro-packaged versions (e.g. `apt install pre-commit`) commonly lag years behind and may not
-  understand this config's stage names, causing an `InvalidConfigError` on commit. Check your
-  version with `pre-commit --version` before reporting a hook issue.
+- **Isaac Sim 6.0.1** (tested on 6.0.1-rc.7) at a known path (e.g. `/home/ofer/isaacsim`)
+- **Python 3.10+** (system) — the kernel, CLI and devkit run here
+- **ROS 2 Humble** (optional) — only needed for the ROS pose source and topic publishing
+
+### Two hard environment facts
+
+1. **Isaac Sim 6 bundles Python 3.12** while ROS 2 Humble ships C extensions built for 3.10. `rclpy` cannot be imported inside Isaac — attempting it crashes with a `ModuleNotFoundError` on the pybind11 ABI mismatch. All ROS 2 publish/subscribe is handled by Isaac's C++ `isaacsim.ros2.bridge` nodes instead. See [docs/ros2_and_python.md](docs/ros2_and_python.md) for the full explanation.
+
+2. **`$ISAACSIM_PATH` is commonly stale** (e.g. still pointing at a 2023.1.1 install). The tooling validates rather than trusts it — `IsaacInstall` probes known paths and checks the VERSION file before accepting a candidate.
 
 ---
 
-## Installing python packages
-
-Dependencies are declared in `pyproject.toml`.
-
-Install the package in editable mode along with the development tools
-(pytest, mypy, ruff, pre-commit, gitlint):
+## Installation
 
 ```bash
-pip install -e ".[dev]"
+./scripts/setup.sh [--isaac-path /path/to/isaacsim]
 ```
 
-For a non-editable install (e.g. building an artifact, installing into a
-runtime image, or CI steps that don't need dev tooling):
+This runs four steps:
+
+1. `pip install --user -r requirements.txt` — runtime deps into system Python
+2. `pip install --user -e .` — the `isaac-core` package in editable mode
+3. `$ISAAC_PATH/python.sh -m pip install -e .` — the same package into Isaac's bundled Python 3.12
+4. `scripts/link_extensions.sh` — symlinks the OmniGraph extensions into `extsUser`
+
+Then verify:
 
 ```bash
-pip install <path to pyproject.toml>
+isaac-core doctor
 ```
 
-Add runtime dependencies your project needs under `[project.dependencies]` in
-`pyproject.toml`. Add/adjust dev-only tooling under
-`[project.optional-dependencies.dev]`.
+### Three interpreters, one package
 
-`src/` is not limited to a single package — `[tool.setuptools.packages.find]`
-auto-discovers every directory under `src/` containing an `__init__.py` and
-installs each as its own top-level package. See
-[Project Structure](#project-structure) below.
+| Interpreter | What runs there | How to install |
+|---|---|---|
+| System Python 3.10 | CLI, devkit, sidecar, tests | `pip install --user -e .` |
+| Isaac's Python 3.12 | `isaac_core.sim`, `isaac_core.geo`, `isaac_core.protocol` (inside the simulator process) | `$ISAAC_PATH/python.sh -m pip install -e .` |
+| System Python 3.10 with ROS sourced | `rclpy`-based recording and the `ros2` CLI | same system install, just `source /opt/ros/humble/setup.bash` first |
+
+It is one pip distribution — `isaac-core` — importable on both 3.10 and 3.12. Isaac-only imports (`omni`, `carb`, `pxr`) are confined to `isaac_core.sim`; ROS-only imports (`rclpy`) are confined to `isaac_core.devkit.recording` and lazy-loaded.
 
 ---
 
-## Pre‑commit Hooks
+## Quick start
 
-Pre‑commit automatically runs checks on every commit, including:
-
-- Ruff (lint + format)
-- Mypy (type checking)
-- Gitlint (commit message validation)
-- Standard hygiene checks:
-  - trailing whitespace
-  - end‑of‑file newline
-  - merge conflict markers
-  - YAML/JSON/TOML validation
-  - executable script checks
-
-Install hooks after cloning:
+### 1. Launch the simulator
 
 ```bash
-pre-commit install --install-hooks
-pre-commit install --hook-type commit-msg
+isaac-core run
 ```
 
-Run all hooks manually on the entire repository:
+With the default config this opens the `earth` scene, composes the `camera_udp` layer, and starts the control plane on `127.0.0.1:8760`. Add `--set sim.headless true` for no GUI.
+
+### 2. Fly a trajectory
+
+In another terminal:
 
 ```bash
-pre-commit run --all-files
+PYTHONPATH=src ./scripts/send_test_pose.py hold
+PYTHONPATH=src ./scripts/send_test_pose.py orbit --radius-m 800 --duration-s 60
+PYTHONPATH=src ./scripts/send_test_pose.py path --speed-mps 50
 ```
 
-Run a specific hook:
+Defaults match the scene's Cesium georeference (32.22°N, 35.26°E, 516.7 m), so the aircraft starts over terrain.
+
+### 3. Query the running sim
 
 ```bash
-pre-commit run ruff
-```
-
----
-
-## Mypy (Static Type Checking)
-
-Mypy enforces type correctness across the codebase. All settings (strictness,
-excludes, target Python version) live in `[tool.mypy]` in `pyproject.toml`,
-so running `mypy .` locally behaves identically to the pre-commit hook —
-there are no extra flags hidden in `.pre-commit-config.yaml`.
-
-The baseline is strict-ish: untyped/incomplete function definitions,
-unused ignores, and implicit `Optional` are all flagged. Tighten further
-(e.g. `strict = true`) once the codebase is fully typed.
-
-If a third-party dependency ships no type stubs, add the stub package
-(e.g. `types-requests`) under `additional_dependencies` for the `mypy` hook
-in `.pre-commit-config.yaml`, or add a targeted per-module override in
-`pyproject.toml` — avoid a blanket `--ignore-missing-imports`, which silently
-disables type checking for anything unresolved.
-
-Run manually:
-
-```bash
-mypy .
-```
-
-You can also run it with pretty output (already the default via `pretty = true`):
-
-```bash
-mypy --pretty .
+isaac-core config dump
+isaac-core config explain sim.headless
 ```
 
 ---
 
-## Gitlint (Commit Message Rules)
+## Scripting with the devkit
 
-Gitlint validates commit messages using the `commit-msg` hook.
+```python
+from isaac_core.devkit import Sim
 
-Enforced rules include:
+# Connect to a sim that is already running — even on another machine.
+# No repo path, no filesystem knowledge needed.
+with Sim.attach(host="192.168.1.50", port=8760) as session:
+    state = session.vehicles()
+    print(state)
 
-- Title must start with a capital letter
-- No “WIP” in commit titles
-- Minimum title length
-- No trailing punctuation
-- No excessive line length
-- No empty commit messages
+    session.pause()
+    session.config.patch(sim={"headless": True})
+    session.resume()
 
-Run manually:
-
-```bash
-gitlint
+    session.capture_frame("snapshot.png")
 ```
+
+`Sim.attach(...)` returns a `SimSession` using only the JSON-RPC control plane — the same type that `Sim.launch(...)` returns, so scripts are portable between local and remote.
 
 ---
 
-## Excluding Files and Directories
+## Debug tools
 
-Every tool in this template has a place to add per-project excludes —
-useful for generated code, vendored dependencies, or legacy directories you
-don't want linted/type-checked/hooked:
+Two terminal-launched helpers, replacing the old `debugger/` scripts:
 
-- **Pre-commit (all hooks):** top-level `exclude:` regex at the top of
-  `.pre-commit-config.yaml`. Uncomment and add your own alternatives inside
-  the `(?x)` block. Pre-commit filters the file list against this *before*
-  invoking any hook, so it's the only exclude mechanism guaranteed to work
-  for every tool when run via `pre-commit` / `git commit`.
-- **Ruff:** the `exclude` list in `[tool.ruff]` in `pyproject.toml` already
-  covers common VCS/venv/cache directories; add project-specific paths at
-  the bottom of that list. This is honored both by `ruff check .` run
-  directly and by the `ruff` pre-commit hook.
-- **Mypy:** the `exclude` list in `[tool.mypy]` in `pyproject.toml` (regex
-  patterns) — but only when mypy discovers files itself via directory
-  traversal (i.e. running `mypy .` manually). Mypy does **not** apply this
-  `exclude` to files passed to it explicitly, and pre-commit always passes
-  explicit filenames — so this list has no effect on the `mypy` pre-commit
-  hook. To exclude a path from the mypy *hook*, add it to the top-level
-  `exclude:` in `.pre-commit-config.yaml` instead (or in addition, so manual
-  `mypy .` runs match too).
+```bash
+isaac-core-inspect                      # print state, capabilities, live pose and config
+isaac-core-inspect --poll 0.5           # watch the pose change while a sender runs
+isaac-core-pose-sender                  # tkinter GUI for driving the camera by hand
+isaac-core-pose-sender --check          # validate config and exit, no window
+```
 
-Prefer excluding at the narrowest scope that solves your problem (a single
-tool) over the top-level pre-commit exclude, which skips a path for every
-hook — except for mypy, where the top-level pre-commit exclude is the only
-one that reliably works.
+`isaac-core-inspect` reads the **live prim transform** out of the running stage, which is
+the only way to confirm from outside the process that pose input is actually reaching the
+camera. It is how the numbers in the quick start were verified:
+
+```
+    #          Translate (x, y, z)               Quaternion (w, x, y, z)
+    1  T=(     0.000,      0.000,    983.300)  Q=(0.6830, -0.1830, 0.1830, 0.6830)
+```
+
+The GUI needs `python3-tk` (`sudo apt install python3-tk`). Both tools import without it;
+only opening the window requires it, and the error says exactly what to install.
+
+All GUI state lives in a `PoseSenderController` with no tkinter dependency, so the
+behaviour is unit-tested while the widgets stay a thin view.
 
 ---
 
-## Project Structure
+## Configuration
+
+One file controls everything: [`config/default.toml`](config/default.toml). It is the complete surface — every value the simulation runs on appears there with inline documentation.
+
+### Layered precedence (later wins)
 
 ```
-project/
-│
-├── src/
-│   └── dingo_project/   # Application code (rename to your package name)
-│       ├── __init__.py
-│       └── example.py
-│
-├── tests/               # Test suite
-│   ├── __init__.py
-│   └── test_example.py
-│
-├── pyproject.toml       # Project metadata, dependencies, Ruff/mypy/pytest config
-├── .pre-commit-config.yaml
-├── .gitlint
-├── LICENSE
-└── README.md
+package defaults → --config <file> / $ISAAC_CORE_CONFIG → env vars → --set CLI flags → runtime patches
 ```
 
-`src/` isn't restricted to a single package. You can add as many packages
-under it as you need (`src/pkg_a/`, `src/pkg_b/`, …) — each directory with an
-`__init__.py` is discovered and installed independently, and both `pytest`
-and the ruff/mypy hooks already traverse all of `src/`, so nothing else needs
-to change. Non-package source (standalone scripts, shared modules without an
-`__init__.py`) is also linted, formatted, and type-checked the same way —
-it's just excluded from what `pip install` packages as importable code.
+Environment variables use double-underscore nesting: `ISAAC_CORE__CAMERAS__EO__FOV_DEG=90`.
+
+### Inspect what resolved
+
+```bash
+isaac-core config dump          # full resolved config as TOML
+isaac-core config explain <key> # which source won a particular value
+```
+
+### Layer manifests vs config
+
+Layer manifests (`layer.toml`) declare **wiring** — which config key maps to which prim attribute. They never hold values. Your config holds the values, and the compositor resolves the bindings at launch time.
 
 ---
 
-## Running Tests
+## Adding a feature layer without forking
 
-This template assumes **pytest** for testing.
+A feature layer is a directory containing a `layer.toml` manifest and (optionally) a `.usda` file:
 
-Run all tests:
-
-```bash
-pytest
+```
+my_layers/thermal_cam/
+├── layer.toml
+└── thermal_cam.usda
 ```
 
-Run tests with verbose output:
+Drop it into any directory listed in `layer_search_paths` in your config:
 
-```bash
-pytest -v
+```toml
+[assets]
+layer_search_paths = ["/home/you/my_layers"]
+
+[features]
+enabled = ["thermal_cam"]
 ```
 
-Run a specific test file:
+No code change to `isaac_core` is required. The manifest declares what the layer needs from the stage (`requires`), what it provides (`provides`), and how config flows into prim attributes (`[[bindings]]`).
 
-```bash
-pytest tests/test_example.py
-```
-
-Run a specific test function:
-
-```bash
-pytest tests/test_example.py::test_function_name
-```
-
-Stop on first failure:
-
-```bash
-pytest -x
-```
-
-Show print/log output:
-
-```bash
-pytest -s
-```
+For layers that need Python logic, declare an entry point under `[project.entry-points."isaac_core.layers"]` in your own package.
 
 ---
 
-## Useful Development Commands
+## Architecture
 
-### Run Ruff linter only
-```bash
-ruff check .
+```
+src/isaac_core/
+├── contracts/     # types, enums, ports, topics, packet spec — zero deps
+├── config/        # pydantic v2 schema + layered TOML loader
+├── geo/           # LLA/ECEF/ENU, NED↔ENU, SLERP, rotations — pyproj + transforms3d
+├── protocol/      # 51-byte UDP pose codec + error hierarchy
+├── vehicle/       # kinematics, trajectories, motion limits — pure generators
+├── control/       # JSON-RPC server + client over a local socket
+├── cli/           # `isaac-core` entry point (run, doctor, config)
+├── install/       # Isaac Sim path resolution and validation
+├── devkit/        # user-facing Sim.attach/launch API + transport + recording
+├── sim/           # stage composition, runtime, configurator — ONLY package importing omni/pxr
+├── sidecar/       # out-of-process services (RTP streaming) — PyGObject/GStreamer
+└── assets/        # shipped scenes + layer manifests
 ```
 
-### Run Ruff formatter only
-```bash
-ruff format .
+### Why the kernel is pure
+
+Everything above `sim` — contracts, config, geo, protocol, vehicle, control — imports **nothing from Isaac Sim, ROS 2, or GStreamer**. This is not an accident. It means:
+
+- **980 tests pass with no GPU, no Isaac Sim, no ROS 2.** CI is possible on any runner.
+- Geodesy, codecs, trajectories and config are testable in isolation with sub-second feedback.
+- The Isaac-dependent surface is thin and behind interfaces.
+
+### Layering enforcement
+
+`import-linter` checks that the dependency graph never violates the layering:
+
+```
+contracts ← config ← geo ← protocol ← vehicle        (pure kernel)
+                                  ↖ devkit           (+rclpy, lazy)
+                                  ↖ sim              (+omni/carb/pxr)
+                                  ↖ sidecar          (+gi)
 ```
 
-### Run all pre‑commit hooks on all files
-```bash
-pre-commit run --all-files
-```
+The kernel must not import `sim`, `devkit` or `sidecar`. `sim` must not import `devkit`. This is verified on every `lint-imports` run and cannot rot silently.
 
-### Run type checking
-```bash
-mypy .
-```
+### Extensions
+
+Two Kit extensions live in `extensions/`, symlinked into `extsUser` by `scripts/link_extensions.sh`:
+
+- `isaac_core_ogn.math` — `GlobalPositionToLocalPosition`, `QuaternionToEuler`,
+  `EulerToQuaternion`, `SecondsToRosStamp`
+- `isaac_core_ogn.position` — `UdpToGlobalPosition`
+
+All are thin adapters delegating to `isaac_core.geo` and `isaac_core.protocol`. No ROS, no network I/O, no state management beyond what OmniGraph requires.
 
 ---
 
-## Extending the Template
+## Development
 
-You can customize:
+### Running tests
 
-- Ruff rules in `pyproject.toml`
-- Pre‑commit hooks in `.pre-commit-config.yaml`
-- Commit message rules in `.gitlint`
-- Add CI workflows
+```bash
+python3 -m pytest -q
+```
 
-This template is intentionally minimal and focused on code quality and workflow automation.
+### Running pre-commit hooks
+
+Files are untracked, so `--all-files` silently skips them. Always pass `--files`:
+
+```bash
+pre-commit run ruff        --files src/isaac_core/geo/enu.py
+pre-commit run ruff-format --files src/isaac_core/geo/enu.py
+pre-commit run mypy        --files src/isaac_core/geo/enu.py
+```
+
+### Import-linter
+
+```bash
+PYTHONPATH=src lint-imports
+```
+
+### System-wide install convention
+
+There is no venv. Tools are installed system-wide with `pip install --user`. Pinned versions in `requirements-dev.txt` match `.pre-commit-config.yaml` exactly, so terminal `ruff`/`mypy` gives the same answer as the commit gate.
+
+### Non-obvious lint rules
+
+- **D213 (second-line summaries)**: multi-line docstrings put the summary on the second line, not the first:
+  ```python
+  """
+  Return the geodetic pose as a tuple.
+
+  Body paragraph.
+  """
+  ```
+- **Flat test functions**: test classes trip D101/D102. Use module-level functions with `-> None`.
+- **Annotated parametrize args**: `ANN001` applies to `@pytest.mark.parametrize` parameters.
+- **No attribute docstrings**: `check-docstring-first` rejects them. Use `#` comments above assignments.
+- **pathlib only**: `PTH` forbids `os.path`. Use `pathlib.Path`.
+- **Line length 120**, double quotes, 4-space indent.
+
+---
+
+## What does not work yet
+
+- **Intermittent segfault on startup.** Roughly one launch in three dies with exit code
+  139 just after `simulation running`, inside Kit's `update_app()`. Not caused by our
+  extensions — it reproduces with both disabled. Relaunching usually works. Stale
+  `/tmp/carb.*` directories from previous crashes make it worse; clearing them with no
+  Isaac running helps. Tracked as task 1 in
+  [docs/usd_build_sheet.md](docs/usd_build_sheet.md).
+- **Sensor layers** (distance sensor, bbox, frame capture) are not yet built.
+- **Monotonic frame id** cannot reach the image topic with the current node API. Now that
+  `header.stamp` is real and advancing, it covers most of that need.
+
+`isaacsim.ros2.bridge` itself is fine and is enabled by default. An earlier segfault
+blamed on it turned out to be a **stale generated OmniGraph database** left behind by a
+deleted node; `scripts/link_extensions.sh` now clears those. If you ever see an
+unexplained crash on stage open after renaming or removing an OGN node, clear
+`~/.cache/ov/ogn_generated/*/isaac_core_ogn.*`.
+
+---
+
+## Further documentation
+
+- [docs/first_run.md](docs/first_run.md) — step-by-step guide for the first end-to-end flight
+- [docs/usd_build_sheet.md](docs/usd_build_sheet.md) — instructions for authoring USD in the GUI
+- [docs/ros2_and_python.md](docs/ros2_and_python.md) — why rclpy cannot run inside Isaac Sim 6
+- [KIRO.md](KIRO.md) — engineering log, architecture decisions (D1–D19), and working constraints
 
 ---
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
-
-When forking this template for a new project, update the copyright holder
-name in the `LICENSE` file and the `license`/`name` fields in
-`pyproject.toml`.
+[Apache License, Version 2.0](LICENSE)

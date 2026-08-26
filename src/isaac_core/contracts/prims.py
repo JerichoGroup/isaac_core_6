@@ -22,8 +22,11 @@ import re
 import string
 from typing import Final
 
-# Conventional mount point for composed feature layers.
-ENVIRONMENT_ROOT: Final = "/Environment"
+# Conventional mount point for composed feature layers. Under /World, because USD
+# convention is a single /World default prim and the authored scenes follow it. The
+# 2023 repo rooted its scenes at /Environment; mounting there now would create a
+# sibling of /World, outside the scene graph.
+ENVIRONMENT_ROOT: Final = "/World/Environment"
 
 # Where Cesium tileset prims are expected. Absence is a capability, not an error.
 TILESETS_ROOT: Final = "/tilesets"

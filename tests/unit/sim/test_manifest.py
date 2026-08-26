@@ -207,3 +207,19 @@ def test_layer_manifest_is_frozen() -> None:
     )
     with pytest.raises(ValidationError):
         manifest.id = "other"
+
+
+def test_mount_referencing_itself_is_rejected_at_load(tmp_path: Path) -> None:
+    # `mount = "{mount}"` is circular: this field DEFINES what {mount} resolves to.
+    # It used to pass validation and then fail at compose time with a bare
+    # KeyError: 'mount', which pointed nowhere near the actual mistake.
+    manifest = tmp_path / "layer.toml"
+    manifest.write_text('id = "x"\nusd = "x.usda"\nmount = "{mount}"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="circular"):
+        load_manifest(manifest)
+
+
+def test_mount_may_use_the_instance_placeholder(tmp_path: Path) -> None:
+    manifest = tmp_path / "layer.toml"
+    manifest.write_text('id = "x"\nusd = "x.usda"\nmount = "/Environment/{instance}"\n', encoding="utf-8")
+    assert load_manifest(manifest).mount == "/Environment/{instance}"

@@ -86,7 +86,7 @@ class OgnUdpToGlobalPosition:
         so monitoring can detect sustained corruption without per-tick log spam.
         """
         port = int(db.inputs.udp_port) if db.inputs.udp_port else DEFAULT_POSE_UDP_PORT
-        state: _InternalState = db.internal_state
+        state: _InternalState = db.per_instance_state
 
         sock = state.ensure_socket(port)
 
@@ -119,7 +119,7 @@ class OgnUdpToGlobalPosition:
         """Release socket resources on node teardown."""
         carb.log_info(f"{_LOG_PREFIX} Node release")
         try:
-            state = OgnUdpToGlobalPositionDatabase.per_node_internal_state(node)
+            state = OgnUdpToGlobalPositionDatabase.per_instance_internal_state(node)
         except RuntimeError:
             return
 

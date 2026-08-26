@@ -139,25 +139,32 @@ def _resolve_bindings(
     instance: str,
 ) -> tuple[ResolvedBinding, ...]:
     """
-    Render each binding's prim template into a concrete path.
+    Render each binding's prim template and config key into concrete strings.
+
+    Both sides need the instance substituted, not just the prim path. A binding like
+    ``config = "vehicles.{instance}.rotation_frame"`` is meaningless until
+    ``{instance}`` becomes a real vehicle id, and leaving it unrendered produced a
+    ``ConfigKeyError`` at compose time complaining that ``vehicles.{instance}`` does not
+    exist. "Resolved" has to mean resolved on every axis, or the name lies.
 
     Args:
         manifest: The layer manifest whose bindings to resolve.
         mount: The concrete mount path for this layer.
-        instance: The instance identifier.
+        instance: The instance identifier, normally the vehicle id.
 
     Returns:
-        Resolved bindings with concrete prim paths.
+        Resolved bindings with concrete prim paths and config keys.
 
     """
     resolved: list[ResolvedBinding] = []
     for binding in manifest.bindings:
         concrete_prim = render(binding.prim, mount=mount, instance=instance)
+        concrete_config = binding.config.replace("{instance}", instance) if binding.config is not None else None
         resolved.append(
             ResolvedBinding(
                 prim=concrete_prim,
                 attribute=binding.attribute,
-                config=binding.config,
+                config=concrete_config,
                 resolve=binding.resolve,
             )
         )

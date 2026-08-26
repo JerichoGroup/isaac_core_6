@@ -50,6 +50,9 @@ stage_units_in_meters = 1.0
 # Binding to anything other than a loopback address REQUIRES a token, and
 # `capture_frame` paths are confined under output_root.
 [sim.control_plane]
+# Disable for a batch render, or when bisecting a crash: one fewer background
+# thread touching Kit's event loop.
+enabled = true
 host = "127.0.0.1"
 port = 8760
 token = ""

@@ -43,6 +43,11 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--config", type=str, default=None, help="Path to configuration TOML file")
     run_parser.add_argument("--isaac-path", type=str, default=None, help="Explicit path to Isaac Sim installation")
     run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Resolve everything and report what would launch, without starting Isaac Sim",
+    )
+    run_parser.add_argument(
         "--set",
         nargs=2,
         metavar=("KEY", "VALUE"),
@@ -135,9 +140,60 @@ def _run_command(args: argparse.Namespace) -> int:
     print(f"Config:    {config_path or '(defaults)'}")
     print(f"Headless:  {config.sim.headless}")
     print()
-    print("ERROR: Simulator runtime is not yet implemented.")
-    print("This command will launch Isaac Sim once the runtime layer is built.")
-    return 1
+
+    if args.dry_run:
+        print("Dry run: not launching.")
+        return 0
+
+    return _launch_simulator(install, config=config)
+
+
+def _launch_simulator(install: object, *, config: object) -> int:
+    """
+    Launch the simulator in Isaac Sim's bundled interpreter.
+
+    The runtime cannot run in this process: it needs ``omni``/``carb``/``pxr``, which
+    exist only inside Isaac Sim's Python 3.12. So we exec ``-m isaac_core.sim`` there,
+    which is why the package must be installed into that interpreter with
+    ``python.sh -m pip install -e ".[sim]"``. Note this passes a *module*, never a
+    filesystem path into this repo -- the install-not-locate rule from decision D7.
+
+    The *fully resolved* config is written to a temporary TOML file and forwarded with
+    ``--config``, rather than translating each override into a flag. That way env vars,
+    CLI overrides and file settings all reach the simulator exactly as resolved here,
+    and there is only one place that understands precedence.
+
+    Args:
+        install: The resolved :class:`~isaac_core.install.IsaacInstall`.
+        config: The resolved configuration to hand to the simulator.
+
+    Returns:
+        The simulator's exit code, or 130 on keyboard interrupt.
+
+    """
+    from pathlib import Path as _Path  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from isaac_core.config.loader import dump_toml  # noqa: PLC0415
+
+    resolved_dir = _Path(tempfile.mkdtemp(prefix="isaac-core-"))
+    resolved_path = resolved_dir / "resolved.toml"
+    resolved_path.write_text(dump_toml(config), encoding="utf-8")  # type: ignore[arg-type]
+
+    command = [str(install.python_path), "-m", "isaac_core.sim", "--config", str(resolved_path)]  # type: ignore[attr-defined]
+
+    print("launching:", " ".join(command))
+    print(f"resolved config: {resolved_path}")
+    print()
+    try:
+        return subprocess.call(command)
+    except KeyboardInterrupt:
+        print("\ninterrupted")
+        return 130
+    except OSError as exc:
+        print(f"ERROR: could not launch the simulator: {exc}", file=sys.stderr)
+        return 1
 
 
 def _dispatch_config(args: argparse.Namespace) -> int:

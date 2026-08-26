@@ -23,6 +23,8 @@ Contents:
     Frame-tagged pose value types.
 :mod:`~isaac_core.contracts.prims`
     USD prim path templating and validation.
+:mod:`~isaac_core.contracts.stamp`
+    ROS 2 message timestamp representation.
 :mod:`~isaac_core.contracts.topics`
     ROS 2 topic naming and namespace collapsing.
 """

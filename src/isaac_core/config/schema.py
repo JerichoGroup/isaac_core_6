@@ -21,7 +21,7 @@ Optional means "derive it"
 """
 
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,6 +36,15 @@ from isaac_core.contracts.ports import (
 )
 
 _MAX_FOV_DEG = 180.0
+
+# Each pose source implies the camera layer that reads it, so a vehicle declaring
+# `pose_source = "udp"` does not also have to be listed in `[features] enabled`.
+# Requiring both is a duplicate source of truth that can disagree with itself -- the
+# same problem decision D18 removed for the ENU reference.
+_POSE_SOURCE_LAYERS: Final[dict[str, str]] = {
+    "udp": "camera_udp",
+    "ros": "camera_ros",
+}
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 Port = Annotated[int, Field(ge=MIN_PORT, le=MAX_PORT)]
@@ -76,6 +85,7 @@ class ControlPlaneConfig(_Strict):
     token.
     """
 
+    enabled: bool = True
     host: str = "127.0.0.1"
     port: Port = DEFAULT_CONTROL_PLANE_PORT
     token: str = ""
@@ -106,6 +116,20 @@ class SimConfig(_Strict):
     scene: str = "earth"
     headless: bool = False
     strict_features: bool = False
+    # Kit extensions to enable before opening the stage. Configurable rather than
+    # hardcoded so a stage needing an extra extension requires no code change.
+    #
+    # A missing extension degrades rather than crashes: OmniGraph logs
+    # "Could not find node type interface" and those nodes do nothing, so dropping
+    # one from this list is a safe way to bisect a problem.
+    extensions: tuple[str, ...] = (
+        "omni.graph.action",
+        "omni.graph.nodes",
+        "isaacsim.core.nodes",
+        "isaacsim.ros2.bridge",
+        "isaac_core_ogn.math",
+        "isaac_core_ogn.position",
+    )
     physics_dt: float = Field(1.0 / 60.0, gt=0.0)
     stage_units_in_meters: float = Field(1.0, gt=0.0)
     control_plane: ControlPlaneConfig = ControlPlaneConfig()
@@ -397,6 +421,32 @@ class IsaacCoreConfig(_Strict):
             camera_segment = camera_id
 
         return topics.TopicResolver(vehicle=vehicle_segment, camera=camera_segment)
+
+    def required_feature_ids(self) -> tuple[str, ...]:
+        """
+        Return every feature layer this configuration needs, in a stable order.
+
+        The union of what ``[features] enabled`` lists explicitly and the camera layer
+        implied by each vehicle's ``pose_source``. Deriving the implied layers means a
+        minimal config -- one vehicle on UDP -- composes and flies with nothing listed
+        under ``[features]`` at all, and it is impossible to select a pose source
+        without the layer that reads it.
+
+        Pose sources with no corresponding shipped layer (``script``, ``replay``,
+        ``mavlink``) contribute nothing; those need an explicit entry.
+
+        Returns:
+            Feature layer ids, explicit ones first, then derived, without duplicates.
+
+        """
+        ordered: list[str] = list(self.features.enabled)
+        for vehicle in self.vehicles.values():
+            # .value, not str(): PoseSource subclasses str but is not a StrEnum, so
+            # str() yields "PoseSource.UDP" on Python 3.10.
+            implied = _POSE_SOURCE_LAYERS.get(vehicle.pose_source.value)
+            if implied is not None and implied not in ordered:
+                ordered.append(implied)
+        return tuple(ordered)
 
     def camera_keys(self) -> tuple[str, ...]:
         """Return every camera as ``"<vehicle_id>.<camera_id>"``, in declaration order."""

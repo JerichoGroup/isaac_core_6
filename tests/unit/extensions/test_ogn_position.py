@@ -107,14 +107,17 @@ def test_extension_toml_declares_omni_graph_dependency() -> None:
     assert "omni.graph" in deps
 
 
-def test_extension_toml_declares_ros2_bridge_dependency() -> None:
-    with _EXT_TOML.open("rb") as f:
-        toml = tomllib.load(f)
-    deps = toml.get("dependencies", {})
-    assert "isaacsim.ros2.bridge" in deps
-
-
-# ─── Behavioural tests of shared kernel logic (HoldLastGoodDecoder) ───────────
+def test_extension_toml_does_not_declare_the_ros2_bridge() -> None:
+    # Asserted the OPPOSITE until 2026-08-25. The dependency was left over from the
+    # Ros2ToGlobalPosition node, removed when Isaac Sim 6's Python 3.12 made rclpy
+    # unimportable. Declaring it transitively enabled the bridge, which SEGFAULTED the
+    # process during stage open -- the single hardest bug in this repo so far, and it
+    # took a five-way extension bisect to find. The UDP node needs only omni.graph.
+    text = (_EXT_ROOT / "config" / "extension.toml").read_text(encoding="utf-8")
+    assert "isaacsim.ros2.bridge" not in text, (
+        "isaac_core_ogn.position must not depend on the ROS 2 bridge: it has no ROS "
+        "node, and enabling the bridge crashes Isaac Sim 6.0.1 on stage open."
+    )
 
 
 def _make_valid_pose(lat: float = 32.0, lon: float = 35.0, alt: float = 100.0) -> GeodeticPose:

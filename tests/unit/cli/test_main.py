@@ -53,26 +53,6 @@ def test_config_explain_help_exits_zero() -> None:
     assert exc_info.value.code == 0
 
 
-def test_run_exits_nonzero_runtime_not_implemented(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    # run needs an Isaac install -- fake one
-    fake_isaac = tmp_path / "isaacsim"
-    fake_isaac.mkdir()
-    (fake_isaac / "python.sh").write_text("#!/bin/sh\n")
-    (fake_isaac / "isaac-sim.sh").write_text("#!/bin/sh\n")
-    (fake_isaac / "VERSION").write_text("6.0.1-rc.7\n")
-
-    monkeypatch.setenv("ISAACSIM_PATH", str(fake_isaac))
-
-    code = main(["run", "--isaac-path", str(fake_isaac)])
-    assert code == 1
-    out = capsys.readouterr().out
-    assert "not yet implemented" in out.lower()
-
-
 def test_run_fails_without_isaac_install(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     # Remove env var and ensure no probe succeeds
     monkeypatch.delenv("ISAACSIM_PATH", raising=False)
@@ -119,3 +99,67 @@ def test_run_with_invalid_config_file(
     code = main(["run", "--config", str(bad_config)])
     assert code == 1
     assert "error" in capsys.readouterr().err.lower()
+
+
+def _fake_isaac_install(root: Path) -> Path:
+    """Create a directory that passes IsaacInstall's structural checks."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "python.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (root / "isaac-sim.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (root / "VERSION").write_text("6.0.1-rc.7\n", encoding="utf-8")
+    return root
+
+
+def test_run_dry_run_reports_without_launching(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    install = _fake_isaac_install(tmp_path / "isaacsim")
+    monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: (str(install),))
+    monkeypatch.delenv("ISAACSIM_PATH", raising=False)
+
+    called: list[list[str]] = []
+
+    def _record(cmd: list[str], *args: object, **kwargs: object) -> int:
+        called.append(cmd)
+        return 0
+
+    monkeypatch.setattr("subprocess.call", _record)
+
+    assert main(["run", "--dry-run"]) == 0
+    assert "Dry run: not launching." in capsys.readouterr().out
+    assert not called, "dry run must not launch anything"
+
+
+def test_run_launches_the_sim_module_in_isaacs_interpreter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Decision D7: launch a MODULE inside Isaac's python, never a path into this repo.
+    install = _fake_isaac_install(tmp_path / "isaacsim")
+    monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: (str(install),))
+    monkeypatch.delenv("ISAACSIM_PATH", raising=False)
+
+    called: list[list[str]] = []
+
+    def fake_call(cmd: list[str], *args: object, **kwargs: object) -> int:
+        called.append(cmd)
+        return 0
+
+    monkeypatch.setattr("subprocess.call", fake_call)
+
+    assert main(["run"]) == 0
+    assert len(called) == 1
+    command = called[0]
+    assert command[0] == str(install / "python.sh")
+    assert command[1:3] == ["-m", "isaac_core.sim"]
+    assert "--config" in command
+    # The forwarded config must be a resolved temp file, not a path inside the repo.
+    forwarded = Path(command[command.index("--config") + 1])
+    assert forwarded.is_file()
+    assert "isaac-core-" in str(forwarded)
+
+
+def test_run_propagates_the_simulator_exit_code(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    install = _fake_isaac_install(tmp_path / "isaacsim")
+    monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: (str(install),))
+    monkeypatch.delenv("ISAACSIM_PATH", raising=False)
+    monkeypatch.setattr("subprocess.call", lambda *a, **k: 42)
+
+    assert main(["run"]) == 42
