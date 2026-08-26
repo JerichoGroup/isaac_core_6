@@ -130,6 +130,64 @@ class SimConfig(_Strict):
         "isaac_core_ogn.math",
         "isaac_core_ogn.position",
     )
+    # Kit experience (app config) to launch.
+    #
+    # Isaac's SimulationApp defaults to `isaacsim.exp.base.python.kit`, a deliberately
+    # minimal app. That app omits the extensions that contribute property widgets and, more
+    # importantly, behaves differently from the editor the team actually authors USD in --
+    # which makes "it works in the GUI but not from the CLI" hard to reason about. Using the
+    # full experience keeps the two consistent.
+    #
+    # A bare filename is resolved against Isaac's apps directory ($EXP_PATH). An absolute
+    # path is used as given. Set to "" to accept SimulationApp's own default.
+    experience: str = "isaacsim.exp.full.kit"
+
+    # Extensions enabled during Kit startup, via `--enable`, rather than afterwards.
+    #
+    # This distinction is not cosmetic. An extension that contributes **USD schemas** must be
+    # present before the schema registry initialises; enabling it later reports success and
+    # silently does nothing useful. Measured on this install: enabling `cesium.omniverse`
+    # after startup left `CesiumTilesetPrim` unregistered, so the prim resolved as untyped
+    # with 5 raw attributes, `IsA(Xformable)` false, and no terrain drawn. Enabling it at
+    # boot gave a registered schema, 28 attributes and `IsA(Xformable)` true.
+    #
+    # The visible symptom is a prim that has lost most of its properties in the GUI -- and no
+    # error anywhere. Put schema-providing extensions here, everything else in `extensions`.
+    boot_extensions: tuple[str, ...] = (
+        "cesium.usd.plugins",
+        "cesium.omniverse",
+    )
+
+    # Extra directories Kit should search for extensions.
+    #
+    # Isaac's headless python experience does not search Omniverse's user extension
+    # registry, where extensions installed through the GUI's extension manager live. Cesium
+    # for Omniverse is installed there, so without this the tileset prims in a scene load
+    # as inert typed prims and no terrain ever appears -- with no error, because the prims
+    # themselves are perfectly valid USD.
+    #
+    # Each existing path is passed to Kit as `--ext-folder`. Missing paths are skipped
+    # rather than failing, so this default is portable across machines.
+    extension_search_paths: tuple[str, ...] = ("~/.local/share/ov/data/exts/v2",)
+
+    # Prim path the main viewport should look through when running with a GUI.
+    #
+    # Without this the viewport keeps Kit's default perspective camera, so the aircraft
+    # camera can be tracking a pose perfectly while the window appears frozen -- which
+    # reads as "the camera does not respond". `{instance}` is replaced with the vehicle id.
+    #
+    # Set to an empty string to leave the viewport alone.
+    viewport_camera: str = "/World/Environment/{instance}/Xform/main_camera_01"
+
+    # RTX render mode passed to SimulationApp.
+    #
+    # Isaac defaults to "RealTimePathTracing", which this project does not need: the camera
+    # topic wants a correct image, not a photoreal one. Path tracing over streaming 3D
+    # Tiles was also implicated in an intermittent startup segfault inside OmniGraph's
+    # render-stage execution. "RaytracedLighting" is materially lighter and stable.
+    #
+    # Also accepts "PathTracing", "RealTimePathTracing" and "MinimalRendering".
+    renderer: str = "RaytracedLighting"
     physics_dt: float = Field(1.0 / 60.0, gt=0.0)
     stage_units_in_meters: float = Field(1.0, gt=0.0)
     control_plane: ControlPlaneConfig = ControlPlaneConfig()
@@ -271,7 +329,30 @@ class LoggingConfig(_Strict):
     """Logging verbosity."""
 
     level: LogLevel = "info"
+
+    # Whether to let Kit's own log stream through to the terminal.
+    #
+    # False quiets Kit to warnings and errors only. Isaac otherwise prints thousands of
+    # startup lines that bury our own output -- a full launch emitted over 3,400 lines.
+    # Our own logger is unaffected either way; this only governs Kit's stream.
     isaac_logs: bool = False
+
+    # Python loggers raised to WARNING when `isaac_logs` is false.
+    #
+    # These are named explicitly because they set their own level and attach their own
+    # handler, so raising the root logger does not touch them. `ogn_registration` alone
+    # accounted for 2,721 lines of a 3,400-line launch.
+    quiet_loggers: tuple[str, ...] = (
+        "ogn_registration",
+        "AutoNode",
+        "omni",
+        "omni.kit",
+        "usd_validation_nvidia",
+        "matplotlib",
+        "asyncio",
+        "isaacsim",
+        "cesium",
+    )
 
 
 class PrimOverride(_Strict):

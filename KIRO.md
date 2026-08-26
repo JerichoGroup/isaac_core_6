@@ -1555,11 +1555,299 @@ commands and reading the diff establishes fact.
   **Verified:** 1012 pass + 0 xfail, all pre-commit hooks PASS, import-linter 23 contracts
   KEPT.
 
+- **2026-08-26 (d)** — Fixed the intermittent startup segfault. Root cause found by
+  measurement, and it was the ROS 2 bridge after all.
+
+  Built `scripts/crash_rate.sh` to make the problem measurable: N launches, each killed
+  before the next, stale `/tmp/carb.*` cleared first, counting the specific
+  `Segmentation fault` signature rather than a non-zero exit code. **Baseline: 5 crashes in
+  10 runs.** Without a harness this was unfixable -- every "fix" looked like it worked on a
+  lucky run of three.
+
+  Two wrong turns first, both cheap because the harness disproved them quickly: waiting for
+  `is_stage_loading()` to finish (4/10 -- and it made startup crawl, because Cesium streams
+  tiles indefinitely so the wait never completes), and switching the renderer from
+  `RealTimePathTracing` to `RaytracedLighting` (5/12). The renderer change was kept anyway
+  as `sim.renderer`: this project wants a correct image, not a photoreal one.
+
+  The stack trace was the turning point, once I looked at native frames instead of the
+  Python ones: `omni.graph.core` -> `omni.graph.image.core` -> `omni.kit.exec.core` -> TBB.
+  That is OmniGraph's **render-stage** execution inside Kit's parallel executor, not Cesium
+  and not RTX. A controlled bisect on an **empty stage** then isolated it:
+
+  | Extensions | Crashes |
+  |---|---|
+  | `omni.graph.action` + `omni.graph.nodes` | 0 / 6 |
+  | + `isaacsim.core.nodes` | 0 / 6 |
+  | + **`isaacsim.ros2.bridge`** | **4 / 6** |
+
+  So yesterday's original suspicion was right and my later "the bridge is fine" conclusion
+  was wrong -- that test used 30 frames where this one uses 120 plus play plus 120, and it
+  simply got lucky. Worth remembering: a negative result from a short probe is not evidence.
+
+  **The fix, entirely on our side: pump frames after enabling extensions, before any stage
+  operation.** Enabling the bridge and immediately creating a stage crashed 4/6; pumping 60
+  frames first crashed 0/6. The bridge needs update cycles to finish registering its
+  render-stage hooks, and a stage arriving mid-way races it. Added
+  `EXTENSION_WARMUP_FRAMES = 60` after `_enable_required_extensions`, and
+  `STAGE_SETTLE_FRAMES = 30` via a `settle` callback the composer invokes after the scene
+  opens and after layers mount.
+
+  **Result: 0 segfaults in 27 runs**, every one reaching play, against 5 in 10 before. If
+  the rate were still 0.5 the odds of 27 clean runs would be about 1 in 10^8.
+  `tests/unit/sim/test_startup_warmup.py` locks the ordering in with a fake app module and
+  was verified to fail when the pump is removed.
+
+  Also implemented **`Sim.launch()`**, whose `NotImplementedError` message had gone stale
+  (it claimed the Isaac-side runtime did not exist). It now resolves the install, writes a
+  resolved config, spawns `python.sh -m isaac_core.sim`, and waits for the control plane;
+  the returned session owns the process so `with Sim.launch(...)` cannot leak a simulator.
+  While testing it I discovered the old test suite **actually launched Isaac Sim** -- its
+  log leaked into pytest output. Tests now inject a fake launcher; the devkit suite went
+  from 12.9s to 2.8s.
+
+  Two sub-agents wrote `docs/roadmap.md` (repo-wide status, parity table against the 2023
+  repo, what remains for v1) and rewrote `README.md` with usage and worked examples. Both
+  were independently checked: the roadmap listed the import-linter hook and `Sim.launch` as
+  outstanding when both were done, and test counts were stale. Corrected.
+
+  **Verified:** 1037 pass, all pre-commit hooks PASS, import-linter 23 contracts KEPT, end
+  to end re-confirmed (prim at 8339.9 m north for lat 32.3; ROS message with
+  `stamp: {sec: 13, nanosec: 333333333}`).
+
+- **2026-08-26 (e)** — Fixed the GUI run: blank screen, no terrain, camera looking dead.
+
+  Ofer ran `isaac-core run` non-headless and got a white screen with no tilesets and an
+  apparently unresponsive camera. All my verification to that point had been **headless**,
+  which is exactly why this slipped through: every headless check reads the prim transform
+  through the control plane, and a prim transform is right whether or not anything is drawn.
+
+  Two independent causes, both silent:
+
+  1. **Cesium was never enabled.** The scene's terrain is 3D Tiles, needing
+     `cesium.omniverse`. It is installed by the GUI extension manager into
+     `~/.local/share/ov/data/exts/v2`, and Isaac's python experience does not search that
+     folder -- `enable_extension("cesium.omniverse")` returned **False** with
+     "No versions of cesium.omniverse that satisfies". Added `sim.extension_search_paths`,
+     passed to Kit as `--ext-folder`, and put `cesium.omniverse` in the default extension
+     list. Verified: "CesiumOmniverse startup" now appears in the log. A
+     `CesiumTilesetPrim` without the extension is valid USD that draws nothing, so there is
+     no error to find -- worth remembering as a failure shape.
+  2. **The viewport kept Kit's default perspective camera**, so the aircraft camera tracked
+     poses correctly while the window showed a static view. Added `sim.viewport_camera`,
+     defaulting to `/World/Environment/{instance}/Xform/main_camera_01`, applied after
+     composition and skipped when headless. Verified in a real GUI launch: "viewport looking
+     through /World/Environment/drone_0/Xform/main_camera_01".
+
+  The lesson for the rest of this project: **headless verification cannot see rendering.**
+  Anything visual needs either a GUI launch or an image-topic check. I should have flagged
+  the eyes-on item as blocking rather than nice-to-have.
+
+  Eight tests in `tests/unit/sim/test_gui_setup.py` cover the defaults, tilde expansion,
+  missing-folder tolerance, and the headless and empty-string escape hatches. Note the
+  config models are **frozen** (pydantic), so tests must construct
+  `IsaacCoreConfig(sim={...})` rather than mutate.
+
+  Ofer pointed me at how the 2023 repo did this, which confirmed the approach and surfaced
+  one more gap. That code called the same `enable_extension("cesium.omniverse")`; it worked
+  there because the Docker image **copied Cesium into `/isaac-sim/exts/`**, an
+  already-searched folder. `--ext-folder` reaches the same result without writing anything
+  into the Isaac install, which matters here.
+
+  It also had `_set_cesium_tilesets_url()`, rewriting every `cesium:url` under `/tilesets` at
+  launch. Our `cesium.tileset_server_url` existed in the schema but was **never applied** --
+  a silent dead config key. Now implemented as `apply_tileset_server_url()` in the composer,
+  defaulting to leaving the scene alone, so the team can repoint the tile server from config
+  instead of hand-editing USD in the GUI. Seven tests with fake USD objects.
+
+  **Verified:** 1037 pass, all hooks PASS, import-linter 23 contracts KEPT, GUI launch clean
+  for 150s with 0 crashes, Cesium and the viewport retarget both confirmed in that launch.
+
+- **2026-08-26 (f)** — Terrain finally renders. The cause was USD **schema registration
+  timing**, not the extension being missing.
+
+  After (e) the camera responded but there were still no tilesets. Ofer's diagnosis is what
+  cracked it: in the GUI the `Cesium_Tileset` prim showed Transform, Geometry, Visual, Kind
+  and Cesium Tileset Settings; under `isaac-core run` the same prim showed only Semantics,
+  Prim Custom Data, Array Properties and Raw USD Properties -- and **every** prim was losing
+  most of its properties. Losing *typed* properties means the schema is not resolving, which
+  points at the registry rather than at Cesium.
+
+  Measured it directly:
+
+  | | schema registered | attributes | `IsA(Xformable)` |
+  |---|---|---|---|
+  | `enable_extension("cesium.omniverse")` after boot | **False** | 5 | **False** |
+  | `--enable cesium.omniverse` at Kit startup | True | 28 | True |
+
+  So `enable_extension` **reported success and did nothing useful**: the USD schema registry
+  had already initialised, so `CesiumTilesetPrim` stayed an unregistered type and the prim
+  resolved untyped. A tileset that is not Xformable draws nothing, and nothing logs an error.
+  Added `sim.boot_extensions`, passed to Kit as `--enable`, with `cesium.usd.plugins`
+  alongside `cesium.omniverse` -- the schemas live in that separate extension, which
+  `cesium.omniverse` declares as a dependency.
+
+  Ofer then said to just use the full app, which is the better call and I should have reached
+  for it earlier: `sim.experience` now defaults to `isaacsim.exp.full.kit` instead of Isaac's
+  minimal `isaacsim.exp.base.python.kit`. Keeping the CLI and the editor on the same
+  experience removes a whole class of "works in the GUI but not from the CLI".
+
+  Verified with the exact configuration the runtime now uses: schema registered, 28
+  attributes, `IsA(Xformable)` true, `cesium:url` reading the right server, surviving play.
+  The heavier app did **not** bring the segfault back: **0 crashes in 8 runs**.
+
+  General lesson, worth applying beyond Cesium: **an extension that contributes USD schemas
+  must be enabled before the schema registry initialises.** `enable_extension` returning
+  `True` is not evidence that it did anything.
+
+  **Verified:** 1103 pass, all hooks PASS, import-linter 23 contracts KEPT.
+
+- **2026-08-26 (g)** — Two reported config bugs, both real, and an audit that found ten more.
+
+  **`logging.isaac_logs = false` did nothing.** The setting existed in the schema and was
+  never read. Worse, `__main__` called `logging.basicConfig(level=INFO)`, which sets the
+  **root** logger, so every third-party Python logger flooded the terminal: 2,822 of 3,414
+  lines. `ogn_registration` alone was 2,721.
+
+  Fixing it took three attempts, each disproved by measurement:
+  1. Kit startup args (`--/log/level=warning`) — no effect. Most of the noise is Python
+     logging, not Kit's carb stream.
+  2. Setting those loggers' levels at startup — no effect. Each extension sets its own level
+     while loading, overwriting ours.
+  3. Setting them *after* extensions load — no effect either. The noisiest records are
+     emitted **during** the load, so there is no moment afterwards to intervene.
+
+  What works is a **filter on the root handler**, which drops the records whenever they are
+  emitted, with anything at WARNING or above always passing so real problems still surface.
+  Result: **3,406 lines -> 603**, and `isaac_logs = true` still gives everything.
+
+  **`vehicles.drone_0.rotation_frame = "world"` behaved as body frame.** Ofer's test case:
+  pitch down 90, then change yaw; he expected the view to spin about its centre and instead
+  the nose swung. Diagnosis in two parts:
+  - `rotation_frame` was only ever applied to how the **gimbal offset** composes onto the
+    aircraft attitude, and the gimbal offsets come from a ROS subscriber that publishes
+    nothing by default, so the offset matrix was always identity and the setting was
+    unobservable. Ofer corrected my first reading here -- he meant the vehicle, not the gimbal.
+  - The aircraft's own attitude went through `euler_to_matrix` with a hardcoded intrinsic
+    XYZ (`rxyz`), which makes yaw a body-axis rotation regardless of the setting.
+
+  `euler_to_matrix`, `matrix_to_euler` and `euler_to_quaternion` now take a frame:
+  BODY keeps `rxyz`; WORLD uses `rzyx`, the standard aerospace yaw-pitch-roll order, where
+  yaw is applied first about world up. Verified numerically before implementing -- pitched
+  -90, the nose stays at `[0,0,1]` for every yaw under `rzyx` while only the up vector spins,
+  which is exactly the behaviour asked for. 22 tests cover it, including the contrast case.
+
+  Note the 2023 repo used `rxyz` too, so this was never a regression: world-frame behaviour
+  there came from `_apply_world_axis_rotation` in the **dev kit**, which composed a world-axis
+  delta client-side and sent the resulting absolute RPY. Our fix puts it in the simulator,
+  which is better -- it works for any sender, not just ours.
+
+  **The audit.** Both bugs were the same shape -- a config key that parses and validates but
+  that nothing reads -- so I checked all 65 schema fields against every use in `src/`,
+  `extensions/` and `scripts/`. Twelve were dead. Two are now fixed (`isaac_logs`,
+  `tileset_server_url`); the remaining ten are listed in `docs/roadmap.md` with reasons.
+  `tests/unit/config/test_no_dead_keys.py` now fails on any **new** dead key and also fails
+  when a key on the known-dead list gets fixed but is left on it, so the backlog cannot rot
+  in either direction.
+
+  Lesson: a config surface that silently ignores values is worse than one that does not offer
+  them. Ofer found two; a five-minute audit found ten. Worth doing that audit on any new
+  config block from now on.
+
+  **Verified:** 1103 pass, all hooks PASS, import-linter 23 contracts KEPT, live launch 603
+  log lines with 0 crashes.
+
+- **2026-08-26 (h)** — Roll and pitch were swapped at the camera, and the log fix finally
+  landed properly.
+
+  **Logs.** My previous fix cut 3,406 lines to 603, which Ofer correctly said still looked
+  the same -- 499 of the remainder were Kit's `[ext: ...] startup` list, printed straight to
+  **stdout**, which no log level touches. `--/app/enableStdoutOutput=false` removes them, and
+  our own logging goes to stderr so it survives. **3,406 -> 77 lines**, with
+  `isaac_logs = true` still giving the full 3,406. Lesson: "quieter" is not the goal, and a
+  percentage reduction can miss the thing the user actually sees.
+
+  **Roll and pitch traded places.** Ofer reported that a pitch input rolled the picture and a
+  roll input tilted the nose, with specific directions. Modelling the whole chain -- wire NED,
+  `ned_to_enu`, `euler_to_matrix`, then the camera prim's own 90 degree mount -- reproduced it
+  exactly: `+pitch` left the forward vector untouched and tilted the up vector, `+roll` tilted
+  the nose down.
+
+  The cause was `ned_to_enu`, which swapped the two axes (`roll_enu = pitch_ned`,
+  `pitch_enu = roll_ned`). KIRO recorded that as *"correct, not a bug -- it matches the 2023
+  formula exactly"*. It does match 2023, and 2023 was wrong. Matching a previous
+  implementation is not the same as being correct, and I should not have treated it as
+  evidence.
+
+  Found the right mapping by testing candidates against the body-axis convention rather than
+  by reasoning about it: `roll_enu = roll_ned`, `pitch_enu = -pitch_ned`, yaw unchanged. The
+  roll sign was settled by working out that a positive rotation about the nose axis takes the
+  right wing down, so `+roll` must tilt the up vector east when flying north.
+
+  Now: `+pitch` raises the nose, `-pitch` lowers it, `+roll` drops the right wing without
+  moving the nose, `+yaw` turns right, and pitch no longer banks the image. Confirmed live --
+  for `pitch=+20` the expected and measured camera forward both came out `[0, 0.94, 0.342]`.
+
+  `tests/unit/geo/test_camera_axes.py` (25 tests) asserts **where the camera looks**, not the
+  formula. The old suite passed while the picture was wrong precisely because it tested the
+  formula against the previous generation. Behavioural tests are the only kind that would have
+  caught this.
+
+  **Verified:** 1103 pass, all hooks PASS, import-linter 23 contracts KEPT, live launch 77 log
+  lines and orientation matching computation to 1e-3.
+
+- **2026-08-26 (i)** — Full validation of both rotation frames, and a false alarm worth
+  recording.
+
+  Ofer asked whether WORLD should mean "each angle rotates only its own axis". The honest
+  answer is that full independence is **impossible** for any Euler triple, because rotations
+  do not commute -- only the outermost angle can have that property. Established the exact
+  algebra by test rather than assertion:
+
+  | Frame | Matrix | Angle that is always about a fixed world axis |
+  |---|---|---|
+  | WORLD | `Rz(yaw) @ Ry(pitch) @ Rx(roll)` (fixed-axis XYZ, aerospace yaw-pitch-roll) | yaw, about world up |
+  | BODY | `Rx(roll) @ Ry(pitch) @ Rz(yaw)` (intrinsic XYZ) | roll, about world east |
+
+  So Ofer's observation was correct and is not a bug: in WORLD, yaw always rotates about
+  world up, but once yaw is non-zero, changing pitch rotates about a yaw-rotated axis. What
+  *is* guaranteed, and is now tested, is that the stored orientation decomposes back to
+  exactly the three angles that built it -- exact to 2e-16 in both frames, and the orientation
+  survives decompose-recompose even at gimbal lock where the triple is not unique.
+
+  `tests/unit/geo/test_rotation_pipeline.py` (133 tests) validates the whole chain for both
+  frames: wire bytes, decode, NED to ENU, matrix, quaternion, camera mount, view direction.
+  It includes the honest negative test that WORLD pitch is not world-stable once yawed, so
+  nobody rediscovers that as a bug.
+
+  Then confirmed **live through the real OGN node**: **11/11 attitudes matched computation for
+  WORLD and 11/11 for BODY**, across level, single-axis, combined, straight-down and
+  near-gimbal-lock cases.
+
+  **The false alarm.** My first two live attempts reported 3/11 and 4/11, with the prim
+  orientation apparently stuck. Cause: Ofer had `isaac-core-pose-sender` open, transmitting to
+  the same UDP port at 30 Hz, so my short bursts simply lost -- last packet wins. Nothing was
+  wrong. Two lessons: check for competing senders before believing a pipeline is broken, and a
+  burst is not a valid way to drive a last-writer-wins input. Added a README troubleshooting
+  entry, since this will happen to the team too.
+
+  Also cleaned up a genuine self-inflicted hazard found on the way: a leftover `/tmp/bisect.py`
+  from earlier debugging was **shadowing Python's stdlib `bisect`**, which crashed Isaac on
+  startup with a traceback pointing at my own probe file. That also retroactively explains the
+  `partially initialized module 'isaacsim'` failures I had misread as a systemic problem
+  earlier in the day. Probe scripts now live inside the repo and are deleted after use.
+
+  **Verified:** 1236 pass, all hooks PASS, import-linter 23 contracts KEPT, 22/22 live
+  attitudes across both frames.
+
 ### Known remaining issues
 
-- **Intermittent startup segfault**, about one launch in three, inside Kit's
-  `update_app()` just after play. Not ours -- reproduces with our extensions disabled.
-  Build sheet task 1 records everything ruled out so far.
+- **Sensor layers** are not built: distance sensor, bounding-box publishing, satellite
+  imagery. See `docs/roadmap.md`.
+- **`capture_frame`** raises `NotImplementedError` -- needs Isaac's viewport capture API.
+  Route it through `_on_main_thread` when implemented.
+- **Monotonic frame id** cannot reach the image topic; `header.stamp` now covers most of
+  that need.
 - **Intermittent segfault** inside Kit's `update_app()` on the first frame, roughly one
   launch in six, not root-caused and not obviously ours. Worth watching for a pattern
   before spending more on it.

@@ -120,21 +120,24 @@ class OgnGlobalPositionToLocalPosition:
         lla = Lla(lat_deg=global_position[0], lon_deg=global_position[1], alt_m=global_position[2])
         east, north, up = converter.lla_to_enu(lla)
 
-        # Compose gimbal offset using the selected rotation frame (D14)
+        rotation_frame = _resolve_rotation_frame(str(db.inputs.rotation_frame))
+
+        # The frame governs how the aircraft's own roll/pitch/yaw compose, not just how the
+        # gimbal offset lands on top. In WORLD it is aerospace yaw-pitch-roll, so yaw holds
+        # heading regardless of attitude; in BODY yaw is about the already-pitched axis.
         roll_r, pitch_r, yaw_r = global_orientation[0], global_orientation[1], global_orientation[2]
-        drone_matrix = euler_to_matrix(roll_r, pitch_r, yaw_r)
+        drone_matrix = euler_to_matrix(roll_r, pitch_r, yaw_r, frame=rotation_frame)
 
         offset_roll_r = math.radians(float(db.inputs.offset_roll_deg))
         offset_pitch_r = math.radians(float(db.inputs.offset_pitch_deg))
         offset_yaw_r = math.radians(float(db.inputs.offset_yaw_deg))
-        offset_matrix = euler_to_matrix(offset_roll_r, offset_pitch_r, offset_yaw_r)
+        offset_matrix = euler_to_matrix(offset_roll_r, offset_pitch_r, offset_yaw_r, frame=rotation_frame)
 
-        rotation_frame = _resolve_rotation_frame(str(db.inputs.rotation_frame))
         composed = compose_rotation(drone_matrix, offset_matrix, rotation_frame)
 
-        # Extract composed Euler and quaternion
-        composed_roll, composed_pitch, composed_yaw = matrix_to_euler(composed)
-        qw, qx, qy, qz = euler_to_quaternion(composed_roll, composed_pitch, composed_yaw)
+        # Read back with the same convention, or the angles would not round-trip.
+        composed_roll, composed_pitch, composed_yaw = matrix_to_euler(composed, frame=rotation_frame)
+        qw, qx, qy, qz = euler_to_quaternion(composed_roll, composed_pitch, composed_yaw, frame=rotation_frame)
 
         # Write outputs
         db.outputs.global_position = list(global_position)

@@ -17,6 +17,10 @@ from collections.abc import Sequence
 import importlib
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 from typing import Any, Final
 
 from isaac_core.config import IsaacCoreConfig
@@ -37,6 +41,11 @@ def _omni_usd() -> Any:  # noqa: ANN401
 def _gf() -> Any:  # noqa: ANN401
     """Return the lazily imported ``pxr.Gf`` module."""
     return importlib.import_module("pxr.Gf")
+
+
+def _usd() -> Any:  # noqa: ANN401
+    """Return the lazily imported ``pxr.Usd`` module."""
+    return importlib.import_module("pxr.Usd")
 
 
 def _sdf() -> Any:  # noqa: ANN401
@@ -90,6 +99,7 @@ def compose_stage(
     plan: FeaturePlan,
     scene_path: Path,
     layer_search_paths: tuple[Path, ...],
+    settle: "Callable[[], None] | None" = None,
 ) -> Any:  # noqa: ANN401
     """
     Open the base scene, mount feature layers, and apply configuration.
@@ -110,6 +120,12 @@ def compose_stage(
         plan: The feature plan.
         scene_path: Absolute path to the base scene USD file.
         layer_search_paths: Directories to search for layer USD files.
+        settle: Optional callable invoked after the base scene opens and again after the
+            layers mount, used to let the application finish loading in between. Layers
+            can contain graphs that OmniGraph evaluates in the render pipeline, and
+            mounting them before the renderer has produced a frame crashed startup
+            intermittently. ``None`` skips the waits, which keeps this testable without
+            a running application.
 
     Returns:
         The opened ``pxr.Usd.Stage``.
@@ -132,10 +148,18 @@ def compose_stage(
 
     stage = usd_context.get_stage()
 
+    # Let the base scene finish loading before any layer graph exists. See `settle`.
+    if settle is not None:
+        settle()
+
     # The instance is the vehicle id, so prim paths match the manifests' {instance}
     # templates and each aircraft in a swarm gets its own mount.
     instance = next(iter(config.vehicles))
     _mount_layers(stage, plan, layer_search_paths, instance)
+
+    # And again, so the newly mounted graphs are fully resolved before physics starts.
+    if settle is not None:
+        settle()
 
     inspector = UsdStageInspector(stage)
     probe(inspector)
@@ -149,11 +173,59 @@ def compose_stage(
     if report:
         logger.info("Feature layers:\n%s", report)
 
+    apply_tileset_server_url(stage, config.cesium.tileset_server_url, config.cesium.tilesets_root)
+
     camera_prim = _resolve_camera_prim(config, stage)
     writes = compute_writes(config, plan, resolved_enu, camera_prim=camera_prim)
     _apply_stage_writes(stage, writes)
 
     return stage
+
+
+def apply_tileset_server_url(
+    stage: Any,  # noqa: ANN401
+    url: str | None,
+    tilesets_root: str,
+) -> int:
+    """
+    Repoint every Cesium tileset under ``tilesets_root`` at a different server.
+
+    Lets a team member switch tile servers from config instead of hand-editing the scene
+    in the GUI, which matters because the URL is otherwise baked into the USD. Carried over
+    from the previous generation, which did the same thing.
+
+    Args:
+        stage: The open USD stage.
+        url: Replacement base URL. ``None`` leaves the scene's own URLs untouched.
+        tilesets_root: Prim path whose subtree is searched for tilesets.
+
+    Returns:
+        Number of tilesets repointed.
+
+    """
+    if not url:
+        return 0
+
+    root = stage.GetPrimAtPath(tilesets_root)
+    if not root.IsValid():
+        logger.warning("tilesets root %s does not exist; not applying the tileset URL", tilesets_root)
+        return 0
+
+    changed = 0
+    for prim in _usd().PrimRange(root):
+        attribute = prim.GetAttribute("cesium:url")
+        if not attribute.IsValid():
+            continue
+        previous = attribute.Get()
+        if previous == url:
+            continue
+        attribute.Set(url)
+        logger.info("tileset %s: %s -> %s", prim.GetPath(), previous, url)
+        changed += 1
+
+    if changed == 0:
+        logger.warning("no cesium:url attributes found under %s", tilesets_root)
+    return changed
 
 
 def _mount_layers(

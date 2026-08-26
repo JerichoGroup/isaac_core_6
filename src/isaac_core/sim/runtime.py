@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import importlib
 import logging
+import os
 from pathlib import Path
 import queue
 import threading
@@ -40,6 +41,26 @@ logger = logging.getLogger(__name__)
 # Generous because a single frame can take a while on a cold stage, but bounded so a
 # wedged step loop surfaces as a clear error rather than a hung client.
 MAIN_THREAD_TASK_TIMEOUT_S: float = 10.0
+
+# Frames to pump after enabling extensions, before touching the stage.
+#
+# This is the fix for an intermittent startup segfault that killed roughly half of all
+# launches. Measured on this install, opening or creating a stage immediately after
+# enabling `isaacsim.ros2.bridge` crashed 4 of 6 runs inside Kit's parallel graph executor
+# (`omni.graph.core` -> `omni.graph.image.core` -> `omni.kit.exec.core` -> TBB). Pumping
+# frames first before any stage operation crashed 0 of 6. The bridge evidently needs a few
+# update cycles to finish registering its render-stage hooks, and a stage arriving mid-way
+# through that races it.
+#
+# Cheap insurance: 60 frames is well under a second of wall clock at startup.
+EXTENSION_WARMUP_FRAMES: int = 60
+
+# Frames to pump after the base scene opens and again after feature layers mount.
+#
+# Same reasoning at smaller scale: layers can carry graphs that OmniGraph evaluates in the
+# render pipeline, and mounting one before the renderer has produced a frame is the same
+# class of race.
+STAGE_SETTLE_FRAMES: int = 30
 
 
 @dataclass
@@ -171,8 +192,10 @@ class SimulationRuntime:
             "headless": self._config.sim.headless,
             "width": 1280,
             "height": 720,
+            "renderer": self._config.sim.renderer,
+            "extra_args": self._kit_startup_args(),
         }
-        self._app = sim_app_cls(launch_config)
+        self._app = sim_app_cls(launch_config, experience=self._resolve_experience())
 
         self._enable_required_extensions()
 
@@ -189,6 +212,139 @@ class SimulationRuntime:
             # need for remote control, and one fewer background thread is one fewer
             # thing interacting with Kit's event loop.
             logger.info("control plane disabled by configuration")
+
+    def _set_viewport_camera(self) -> None:
+        """
+        Point the main viewport at the configured camera, when running with a GUI.
+
+        Skipped when headless, where there is no viewport to retarget, and skipped if the
+        prim does not exist so a scene without that camera still runs.
+        """
+        template = self._config.sim.viewport_camera
+        if self._config.sim.headless or not template:
+            return
+
+        instance = next(iter(self._config.vehicles))
+        camera_path = template.replace("{instance}", instance)
+
+        omni_usd = importlib.import_module("omni.usd")
+        stage = omni_usd.get_context().get_stage()
+        if stage is None or not stage.GetPrimAtPath(camera_path).IsValid():
+            logger.warning("viewport camera %s does not exist; leaving the viewport alone", camera_path)
+            return
+
+        try:
+            viewport_utils = importlib.import_module("omni.kit.viewport.utility")
+            viewport = viewport_utils.get_active_viewport()
+        except (ImportError, RuntimeError) as exc:
+            logger.warning("could not access the viewport: %s", exc)
+            return
+        if viewport is None:
+            logger.warning("no active viewport to retarget")
+            return
+
+        viewport.camera_path = camera_path
+        logger.info("viewport looking through %s", camera_path)
+
+    def _quiet_noisy_loggers(self) -> None:
+        """
+        Raise the level of Isaac's chattiest Python loggers.
+
+        Only takes effect if called after the extensions have loaded: each sets its own
+        level on the way up, overwriting anything configured earlier. `ogn_registration`
+        alone accounted for 2,721 lines of a 3,400-line launch.
+        """
+        if self._config.logging.isaac_logs:
+            return
+        for name in self._config.logging.quiet_loggers:
+            logging.getLogger(name).setLevel(logging.WARNING)
+        logger.debug("quieted %d Isaac loggers", len(self._config.logging.quiet_loggers))
+
+    def _resolve_experience(self) -> str:
+        """
+        Resolve the configured Kit experience to a path SimulationApp accepts.
+
+        Args:
+            None.
+
+        Returns:
+            An absolute ``.kit`` path, or an empty string to accept Isaac's own default.
+
+        """
+        configured = self._config.sim.experience
+        if not configured:
+            return ""
+
+        candidate = Path(configured).expanduser()
+        if candidate.is_absolute():
+            if candidate.is_file():
+                return str(candidate)
+            logger.warning("experience %s does not exist; using Isaac's default", candidate)
+            return ""
+
+        # Bare filename: resolve against Isaac's apps directory, which Kit exports as
+        # EXP_PATH inside the simulator's own interpreter.
+        exp_path = os.environ.get("EXP_PATH")
+        if not exp_path:
+            logger.warning("EXP_PATH is unset; using Isaac's default experience")
+            return ""
+
+        resolved = Path(exp_path) / configured
+        if not resolved.is_file():
+            logger.warning("experience %s not found; using Isaac's default", resolved)
+            return ""
+
+        logger.info("using Kit experience %s", resolved)
+        return str(resolved)
+
+    def _kit_startup_args(self) -> list[str]:
+        """
+        Build the Kit startup arguments: extension folders, boot enables and log levels.
+
+        Only existing directories are included: a missing path is a machine difference,
+        not an error, and passing a nonexistent folder makes Kit complain on every launch.
+
+        Returns:
+            Flat argument list, empty if no configured path exists.
+
+        """
+        args: list[str] = []
+        for raw in self._config.sim.extension_search_paths:
+            folder = Path(raw).expanduser()
+            if folder.is_dir():
+                args.extend(["--ext-folder", str(folder)])
+            else:
+                logger.debug("skipping missing extension folder %s", folder)
+
+        # Must be enabled by Kit itself, before the USD schema registry initialises.
+        for extension in self._config.sim.boot_extensions:
+            args.extend(["--enable", extension])
+
+        args.extend(self._log_level_args())
+        return args
+
+    def _log_level_args(self) -> list[str]:
+        """
+        Build Kit logging arguments honouring ``logging.isaac_logs``.
+
+        Kit's log level has to be set as a startup argument. Setting it later still leaves
+        the thousands of lines it prints while loading extensions, which is exactly the
+        noise the setting exists to remove.
+
+        Returns:
+            Kit arguments, empty when Isaac's own logs are wanted.
+
+        """
+        if self._config.logging.isaac_logs:
+            return []
+        return [
+            "--/log/level=warning",
+            "--/log/outputStreamLevel=warning",
+            "--/log/debugConsoleLevel=warning",
+            # Kit prints ~500 "[ext: ...] startup" lines straight to stdout, which no log
+            # level affects. Our own logging goes to stderr, so it survives this.
+            "--/app/enableStdoutOutput=false",
+        ]
 
     def _enable_required_extensions(self) -> None:
         """
@@ -216,6 +372,14 @@ class SimulationRuntime:
             else:
                 logger.warning("extension %s could not be enabled; nodes from it will be missing", extension)
 
+        # Extensions set their own Python logger levels as they load, so quieting them
+        # before this point has no effect -- it has to happen afterwards.
+        self._quiet_noisy_loggers()
+
+        # Let the newly enabled extensions settle before any stage operation.
+        self._pump(app_utils, EXTENSION_WARMUP_FRAMES)
+        logger.debug("warmed up %d frames after enabling extensions", EXTENSION_WARMUP_FRAMES)
+
     def open_stage(self, scene_path: Path, layer_search_paths: tuple[Path, ...]) -> None:
         """
         Open the scene and compose feature layers.
@@ -227,7 +391,21 @@ class SimulationRuntime:
         """
         from isaac_core.sim.composer import compose_stage
 
-        compose_stage(self._config, self._plan, scene_path, layer_search_paths)
+        app_utils = importlib.import_module("isaacsim.core.experimental.utils.app")
+
+        def settle() -> None:
+            """Let the application catch up between composition steps."""
+            self._pump(app_utils, STAGE_SETTLE_FRAMES)
+
+        compose_stage(
+            self._config,
+            self._plan,
+            scene_path,
+            layer_search_paths,
+            settle=settle,
+        )
+
+        self._set_viewport_camera()
 
     def run(self) -> None:
         """
@@ -270,6 +448,21 @@ class SimulationRuntime:
         finally:
             self._running = False
             logger.info("simulation stopped")
+
+    def _pump(self, app_utils: Any, frames: int) -> None:  # noqa: ANN401
+        """
+        Advance the application a fixed number of frames.
+
+        Used to let subsystems finish initialising at points where a stage operation would
+        otherwise race them -- see :data:`EXTENSION_WARMUP_FRAMES`.
+
+        Args:
+            app_utils: The ``isaacsim.core.experimental.utils.app`` module.
+            frames: Number of update cycles to run.
+
+        """
+        for _ in range(frames):
+            app_utils.update_app()
 
     def _drain_main_thread_tasks(self) -> None:
         """Run every queued task, recording its result or exception for the caller."""

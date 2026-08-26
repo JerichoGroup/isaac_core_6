@@ -22,6 +22,12 @@ from isaac_core.contracts.pose import Rpy
 SLERP_DOT_THRESHOLD: float = 0.9995
 
 
+# Euler convention for world-frame composition: intrinsic ZYX, the standard
+# aerospace yaw-pitch-roll order. Yaw is applied first, about world up, so heading
+# stays independent of pitch and roll.
+_WORLD_EULER_AXES: str = "rzyx"
+
+
 def normalize_angle(radians: float) -> float:
     """
     Normalise an angle in radians to the range ``[-pi, pi]``.
@@ -40,11 +46,22 @@ def ned_to_enu(attitude: Rpy) -> Rpy:
     """
     Convert an attitude from NED to ENU.
 
-    Preserves the 2023 formula exactly::
+    The mapping is::
 
-        roll_enu  =  pitch_ned
-        pitch_enu =  roll_ned
+        roll_enu  =  roll_ned
+        pitch_enu = -pitch_ned
         yaw_enu   = -yaw_ned + pi/2   (normalised to [-pi, pi])
+
+    Roll passes through, pitch flips sign, and yaw flips sign and rotates by 90 degrees to
+    turn a compass heading into an ENU bearing.
+
+    This deliberately does NOT match the previous generation, which swapped roll and pitch
+    (``roll_enu = pitch_ned``). That swap made the two axes trade places at the camera: a
+    pitch input banked the image and a roll input tilted the nose. Verified against the
+    body-axis convention (+X nose, +Y left wing, +Z up) and the camera's own 90 degree
+    mount: with this mapping ``+pitch`` raises the nose, ``+roll`` drops the right wing,
+    and ``+yaw`` turns right. Anything calibrated against the old behaviour needs its signs
+    revisited.
 
     Args:
         attitude: An :class:`~isaac_core.contracts.pose.Rpy` tagged with
@@ -62,8 +79,8 @@ def ned_to_enu(attitude: Rpy) -> Rpy:
         msg = "Attitude is already in ENU frame; cannot convert NED→ENU."
         raise ValueError(msg)
 
-    roll_enu = attitude.pitch_r
-    pitch_enu = attitude.roll_r
+    roll_enu = attitude.roll_r
+    pitch_enu = -attitude.pitch_r
     yaw_enu = normalize_angle(-attitude.yaw_r + math.pi / 2.0)
 
     return Rpy(roll_r=roll_enu, pitch_r=pitch_enu, yaw_r=yaw_enu, frame=Frame.ENU)
@@ -75,8 +92,8 @@ def enu_to_ned(attitude: Rpy) -> Rpy:
 
     This is the true inverse of :func:`ned_to_enu`::
 
-        roll_ned  =  pitch_enu
-        pitch_ned =  roll_enu
+        roll_ned  =  roll_enu
+        pitch_ned = -pitch_enu
         yaw_ned   = -(yaw_enu - pi/2)   (normalised to [-pi, pi])
 
     Args:
@@ -95,63 +112,100 @@ def enu_to_ned(attitude: Rpy) -> Rpy:
         msg = "Attitude is already in NED frame; cannot convert ENU→NED."
         raise ValueError(msg)
 
-    roll_ned = attitude.pitch_r
-    pitch_ned = attitude.roll_r
+    roll_ned = attitude.roll_r
+    pitch_ned = -attitude.pitch_r
     yaw_ned = normalize_angle(-(attitude.yaw_r - math.pi / 2.0))
 
     return Rpy(roll_r=roll_ned, pitch_r=pitch_ned, yaw_r=yaw_ned, frame=Frame.NED)
 
 
-def euler_to_matrix(roll_r: float, pitch_r: float, yaw_r: float) -> NDArray[np.float64]:
+def euler_to_matrix(
+    roll_r: float,
+    pitch_r: float,
+    yaw_r: float,
+    frame: RotationFrame = RotationFrame.BODY,
+) -> NDArray[np.float64]:
     """
-    Convert intrinsic-XYZ Euler angles to a 3×3 rotation matrix.
+    Build a rotation matrix from roll, pitch and yaw in radians.
+
+    The ``frame`` argument selects the composition order, which is what decides how the
+    three angles interact -- not a cosmetic choice:
+
+    - :attr:`~isaac_core.contracts.frames.RotationFrame.BODY` uses intrinsic XYZ
+      (``rxyz``): roll, then pitch about the already-rolled axis, then yaw about the
+      already-pitched axis. Yaw therefore behaves like a body-axis rotation, so an aircraft
+      pitched 90 degrees down swings sideways as yaw changes.
+    - :attr:`~isaac_core.contracts.frames.RotationFrame.WORLD` uses intrinsic ZYX
+      (``rzyx``): yaw about world up first, then pitch, then roll. This is the standard
+      aerospace yaw-pitch-roll convention, and it is what makes yaw hold heading
+      independently of attitude -- pitched straight down, changing yaw spins the view about
+      its centre instead of moving where the nose points.
 
     Args:
         roll_r: Roll in radians.
         pitch_r: Pitch in radians.
         yaw_r: Yaw in radians.
+        frame: Composition order to use.
 
     Returns:
-        A 3×3 rotation matrix (``numpy.float64``).
+        A 3x3 rotation matrix.
 
     """
-    result: NDArray[np.float64] = euler2mat(roll_r, pitch_r, yaw_r, axes=EULER_AXES)
-    return result
+    if frame is RotationFrame.WORLD:
+        # transforms3d takes the angles in axis order, so ZYX means (yaw, pitch, roll).
+        return euler2mat(yaw_r, pitch_r, roll_r, axes=_WORLD_EULER_AXES)
+    return euler2mat(roll_r, pitch_r, yaw_r, axes=EULER_AXES)
 
 
-def matrix_to_euler(matrix: NDArray[np.float64]) -> tuple[float, float, float]:
+def matrix_to_euler(
+    matrix: NDArray[np.float64],
+    frame: RotationFrame = RotationFrame.BODY,
+) -> tuple[float, float, float]:
     """
-    Convert a 3×3 rotation matrix to intrinsic-XYZ Euler angles.
+    Decompose a rotation matrix into roll, pitch and yaw in radians.
+
+    Inverse of :func:`euler_to_matrix`, and must be called with the same ``frame`` or the
+    angles will not round-trip.
 
     Args:
-        matrix: A 3×3 rotation matrix.
+        matrix: A 3x3 rotation matrix.
+        frame: Composition order the matrix was built with.
 
     Returns:
-        A tuple ``(roll_r, pitch_r, yaw_r)`` in radians.
+        ``(roll_r, pitch_r, yaw_r)`` in radians.
 
     """
+    if frame is RotationFrame.WORLD:
+        yaw_r, pitch_r, roll_r = mat2euler(matrix, axes=_WORLD_EULER_AXES)
+        return (float(roll_r), float(pitch_r), float(yaw_r))
     roll_r, pitch_r, yaw_r = mat2euler(matrix, axes=EULER_AXES)
     return (float(roll_r), float(pitch_r), float(yaw_r))
 
 
-def euler_to_quaternion(roll_r: float, pitch_r: float, yaw_r: float) -> tuple[float, float, float, float]:
+def euler_to_quaternion(
+    roll_r: float,
+    pitch_r: float,
+    yaw_r: float,
+    frame: RotationFrame = RotationFrame.BODY,
+) -> tuple[float, float, float, float]:
     """
-    Convert intrinsic-XYZ Euler angles to a quaternion.
-
-    The returned quaternion is in ``(w, x, y, z)`` order -- the native
-    ``transforms3d`` convention, and the one Isaac Sim displays in its GUI.
+    Convert roll, pitch and yaw in radians to a quaternion.
 
     Args:
         roll_r: Roll in radians.
         pitch_r: Pitch in radians.
         yaw_r: Yaw in radians.
+        frame: Composition order; see :func:`euler_to_matrix`.
 
     Returns:
-        A tuple ``(w, x, y, z)``.
+        ``(w, x, y, z)``.
 
     """
-    q: NDArray[np.float64] = euler2quat(roll_r, pitch_r, yaw_r, axes=EULER_AXES)
-    return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+    if frame is RotationFrame.WORLD:
+        w, x, y, z = euler2quat(yaw_r, pitch_r, roll_r, axes=_WORLD_EULER_AXES)
+    else:
+        w, x, y, z = euler2quat(roll_r, pitch_r, yaw_r, axes=EULER_AXES)
+    return (float(w), float(x), float(y), float(z))
 
 
 def quaternion_to_euler(w: float, x: float, y: float, z: float) -> tuple[float, float, float]:

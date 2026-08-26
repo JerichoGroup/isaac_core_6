@@ -1,6 +1,7 @@
 """Tests for isaac_core.devkit.session: Sim facade and SimSession."""
 
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 
@@ -82,9 +83,99 @@ def test_attach_timeout_when_no_server() -> None:
 # -- Sim.launch ------------------------------------------------------------- #
 
 
-def test_launch_raises_not_implemented() -> None:
-    with pytest.raises(NotImplementedError, match="Isaac-side runtime"):
-        Sim.launch()
+class _FakeProcess:
+    """Stands in for a spawned simulator so no Isaac Sim is started."""
+
+    def __init__(self) -> None:
+        """Start alive, with nothing terminated or killed."""
+        self.terminated = False
+        self.killed = False
+        self.waited = False
+        self._alive = True
+
+    def poll(self) -> int | None:
+        """Return ``None`` while alive, mimicking ``subprocess.Popen``."""
+        return None if self._alive else 0
+
+    def terminate(self) -> None:
+        """Record a polite shutdown request."""
+        self.terminated = True
+        self._alive = False
+
+    def kill(self) -> None:
+        """Record a forced shutdown."""
+        self.killed = True
+        self._alive = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        """Record that the caller waited."""
+        self.waited = True
+        return 0
+
+
+def test_launch_connects_and_returns_a_session(fake_server: ControlServer) -> None:
+    # The launcher is injected so this exercises the real wiring -- config resolution,
+    # command construction, readiness wait -- without starting Isaac Sim.
+    port = fake_server.port
+    assert port is not None
+    captured: list[list[str]] = []
+    process = _FakeProcess()
+
+    def fake_launcher(command: list[str]) -> _FakeProcess:
+        captured.append(command)
+        return process
+
+    session = Sim.launch(port=port, headless=True, timeout_s=5.0, launcher=fake_launcher)
+    try:
+        assert session.pause() == "paused", "the session must be usable"
+    finally:
+        session.close()
+
+    assert captured, "the launcher was never called"
+    command = captured[0]
+    # Must invoke the module in Isaac's interpreter, never a path into this repo (D7).
+    assert "-m" in command
+    assert "isaac_core.sim" in command
+    assert command[command.index("-m") + 1] == "isaac_core.sim"
+    assert "--config" in command
+
+
+def test_a_launched_session_stops_the_simulator_on_close(fake_server: ControlServer) -> None:
+    # Otherwise a script that raises inside `with Sim.launch(...)` leaves Isaac running.
+    port = fake_server.port
+    assert port is not None
+    process = _FakeProcess()
+    session = Sim.launch(port=port, headless=True, timeout_s=5.0, launcher=lambda _cmd: process)
+    session.close()
+    assert process.terminated, "closing a launched session must stop the simulator"
+
+
+def test_an_attached_session_leaves_the_simulator_running(fake_server: ControlServer) -> None:
+    # attach() connects to somebody else's simulator and must not kill it.
+    port = fake_server.port
+    assert port is not None
+    session = Sim.attach(host="127.0.0.1", port=port, timeout_s=5.0)
+    session.close()
+    assert session._process is None
+
+
+def test_launch_writes_a_resolved_config_the_simulator_can_read(fake_server: ControlServer) -> None:
+    port = fake_server.port
+    assert port is not None
+    captured: list[list[str]] = []
+
+    def fake_launcher(command: list[str]) -> _FakeProcess:
+        captured.append(command)
+        return _FakeProcess()
+
+    session = Sim.launch(port=port, headless=True, timeout_s=5.0, launcher=fake_launcher)
+    session.close()
+
+    config_path = Path(captured[0][captured[0].index("--config") + 1])
+    assert config_path.is_file(), "the resolved config must exist on disk"
+    text = config_path.read_text(encoding="utf-8")
+    # The requested port has to reach the simulator, or it would open a different one.
+    assert str(port) in text
 
 
 # -- SimSession operations -------------------------------------------------- #

@@ -23,6 +23,28 @@ from isaac_core.control.messages import Method
 
 logger = logging.getLogger(__name__)
 
+# Seconds to let a launched simulator shut down cleanly before killing it.
+_SHUTDOWN_TIMEOUT_S = 15.0
+
+
+def _default_launcher(command: list[str]) -> Any:  # noqa: ANN401
+    """
+    Spawn the simulator as a child process.
+
+    Injected rather than called directly so tests can drive :meth:`Sim.launch` without
+    Isaac Sim present.
+
+    Args:
+        command: The full argument vector to execute.
+
+    Returns:
+        The spawned ``subprocess.Popen``.
+
+    """
+    import subprocess  # noqa: PLC0415
+
+    return subprocess.Popen(command)
+
 
 class _FeatureManager:
     """
@@ -120,17 +142,23 @@ class SimSession:
     does not require it.
     """
 
-    def __init__(self, client: ControlClient) -> None:
+    def __init__(self, client: ControlClient, process: Any = None) -> None:  # noqa: ANN401
         """
         Initialise from an already-connected :class:`ControlClient`.
 
         Args:
             client: A connected control client.
+            process: The simulator process this session started, if any. Only
+                :meth:`Sim.launch` passes one; :meth:`Sim.attach` leaves it ``None`` so
+                closing the session does not stop somebody else's simulator.
 
         """
         self._client = client
         self._features = _FeatureManager(client)
         self._config = _ConfigProxy(client)
+        # Set only by Sim.launch: a session that started the simulator is responsible for
+        # stopping it, otherwise a script that raises leaves Isaac Sim running.
+        self._process = process
 
     @property
     def client(self) -> ControlClient:
@@ -224,8 +252,25 @@ class SimSession:
         return self._client.call(Method.GET_CAPABILITIES.value)
 
     def close(self) -> None:
-        """Disconnect from the control server."""
+        """
+        Disconnect from the control server, and stop the simulator if we started it.
+
+        A session from :meth:`Sim.attach` leaves the simulator alone -- it belongs to
+        whoever launched it. A session from :meth:`Sim.launch` owns the process and
+        terminates it, so ``with Sim.launch(...)`` cannot leak a running Isaac Sim.
+        """
         self._client.close()
+        if self._process is None:
+            return
+        if self._process.poll() is not None:
+            return
+        logger.info("terminating the simulator we launched")
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=_SHUTDOWN_TIMEOUT_S)
+        except Exception:  # noqa: BLE001
+            logger.warning("simulator did not exit in time; killing it")
+            self._process.kill()
 
     def __enter__(self) -> SimSession:
         """Enter context manager -- return self."""
@@ -301,10 +346,13 @@ class Sim:
         """
         Launch a new simulator instance and connect to it.
 
-        The design is complete: resolves the Isaac install (from config, environment,
-        or probing known paths), builds the launch command, spawns the process, and
-        calls ``wait_until_ready``. Since the Isaac-side runtime that would serve the
-        control plane does not exist yet, this raises :class:`NotImplementedError`.
+        Resolves the Isaac install (validating it rather than trusting
+        ``$ISAACSIM_PATH``), writes the fully resolved config to a temporary file, spawns
+        ``python.sh -m isaac_core.sim`` in Isaac's bundled interpreter, and waits for the
+        control plane to answer. Port opening is the readiness signal.
+
+        The returned session OWNS the process: closing it stops the simulator. Use
+        :meth:`attach` instead to connect to one somebody else started.
 
         Args:
             host: Control plane host for the new instance.
@@ -319,16 +367,48 @@ class Sim:
             A connected :class:`SimSession`.
 
         Raises:
-            NotImplementedError: Always, until the Isaac-side runtime is built.
+            IsaacInstallError: If no usable Isaac Sim install can be found.
+            TimeoutError: If the control plane does not answer within ``timeout_s``.
 
         """
-        msg = (
-            "Sim.launch() cannot spawn an Isaac Sim process yet because the Isaac-side "
-            "runtime (which serves the control plane inside the simulator) has not been "
-            "implemented. Use Sim.attach() to connect to a manually started simulator, "
-            "or wait for the sim runtime module to be built."
+        import tempfile  # noqa: PLC0415
+
+        from isaac_core.config import load  # noqa: PLC0415
+        from isaac_core.config.loader import dump_toml  # noqa: PLC0415
+        from isaac_core.install import IsaacInstall  # noqa: PLC0415
+
+        install = IsaacInstall.locate()
+
+        # The simulator reads one fully resolved TOML rather than a pile of flags, so
+        # precedence is decided in exactly one place. Same mechanism the CLI uses.
+        config = load(
+            cli_overrides={
+                "sim.scene": scene,
+                "sim.headless": str(headless).lower(),
+                "sim.control_plane.port": str(port),
+            }
         )
-        raise NotImplementedError(msg)
+        config_dir = Path(tempfile.mkdtemp(prefix="isaac-core-launch-"))
+        config_path = config_dir / "resolved.toml"
+        config_path.write_text(dump_toml(config), encoding="utf-8")
+
+        command = [str(install.python_path), "-m", "isaac_core.sim", "--config", str(config_path)]
+        spawn = launcher if launcher is not None else _default_launcher
+        logger.info("launching simulator: %s", " ".join(command))
+        process = spawn(command)
+
+        client = ControlClient(host=host, port=port)
+        try:
+            client.wait_until_ready(timeout_s=timeout_s)
+        except TimeoutError:
+            # A simulator that never opened its port is not useful, and leaving it running
+            # would block the port for the next attempt.
+            if process is not None and process.poll() is None:
+                process.terminate()
+            raise
+
+        logger.info("launched simulation at %s:%d", host, port)
+        return SimSession(client, process=process)
 
 
 __all__ = [

@@ -57,6 +57,42 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _configure_logging(config: object) -> None:
+    """
+    Apply the resolved logging configuration.
+
+    Args:
+        config: The resolved :class:`~isaac_core.config.IsaacCoreConfig`.
+
+    """
+    logging_config = config.logging  # type: ignore[attr-defined]
+    level = getattr(logging, str(logging_config.level).upper(), logging.INFO)
+    logging.getLogger("isaac_core").setLevel(level)
+
+    # `isaac_logs = false` means Isaac's chatter stays out of the terminal. Third-party
+    # Python loggers are the bulk of it, so the root logger is what has to be raised;
+    # Kit's own stream is handled separately with startup arguments.
+    if logging_config.isaac_logs:
+        logging.getLogger().setLevel(logging.INFO)
+        return
+
+    logging.getLogger().setLevel(logging.WARNING)
+
+    # A level set on these loggers does not survive: each extension sets its own on the way
+    # up, and the noisiest lines are emitted *while* extensions load, so there is no moment
+    # afterwards to intervene. Filtering at the handler drops the records whenever they are
+    # emitted, which is the only approach that actually works here.
+    quiet = tuple(logging_config.quiet_loggers)
+
+    def _drop_noisy(record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        return not any(record.name == name or record.name.startswith(f"{name}.") for name in quiet)
+
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(_drop_noisy)
+
+
 def main(argv: list[str] | None = None) -> None:
     """
     Launch the simulation.
@@ -71,10 +107,14 @@ def main(argv: list[str] | None = None) -> None:
     """
     args = _parse_args(argv)
 
+    # Root stays quiet on purpose. Setting the root logger to INFO routes every third-party
+    # Python logger -- asyncio, Isaac's own modules, Cesium -- to the terminal: over 2,800
+    # lines of a 3,400-line launch came from that alone, burying our output.
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
     )
+    logging.getLogger("isaac_core").setLevel(logging.INFO)
 
     from isaac_core.config import load
     from isaac_core.sim.capabilities import probe
@@ -88,6 +128,7 @@ def main(argv: list[str] | None = None) -> None:
         cli_overrides["sim.scene"] = args.scene
 
     config = load(path=args.config, cli_overrides=cli_overrides)
+    _configure_logging(config)
 
     layer_paths = _resolve_layer_search_paths(config)
     manifests = discover_layers(layer_paths)

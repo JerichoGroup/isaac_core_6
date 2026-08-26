@@ -31,6 +31,37 @@ scene = "earth"
 # Run without a GUI window.
 headless = false
 
+# Prim path the main viewport looks through when running with a GUI. `{instance}` is
+# replaced with the vehicle id. Without this the window keeps Kit's default perspective
+# camera, so the aircraft camera can be tracking correctly while the view appears frozen.
+# Set to "" to leave the viewport alone.
+viewport_camera = "/World/Environment/{instance}/Xform/main_camera_01"
+
+# RTX render mode. This project wants a correct image, not a photoreal one, so it does not
+# use Isaac's "RealTimePathTracing" default. Also accepts "PathTracing",
+# "RealTimePathTracing" and "MinimalRendering".
+renderer = "RaytracedLighting"
+
+# Kit experience to launch. A bare filename resolves against Isaac's apps directory; an
+# absolute path is used as given; "" accepts Isaac's own default. Isaac defaults to the
+# minimal `isaacsim.exp.base.python.kit`, which behaves differently from the editor the team
+# authors USD in -- using the full app keeps the two consistent.
+experience = "isaacsim.exp.full.kit"
+
+# Extensions enabled by Kit at startup, via `--enable`, rather than afterwards.
+# This matters for anything contributing USD SCHEMAS. Enabling `cesium.omniverse` after
+# startup reports success but leaves CesiumTilesetPrim unregistered: the prim resolves as
+# untyped with a handful of raw attributes, is not Xformable, and no terrain is drawn -- with
+# no error anywhere. At boot the schema registers and the prim gains its full property set.
+boot_extensions = ["cesium.usd.plugins", "cesium.omniverse"]
+
+# Extra folders Kit searches for extensions, each passed as `--ext-folder`.
+# Isaac's headless python experience does not search Omniverse's user extension registry,
+# where anything installed through the GUI's extension manager lives -- Cesium included.
+# Without this a CesiumTilesetPrim loads as valid USD that draws nothing, so you get a
+# blank scene with no error. Missing paths are skipped, so this default is portable.
+extension_search_paths = ["~/.local/share/ov/data/exts/v2"]
+
 # What to do when a requested feature's stage requirements are not met.
 # false: skip the feature and log why (good for a sandbox).
 # true:  fail immediately (good for CI).
@@ -108,7 +139,7 @@ tilesets_root = "/tilesets"
 
 # Long sessions can grow ~/.cache/ov/cesium-request-cache.sqlite-wal to hundreds
 # of gigabytes, after which Isaac Sim fails to start. Enable to clear it on launch.
-delete_cache_on_launch = false
+delete_cache_on_launch = true
 
 
 # -----------------------------------------------------------------------------
@@ -146,6 +177,12 @@ pose_source = "udp"
 # Frame for roll/pitch/yaw *movement commands* on the airframe.
 # world -- extrinsic, about fixed world axes (R_delta @ R_current)
 # body  -- intrinsic, about the vehicle's own axes (R_current @ R_delta)
+# How roll, pitch and yaw compose for this vehicle.
+#   "world" - aerospace yaw-pitch-roll: yaw is about world up, so heading holds
+#             regardless of attitude. Pitched straight down, changing yaw spins the
+#             view about its centre instead of moving where the nose points.
+#   "body"  - roll, then pitch about the rolled axis, then yaw about the pitched axis.
+#             Yaw therefore behaves like a body-axis rotation.
 rotation_frame = "world"
 
 
@@ -238,7 +275,23 @@ enabled = false
 level = "info"
 
 # Forward Isaac Sim's own (very verbose) stdout.
+# Let Kit's own logging through. False cuts a launch from roughly 3,400 lines to 600 by
+# filtering the Python loggers listed below; our own output is never filtered.
 isaac_logs = false
+
+# Python loggers dropped below WARNING when isaac_logs is false. These set their own
+# level while loading, so they are filtered at the handler rather than by level.
+quiet_loggers = [
+  "ogn_registration",
+  "AutoNode",
+  "omni",
+  "omni.kit",
+  "usd_validation_nvidia",
+  "matplotlib",
+  "asyncio",
+  "isaacsim",
+  "cesium",
+]
 
 
 # -----------------------------------------------------------------------------

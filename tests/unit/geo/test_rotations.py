@@ -63,20 +63,21 @@ def test_normalize_angle_values_already_in_range_unchanged(angle: float) -> None
 # --------------------------------------------------------------------------- #
 
 
-def test_ned_to_enu_specific_2023_formula_values() -> None:
-    # Test the exact formula: roll_enu=pitch_ned, pitch_enu=roll_ned, yaw_enu=-yaw_ned+pi/2
+def test_ned_to_enu_mapping() -> None:
+    # Roll passes through, pitch flips sign, yaw flips sign and rotates 90 degrees.
+    # This deliberately differs from the previous generation, which swapped roll and pitch
+    # and so made a pitch input bank the camera. See test_camera_axes.py for the behaviour
+    # that pins this down.
     ned = Rpy(roll_r=0.1, pitch_r=0.2, yaw_r=0.3, frame=Frame.NED)
     enu = ned_to_enu(ned)
     assert enu.frame is Frame.ENU
-    assert math.isclose(enu.roll_r, 0.2)  # pitch_ned
-    assert math.isclose(enu.pitch_r, 0.1)  # roll_ned
-    expected_yaw = normalize_angle(-0.3 + math.pi / 2)
-    assert math.isclose(enu.yaw_r, expected_yaw)
+    assert math.isclose(enu.roll_r, 0.1)
+    assert math.isclose(enu.pitch_r, -0.2)
+    assert math.isclose(enu.yaw_r, normalize_angle(-0.3 + math.pi / 2))
 
 
-def test_enu_to_ned_specific_values() -> None:
-    # Inverse of the above
-    enu = Rpy(roll_r=0.2, pitch_r=0.1, yaw_r=normalize_angle(-0.3 + math.pi / 2), frame=Frame.ENU)
+def test_enu_to_ned_is_the_exact_inverse() -> None:
+    enu = Rpy(roll_r=0.1, pitch_r=-0.2, yaw_r=normalize_angle(-0.3 + math.pi / 2), frame=Frame.ENU)
     ned = enu_to_ned(enu)
     assert ned.frame is Frame.NED
     assert math.isclose(ned.roll_r, 0.1, abs_tol=1e-12)
