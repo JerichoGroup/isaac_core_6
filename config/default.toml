@@ -91,14 +91,6 @@ output_root = "~/isaac_core_out"
 
 
 # -----------------------------------------------------------------------------
-# [sim.viewport] -- what the GUI window looks through
-# -----------------------------------------------------------------------------
-[sim.viewport]
-# "<vehicle_id>.<camera_id>", or omit to use the first camera of the first vehicle.
-# primary_camera = "drone_0.eo"
-
-
-# -----------------------------------------------------------------------------
 # [assets] -- where scenes, layers and heavy binaries are found
 # -----------------------------------------------------------------------------
 [assets]
@@ -209,11 +201,9 @@ rotation_frame = "body"
 resolution = [1280, 720]
 fov_deg = 78.1
 focal_length_mm = 22.7885
-publish_rate_hz = 30.0
 
 # Topics default to the namespaced convention; override to publish elsewhere.
 # image_topic = "/isaac_core/image_rgb"
-# raw_topic = "/isaac_core/raw_rgb"
 
 # A second camera on the same aircraft. Uncomment to enable; topics then become
 # /isaac_core/eo/image_rgb and /isaac_core/ir/image_rgb.
@@ -231,12 +221,10 @@ publish_rate_hz = 30.0
 [layers.distance_sensor]
 min_range_m = 0.2
 max_range_m = 180.0
-publish_rate_hz = 30.0
 # topic = "/isaac_core/distance_sensor"
 
 [layers.bbox_publisher]
 root_prim = "/bboxes"
-publish_rate_hz = 30.0
 # topic = "/isaac_core/bbox"
 
 [layers.sat]

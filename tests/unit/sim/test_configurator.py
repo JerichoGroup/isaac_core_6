@@ -5,6 +5,7 @@ Cover every binding kind, dotted config lookup, camera intrinsics maths,
 prim_overrides winning last, deterministic ordering, and error paths.
 """
 
+import logging
 import math
 
 import pytest
@@ -412,3 +413,42 @@ def test_resolve_udp_port_for_second_vehicle() -> None:
     writes = compute_writes(config, plan, _make_enu_ref())
     # First vehicle is alpha => port 33333
     assert writes[0].value == 33333
+
+
+def _capture_configurator_warnings() -> tuple[logging.Handler, list[logging.LogRecord]]:
+    """Attach a recording handler to the configurator logger, robust to global config."""
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[assignment,method-assign]
+    logger = logging.getLogger("isaac_core.sim.configurator")
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    return handler, records
+
+
+def test_override_colliding_with_a_binding_warns() -> None:
+    # Ofer set focal_length_mm in config and focalLength via a prim_override, and the
+    # override silently won. It still wins by design, but the collision must be announced.
+    config = _make_config(prim_overrides=(PrimOverride(prim="/Env/node", attribute="inputs:port", value=9999),))
+    binding = ResolvedBinding(prim="/Env/node", attribute="inputs:port", config="sim.control_plane.port")
+    plan = _make_plan(bindings=(binding,))
+    handler, records = _capture_configurator_warnings()
+    try:
+        writes = compute_writes(config, plan, _make_enu_ref())
+    finally:
+        logging.getLogger("isaac_core.sim.configurator").removeHandler(handler)
+    # Override still wins: it is applied last.
+    assert writes[-1].value == 9999
+    assert any("override wins" in r.getMessage() for r in records), "collision was not warned"
+
+
+def test_override_without_a_colliding_binding_is_silent() -> None:
+    config = _make_config(prim_overrides=(PrimOverride(prim="/Env/other", attribute="inputs:value", value=1),))
+    binding = ResolvedBinding(prim="/Env/node", attribute="inputs:port", config="sim.control_plane.port")
+    plan = _make_plan(bindings=(binding,))
+    handler, records = _capture_configurator_warnings()
+    try:
+        compute_writes(config, plan, _make_enu_ref())
+    finally:
+        logging.getLogger("isaac_core.sim.configurator").removeHandler(handler)
+    assert not [r for r in records if "override wins" in r.getMessage()]

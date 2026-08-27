@@ -183,11 +183,12 @@ def test_layers_stay_small(layer: Path) -> None:
 @pytest.mark.parametrize("scene", SCENES, ids=lambda p: p.stem)
 def test_scene_declares_the_mount_and_capability_roots(scene: Path) -> None:
     text = _text(scene)
+    # The mount root is the one hard requirement: the camera layers reference in under
+    # /World/Environment, so a scene without it cannot host a vehicle.
     assert 'def Xform "Environment"' in text, "scene needs /World/Environment as a mount point"
-    # These two may be empty; the capability probe skips dependent features when
-    # absent rather than crashing. Their presence is what makes those features usable.
-    assert 'def Scope "tilesets"' in text
-    assert 'def Scope "bboxes"' in text
+    # tilesets and bboxes are OPTIONAL capabilities -- the probe skips features that need
+    # them rather than crashing (prims.py: "absence is a capability, not an error"), so a
+    # scene is free to omit either. They are intentionally not required here.
 
 
 @pytest.mark.parametrize("scene", SCENES, ids=lambda p: p.stem)

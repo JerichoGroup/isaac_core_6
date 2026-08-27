@@ -290,16 +290,15 @@ def test_camera_ros_mount_is_instance_templated(ros_manifest: LayerManifest) -> 
 
 def test_camera_udp_has_expected_binding_count(udp_manifest: LayerManifest) -> None:
     # 1 udp_port + 1 enu_reference + 1 rotation_frame + 1 global_pose topic
-    # + 2 viewport resolution + 2 camera_helper (topic + frameSkipCount)
-    # + 1 focalLength = 9
-    assert len(udp_manifest.bindings) == 8
+    # + 2 viewport resolution + 1 image topic + 1 focalLength + 2 aperture = 10
+    assert len(udp_manifest.bindings) == 10
 
 
 def test_camera_ros_has_expected_binding_count(ros_manifest: LayerManifest) -> None:
     # 1 enu_reference + 1 rotation_frame + 2 subscriber topics (lla + orientation)
-    # + 1 global_pose topic + 2 viewport resolution + 2 camera_helper (topic + frameSkipCount)
-    # + 1 focalLength = 10
-    assert len(ros_manifest.bindings) == 9
+    # + 1 global_pose topic + 2 viewport resolution + 1 image topic + 1 focalLength
+    # + 2 aperture = 11
+    assert len(ros_manifest.bindings) == 11
 
 
 # --- Binding source correctness ----------------------------------------------
@@ -352,6 +351,21 @@ def _get_bindings_with_ids(manifest: LayerManifest) -> list[tuple[str, Binding]]
     return [(_binding_id(b), b) for b in manifest.bindings]
 
 
+# Standard UsdGeom.Camera attributes. These are valid and writable on any Camera prim from
+# the schema, even when the .usda text authors no opinion for them, so a binding may target
+# them without them appearing in the parsed attribute set. Verified live.
+_CAMERA_SCHEMA_ATTRS = frozenset(
+    {"horizontalAperture", "verticalAperture", "focalLength", "focusDistance", "fStop", "clippingRange"}
+)
+
+
+def _attribute_is_present(attribute: str, prim_path: str, attrs: set[str]) -> bool:
+    """Return whether a binding attribute exists, allowing Camera schema attributes."""
+    if attribute in attrs:
+        return True
+    return prim_path.endswith("main_camera_01") and attribute in _CAMERA_SCHEMA_ATTRS
+
+
 @pytest.mark.parametrize(
     "binding",
     [b for b in load_manifest(LAYERS_DIR / "camera_udp" / "layer.toml").bindings],
@@ -402,7 +416,7 @@ def test_camera_udp_binding_attribute_exists_on_prim(
     if rendered not in udp_usd_prims:
         pytest.skip(f"prim {rendered!r} not found (covered by prim existence test)")
     attrs = udp_usd_prims[rendered]
-    assert binding.attribute in attrs, (
+    assert _attribute_is_present(binding.attribute, rendered, attrs), (
         f"Attribute {binding.attribute!r} not found on {rendered!r} in camera_udp.usda. "
         f"Available attributes: {sorted(attrs)}"
     )
@@ -421,7 +435,7 @@ def test_camera_ros_binding_attribute_exists_on_prim(
     if rendered not in ros_usd_prims:
         pytest.skip(f"prim {rendered!r} not found (covered by prim existence test)")
     attrs = ros_usd_prims[rendered]
-    assert binding.attribute in attrs, (
+    assert _attribute_is_present(binding.attribute, rendered, attrs), (
         f"Attribute {binding.attribute!r} not found on {rendered!r} in camera_ros.usda. "
         f"Available attributes: {sorted(attrs)}"
     )

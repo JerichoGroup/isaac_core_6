@@ -175,15 +175,31 @@ class SimSession:
         """Access the config get/patch interface."""
         return self._config
 
-    def vehicles(self) -> Any:  # noqa: ANN401
+    def state(self) -> Any:  # noqa: ANN401
         """
-        Return the mapping of vehicle handles from the running sim.
+        Return the running simulation's state.
 
         Returns:
-            The state dict describing available vehicles.
+            A dict describing the run, e.g. ``{"running": True, "scene": "earth",
+            "headless": False}``.
 
         """
         return self._client.call(Method.GET_STATE.value)
+
+    def get_pose(self) -> Any:  # noqa: ANN401
+        """
+        Return the live prim transform of the vehicle's moved camera.
+
+        This reads what the pose graph has actually written to the stage -- the only way
+        to confirm from outside the process that UDP or ROS pose input is reaching the
+        camera. Same data ``isaac-core-inspect`` prints.
+
+        Returns:
+            A dict with ``vehicle``, ``prim``, ``translate`` and ``orient`` (or an
+            ``error`` entry if the prim could not be read).
+
+        """
+        return self._client.call(Method.GET_POSE.value)
 
     def capture_frame(self, path: str | Path) -> Any:  # noqa: ANN401
         """

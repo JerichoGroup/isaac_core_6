@@ -101,3 +101,41 @@ def test_help_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
         main(["--help"])
     assert excinfo.value.code == 0
     assert "--poll" in capsys.readouterr().out
+
+
+def test_inspect_prints_live_values_read_from_the_stage(capsys: pytest.CaptureFixture[str]) -> None:
+    # Ofer's requirement: the inspector reports the REAL values read off the running stage
+    # (via get_runtime_values), not values derived from config.
+    instance = ControlServer(bind_port=0)
+    instance.register("get_state", lambda _p: {"running": True})
+    instance.register("get_capabilities", lambda _p: {"enabled": []})
+    instance.register("get_pose", lambda _p: {"translate": [0, 0, 0], "orient": [1, 0, 0, 0]})
+    instance.register("get_config", lambda _p: {"sim": {"scene": "earth"}})
+    instance.register(
+        "get_runtime_values",
+        lambda _p: {
+            "vehicle": "drone_0",
+            "mount": "/World/Environment/drone_0",
+            "udp_port": 33333,
+            "rotation_frame": "world",
+            "enu_reference": [32.22481, 35.25621, 516.7],
+            "global_pose_topic": "/isaac_core/global_pose",
+            "image_topic": "/isaac_core/image_rgb",
+            "camera": {"focalLength": 22.7885, "horizontalAperture": 36.97, "verticalAperture": 20.8},
+            "tilesets": {"/World/tilesets/Cesium_Tileset": "http://host/tileset.json"},
+        },
+    )
+    instance.start()
+    try:
+        assert instance.port is not None
+        assert main(["--port", str(instance.port)]) == 0
+    finally:
+        instance.stop()
+
+    out = capsys.readouterr().out
+    assert "Live values (read from the running stage)" in out
+    assert "33333" in out, "the real udp_port read from the stage must be shown"
+    assert "/World/Environment/drone_0" in out
+    assert "22.7885" in out, "the real camera focalLength must be shown"
+    assert "http://host/tileset.json" in out, "the real tileset URL must be shown"
+    assert "no UDP/ROS pose received yet" in out, "idle pose should be explained"

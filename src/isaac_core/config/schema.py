@@ -104,12 +104,6 @@ class ControlPlaneConfig(_Strict):
         return self
 
 
-class ViewportConfig(_Strict):
-    """Which camera the GUI window looks through."""
-
-    primary_camera: str | None = None
-
-
 class SimConfig(_Strict):
     """Simulator lifecycle and window settings."""
 
@@ -191,7 +185,6 @@ class SimConfig(_Strict):
     physics_dt: float = Field(1.0 / 60.0, gt=0.0)
     stage_units_in_meters: float = Field(1.0, gt=0.0)
     control_plane: ControlPlaneConfig = ControlPlaneConfig()
-    viewport: ViewportConfig = ViewportConfig()
 
 
 class AssetsConfig(_Strict):
@@ -254,9 +247,7 @@ class CameraConfig(_Strict):
     )
     fov_deg: float = Field(78.1, gt=0.0, le=_MAX_FOV_DEG)
     focal_length_mm: float = Field(22.7885, gt=0.0)
-    publish_rate_hz: float = Field(30.0, gt=0.0)
     image_topic: str | None = None
-    raw_topic: str | None = None
 
     @property
     def width(self) -> int:
@@ -301,7 +292,14 @@ class VehicleConfig(_Strict):
 class Ros2Config(_Strict):
     """ROS 2 middleware settings."""
 
-    domain_id: int = Field(13, ge=0, le=232)
+    # DDS domain the ROS 2 bridge publishes on.
+    #
+    # ``None`` means inherit ``$ROS_DOMAIN_ID`` from the environment (0 if unset), which is
+    # what the bridge's context node does by default and what the team expects. An explicit
+    # integer is exported to ``ROS_DOMAIN_ID`` before the bridge starts, so config can
+    # override the environment when needed. A hardcoded default here was misleading: it
+    # looked authoritative but never reached the bridge.
+    domain_id: int | None = Field(None, ge=0, le=232)
     use_sim_time: bool = True
 
 
@@ -405,14 +403,6 @@ class IsaacCoreConfig(_Strict):
             topics.validate_segment(vehicle_id)
             for camera_id in self.vehicles[vehicle_id].cameras:
                 topics.validate_segment(camera_id)
-
-        primary = self.sim.viewport.primary_camera
-        if primary is not None and primary not in self.camera_keys():
-            msg = (
-                f"sim.viewport.primary_camera is {primary!r}, which is not a "
-                f"configured camera. Available: {sorted(self.camera_keys())}"
-            )
-            raise ValueError(msg)
 
         for feature_id in self.features.enabled:
             topics.validate_segment(feature_id)
@@ -555,5 +545,4 @@ __all__ = [
     "SidecarServiceConfig",
     "SimConfig",
     "VehicleConfig",
-    "ViewportConfig",
 ]

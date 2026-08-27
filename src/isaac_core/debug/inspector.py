@@ -20,6 +20,9 @@ from typing import Any
 from isaac_core.contracts.ports import DEFAULT_CONTROL_PLANE_PORT
 from isaac_core.control.client import ControlClient
 
+# Tolerance for treating a pose as "still at its default".
+_IDENTITY_TOL = 1e-9
+
 
 def _format_pose(pose: dict[str, Any]) -> str:
     """
@@ -67,6 +70,10 @@ def inspect_once(client: ControlClient) -> None:
     try:
         pose = client.call("get_pose")
         print(f"  {_format_pose(pose)}")
+        translate = pose.get("translate") or [0, 0, 0]
+        orient = pose.get("orient") or [1, 0, 0, 0]
+        if all(abs(v) < _IDENTITY_TOL for v in translate) and abs(orient[0] - 1.0) < _IDENTITY_TOL:
+            print("  (pose is at its default -- no UDP/ROS pose received yet; start a sender)")
     except Exception as exc:  # noqa: BLE001
         print(f"  get_pose failed: {exc}")
 
@@ -81,6 +88,53 @@ def inspect_once(client: ControlClient) -> None:
             print(f"  {config}")
     except Exception as exc:  # noqa: BLE001
         print(f"  get_config failed: {exc}")
+
+    _print_live_values(client)
+
+
+def _print_live_values(client: ControlClient) -> None:
+    """
+    Print the effective values read directly off the running stage.
+
+    This is the inspector's core job: report what is genuinely applied -- the port, rotation
+    frame, topic names, camera intrinsics and tileset URLs actually on the prims -- rather
+    than echoing config, where those fields are often ``None`` meaning "derive". Backed by
+    the ``get_runtime_values`` control method, which reads the live attributes.
+
+    Args:
+        client: A connected ControlClient.
+
+    """
+    print()
+    print("=== Live values (read from the running stage) ===")
+    try:
+        rv = client.call("get_runtime_values")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  get_runtime_values failed: {exc}")
+        return
+    if not isinstance(rv, dict):
+        print(f"  {rv}")
+        return
+    if "error" in rv:
+        print(f"  {rv['error']}")
+        return
+
+    print(f"  vehicle           : {rv.get('vehicle')}")
+    print(f"  mount             : {rv.get('mount')}")
+    print(f"  udp_port          : {rv.get('udp_port')}")
+    print(f"  rotation_frame    : {rv.get('rotation_frame')}")
+    print(f"  enu_reference     : {rv.get('enu_reference')}")
+    print(f"  global_pose topic : {rv.get('global_pose_topic')}")
+    print(f"  image topic       : {rv.get('image_topic')}")
+    camera = rv.get("camera") or {}
+    print(f"  camera focalLength: {camera.get('focalLength')}")
+    print(f"  camera h/vAperture: {camera.get('horizontalAperture')} / {camera.get('verticalAperture')}")
+    tilesets = rv.get("tilesets") or {}
+    if tilesets:
+        for path, url in tilesets.items():
+            print(f"  tileset {path}: {url}")
+    else:
+        print("  tilesets          : (none found under tilesets_root)")
 
 
 def poll_pose(client: ControlClient, interval: float, count: int | None = None) -> None:

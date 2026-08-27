@@ -205,9 +205,12 @@ def _resolve_scene_path(config: "IsaacCoreConfig") -> Path:  # type: ignore[name
 
     """
     scene = config.sim.scene
-    candidate = Path(scene)
-    if candidate.is_absolute() and candidate.is_file():
-        return candidate
+    candidate = Path(scene).expanduser()
+    # An absolute or relative path that points at a real file is used directly. Checking
+    # is_file() (not just is_absolute) means "./usd/scenes/foo.usda" resolves against the
+    # working directory, which is what a path with a slash or suffix obviously means.
+    if candidate.is_file():
+        return candidate.resolve()
 
     # Search in configured asset paths, then built-in.
     for search_dir in config.assets.search_paths:

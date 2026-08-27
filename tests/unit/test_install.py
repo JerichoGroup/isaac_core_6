@@ -122,7 +122,8 @@ def test_locate_raises_when_nothing_found(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_locate_raises_with_tried_locations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Even when given an explicit path that doesn't validate
+    # An explicit path that does not validate must fail LOUDLY, naming that path -- not
+    # silently fall through to probing and use a different install than the user asked for.
     bad_path = tmp_path / "bad"
     bad_path.mkdir()
     monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: ())
@@ -130,7 +131,17 @@ def test_locate_raises_with_tried_locations(tmp_path: Path, monkeypatch: pytest.
     with pytest.raises(IsaacInstallError) as exc_info:
         IsaacInstall.locate(explicit_path=bad_path, environ={})
     error_msg = str(exc_info.value)
-    assert "explicit:" in error_msg
+    assert str(bad_path) in error_msg
+    assert "not a valid" in error_msg
+
+
+def test_locate_falls_through_when_no_explicit_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # With no explicit path, an empty environment and no probe candidates, locate reports
+    # the tried locations and how to fix it.
+    monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: ())
+    with pytest.raises(IsaacInstallError) as exc_info:
+        IsaacInstall.locate(environ={})
+    assert "Cannot find a valid Isaac Sim installation" in str(exc_info.value)
 
 
 def test_version_parsed_correctly(tmp_path: Path) -> None:

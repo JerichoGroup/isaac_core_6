@@ -215,25 +215,25 @@ from isaac_core.devkit import Sim
 # Connect to a running sim -- even on another machine.
 # No repo path, no filesystem knowledge needed.
 with Sim.attach(host="192.168.1.50", port=8760) as session:
-    state = session.vehicles()
+    state = session.state()
     print(state)
-
-    # Patch configuration at runtime
-    session.config.patch(sim={"headless": True})
 
     # Lifecycle control
     session.pause()
     session.resume()
     session.step(count=10)
 
-    # Feature management
-    session.features.enable("distance_sensor")
-    session.features.disable("distance_sensor")
-
-    # Query capabilities
+    # Read the live pose and capabilities
+    pose = session.get_pose()
     caps = session.get_capabilities()
     print(caps)  # {'enabled': ['camera_udp'], 'skipped': []}
 ```
+
+These calls are backed by real control-plane handlers today. Some `SimSession` methods are
+deferred and fail with a clear "not implemented yet" error rather than silently doing
+nothing: `config.patch(...)` (runtime config patching), `features.enable/disable(...)`
+(runtime layer toggling), `reset()`, and `capture_frame(...)`. They are tracked in
+[docs/roadmap.md](docs/roadmap.md); features are selected in config before launch for now.
 
 `Sim.attach(...)` returns a `SimSession` using only the JSON-RPC control plane, so scripts
 are portable between a local and a remote simulator.

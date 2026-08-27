@@ -20,6 +20,7 @@ def fake_server() -> Generator[ControlServer, None, None]:
     # Register handlers for every method the session uses.
     server.register(Method.PING.value, lambda _p: "pong")
     server.register(Method.GET_STATE.value, lambda _p: {"vehicles": {"lead": {"pose_source": "udp"}}})
+    server.register(Method.GET_POSE.value, lambda _p: {"vehicle": "drone_0", "translate": [0.0, 0.0, 983.3]})
     server.register(Method.GET_CAPABILITIES.value, lambda _p: {"tilesets": True, "bboxes": False})
     server.register(Method.GET_CONFIG.value, lambda _p: {"sim": {"scene": "earth"}})
     server.register(Method.SET_CONFIG.value, lambda p: {"patched": p})
@@ -50,7 +51,7 @@ def test_attach_connects_to_running_server(fake_server: ControlServer) -> None:
     session = Sim.attach(host="127.0.0.1", port=port, timeout_s=5.0)
     try:
         # Should be connected and functional.
-        result = session.vehicles()
+        result = session.state()
         assert "vehicles" in result
     finally:
         session.close()
@@ -263,7 +264,7 @@ def test_session_vehicles(fake_server: ControlServer) -> None:
     port = fake_server.port
     assert port is not None
     with Sim.attach(host="127.0.0.1", port=port, timeout_s=5.0) as session:
-        state = session.vehicles()
+        state = session.state()
         assert state["vehicles"]["lead"]["pose_source"] == "udp"
 
 
@@ -312,3 +313,19 @@ def test_session_raises_when_server_gone() -> None:
     # Re-attach should fail.
     with pytest.raises(TimeoutError):
         Sim.attach(host="127.0.0.1", port=port, timeout_s=0.3)
+
+
+def test_session_get_pose(fake_server: ControlServer) -> None:
+    port = fake_server.port
+    assert port is not None
+    with Sim.attach(host="127.0.0.1", port=port, timeout_s=5.0) as session:
+        pose = session.get_pose()
+    assert pose == {"vehicle": "drone_0", "translate": [0.0, 0.0, 983.3]}
+
+
+def test_session_state(fake_server: ControlServer) -> None:
+    port = fake_server.port
+    assert port is not None
+    with Sim.attach(host="127.0.0.1", port=port, timeout_s=5.0) as session:
+        state = session.state()
+    assert state == {"vehicles": {"lead": {"pose_source": "udp"}}}

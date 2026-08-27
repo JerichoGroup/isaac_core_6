@@ -29,10 +29,10 @@ from typing import Final
 ENVIRONMENT_ROOT: Final = "/World/Environment"
 
 # Where Cesium tileset prims are expected. Absence is a capability, not an error.
-TILESETS_ROOT: Final = "/tilesets"
+TILESETS_ROOT: Final = "/World/tilesets"
 
 # Where prims eligible for bounding-box reporting are expected.
-BBOXES_ROOT: Final = "/bboxes"
+BBOXES_ROOT: Final = "/World/bboxes"
 
 # Placeholder for a layer's mount point.
 MOUNT: Final = "mount"

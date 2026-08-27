@@ -1840,6 +1840,109 @@ commands and reading the diff establishes fact.
   **Verified:** 1236 pass, all hooks PASS, import-linter 23 contracts KEPT, 22/22 live
   attitudes across both frames.
 
+- **2026-08-27 (feature audit, ongoing)** — Systematic validation that every claimed
+  feature actually works. Two parallel sub-agents audited the pure-Python breadth (devkit,
+  and the position/math pipeline); I verified their claims independently and did all live
+  sim checks myself.
+
+  **Position/math pipeline: clean.** 63 independent numeric checks (packet offsets+checksum,
+  encode/decode round-trip, hold-last-good, LLA<->ENU vs pyproj, NED<->ENU, BODY=Rx@Ry@Rz /
+  WORLD=Rz@Ry@Rx, quaternion==matrix, slerp, gimbal lock, trajectories, motion limits).
+  Every README coordinate/packet claim verified true. Corroborates the earlier frame work.
+
+  **Config second pass (Ofer's ofer.toml comments), all fixed + live-verified:**
+  - `cesium.tilesets_root` default was `/tilesets` but the prim is `/World/tilesets` -> the
+    tileset URL override silently did nothing. Fixed root (and `BBOXES_ROOT` -> `/World/bboxes`).
+  - `hdri` created a second dome light; now repoints the scene's existing
+    `/World/Environment/DomeLight`, as Ofer found.
+  - `delete_cache_on_launch` caused intermittent "disk I/O error" because Cesium (a boot
+    extension) had the sqlite open; moved deletion to before the app starts. 0 errors now.
+  - `scene` relative paths now resolve against the working directory.
+  - `domain_id` warns when it disagrees with `$ROS_DOMAIN_ID`.
+  - `sim.viewport.primary_camera` (dead, confusingly named) removed with Ofer's OK; the
+    logical-key-camera idea is roadmapped.
+
+  **Devkit defects the audit + live testing caught (all fixed):**
+  - `SimSession.reset()`, `features.enable/disable()` called control methods the runtime
+    NEVER registered -> `MethodNotFoundError` against a real sim, while the README showed
+    `features.enable(...)` as a working example. Registered handlers that raise a clear
+    NotImplementedError (matching `capture_frame`/`set_config`), fixed the README, roadmapped
+    the real implementations. Added `test_control_method_coverage.py`: a static guard that
+    every control method the devkit calls is registered (verified it bites).
+  - `SimSession.vehicles()` called `get_state` and returned `{running, scene, headless}` --
+    misleading name. Renamed to `state()`.
+  - No `SimSession.get_pose()` existed though the control plane supports it and the inspector
+    uses it. Added it. (I had briefly put `session.get_pose()` in the README before it
+    existed -- caught by live testing.)
+  Live-verified against a running sim: state/get_capabilities/pause/resume/step/get_pose/
+  config.get all work; reset/features.enable/config.patch all fail with a clear deferred error.
+
+  **Verified:** 1263 pass, all hooks + import-linter green.
+
+- **2026-08-27 (audit cont.)** — More feature validation + inspector redesign.
+
+  **Recording serializers (D-DEV-5) closed:** added `test_recording_serialisers.py` (6
+  tests) exercising the real pose/range/bbox serialiser closures with fake messages by
+  monkeypatching the lazy ROS type loaders -- no ROS install needed. A renamed message field
+  now fails a test.
+
+  **ROS pose-input path verified live:** ran the sim with `pose_source="ros"`, published a
+  `NavSatFix(lat=32.3, alt=1500)` on `/mavros/global_position/global` from host Python 3.10,
+  and the prim moved to `(0, 8339.89, 977.83)` -- identical to the UDP path for the same
+  input. Capabilities showed `camera_ros`. So `pose_source="ros"` works end to end.
+
+  **Sidecar:** honest skeleton -- real code (rtp/service/supervisor), 31 unit tests, imports
+  without `gi`, documented as skeleton in the README. `caps_string('h264')` returning None is
+  correct (it maps raw ROS encodings, not compressed ones).
+
+  **Inspector redesigned per Ofer to read REAL values off the running stage**, not echo
+  config. Added two control methods: `read_prim_attribute` (generic single-attribute live
+  read) and `get_runtime_values` (curated: udp_port, rotation_frame, enu_reference, topic
+  names, camera focalLength/apertures, tileset URLs -- all read off the composed prims on the
+  main thread). The inspector prints a "Live values (read from the running stage)" section.
+  Verified live with a custom config: it reported udp_port=40404, rotation_frame=body,
+  focalLength=20.0, fov-derived hAperture=23.09 -- the actual applied values, not config
+  defaults. This also fixes the confusing "None everywhere" Ofer saw (get_config shows the
+  raw None-means-derive fields; the live section shows what they became).
+
+  **Verified:** 1270 pass, all hooks + import-linter green.
+
+- **2026-08-27 (audit complete)** — Finished the full feature audit. Three more parallel
+  sub-agents (CLI/install, OGN extension nodes, control plane/contracts), each independently
+  re-verified, plus my own live checks.
+
+  **Clean (0 defects):** OGN extension nodes (6 nodes, schema==impl, delegate to the pure
+  kernel, 132 guard tests), control plane + contracts (168 tests + 133 probe checks: JSON-RPC
+  round-trip, token auth, confine_path traversal blocking, framing, port/topic/prim logic).
+
+  **CLI defects found and fixed:**
+  - `--isaac-path /bogus` silently fell through to auto-probing and used a *different*
+    install. Now an invalid explicit path raises `IsaacInstallError` naming the path.
+  - `--set` could not set list/dict fields (`--set sim.extensions '[...]'` crashed) because
+    `cli_source` passed raw strings while `env_source` coerced. Made them symmetric: string
+    `--set` values now coerce (bool/int/float/JSON) like env vars; non-string programmatic
+    values pass through untouched. Updated the install test (it had locked in the old
+    silent-fallthrough) and added cli_source coercion tests.
+
+  **Ofer's eyes-on camera test:** terrain renders, viewport is the drone camera, motion
+  smooth + holds on stop, heading follows travel -- all PASS. Two issues he raised:
+  - `--pitch-deg` did nothing on orbit/path: real bug -- `_orbit`/`_path` never passed
+    `roll_r`/`pitch_r` to the trajectory, so it always flew level. Fixed; verified the poses
+    now carry the pitch.
+  - Periodic viewport hiccup: ruled out the pose pipeline by sampling the live prim during an
+    orbit (119 samples, 0 outliers >3x mean, 0 frozen -- provably smooth). It is render-side,
+    consistent with Cesium 3D-tiles streaming. Roadmapped (tuning + optional slerp smoothing).
+  - Pose-sender GUI: Ofer verified every control -- fields, nudge, lock, pause/resume, reset,
+    live log, packet table. Fully working.
+
+  **ROS publish content verified live:** `/isaac_core/global_pose` carried the exact sent
+  lat/lon/alt (32.4/35.3/1234.0), a real non-identity quaternion, and an advancing timestamp
+  (sec 2, nanosec 133333333) -- the SecondsToRosStamp node working end to end.
+
+  **Verdict:** every declared feature is now verified-working, fixed, honestly roadmapped, or
+  removed-with-approval. Nothing found claims to work while broken. 1274 pass, all hooks +
+  import-linter green.
+
 ### Known remaining issues
 
 - **Sensor layers** are not built: distance sensor, bounding-box publishing, satellite

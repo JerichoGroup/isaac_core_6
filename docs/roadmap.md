@@ -150,6 +150,7 @@ to fail on an injected layering violation).
 Features not in the 2023 repo. Ordered by stated priority.
 
 - Swarm / multi-drone — the architecture already supports N vehicles (topic namespacing, `{instance}` in manifests, per-vehicle UDP port). Needs: multiple camera layers composed simultaneously, per-vehicle `get_pose`, mixed pose sources.
+- Camera-key templating in manifests — the shipped `camera_udp` / `camera_ros` manifests hardcode the camera key `eo` in their bindings (`config = "vehicles.{instance}.cameras.eo.width"`), while the vehicle is templated as `{instance}`. So renaming a camera (e.g. `eo` -> `rgb`) or giving a vehicle a differently-named camera needs the two `layer.toml` files edited, not just config, or composition fails with `ConfigKeyError: ...cameras.eo... does not exist`. Add a `{camera}` placeholder to the binding resolver (parallel to `{instance}`) so camera keys stop being hardcoded. This also unblocks multiple differently-named cameras per vehicle cleanly.
 - Sensor layers — distance sensor (physics raycast sensor, native in Isaac 6), bbox publisher (Globe Anchors on targets), SAT capture.
 - Waypoint missions — loiter/hold, takeoff/land/RTL. Vehicle generators exist; needs a mission file format and a control-plane command.
 - Velocity/acceleration-limited motion — `MotionLimits` is coded and tested but the runtime does not enforce it yet (no physics, just pose injection).
@@ -160,6 +161,24 @@ Features not in the 2023 repo. Ordered by stated priority.
 - Native RTSP (Isaac 6 documents it) vs custom GStreamer RTP — evaluate.
 - Docker / container workflow — if the team needs reproducible deployments again.
 - MAVLink pose source (without MAVROS) — `pose_source = "mavlink"` is in the schema but unimplemented.
+- Cesium base-URL and multi-tileset — `cesium.tileset_server_url` currently replaces the whole `cesium:url`. The team will serve several tilesets from one host (`<ip>:<port>/city1/tileset.json`, `/city2/...`), so the config should carry only the base `http://<ip>:<port>` and each tileset's path should be preserved: read the existing `cesium:url` per prim and swap only the scheme+host+port. Also support per-tileset selection rather than one URL for all.
+- Unify the vehicle mount — `config.vehicles.<id>.mount` sets the vehicle mount used for camera-prim resolution and `get_pose`, but layers actually mount at the manifest's own `mount` template (`/World/Environment/{instance}`). By default these agree; overriding `mount` makes them diverge and the camera prim resolves to a path no layer created. Manifest mount and vehicle mount are different axes (a sensor layer may mount elsewhere on purpose), so unifying them needs a `{vehicle_mount}` placeholder in the manifest resolver, not a blind override. Until then, treat `mount` as fixed.
+- Two georeferences — changing `geo.enu_reference` moves the PoseSync ENU origin but not the scene's authored `/CesiumGeoreference` prim, because Cesium listens to USD notices and the tooling does not author USD (decisions D18/D19). The compositor already warns when the two disagree; a cleaner answer would derive one from the other or drive the Cesium georeference at runtime through its own API.
+- Camera intrinsics as first-class config — support `focus_distance`, and expose `horizontalAperture` / `verticalAperture` directly, alongside `fov_deg` / `focal_length_mm`, so common camera tuning does not need a `prim_override`. Re-add `publish_rate_hz` here with a real implementation (throttling the camera helper / render product rate).
+- Fully silent boot — with `isaac_logs=false` the Kit log stream is suppressed (~3400 lines to ~77), but the `isaacsim` launcher and Warp still print a boot banner and a GPU capability table to stdout via `print()` before Kit initialises, outside any logging control. Suppressing those cleanly means redirecting stdout around `SimulationApp()` construction without hiding genuine startup errors.
+- MinimalRendering black screen — `renderer = "MinimalRendering"` produces a black viewport with no terrain (Ofer observed). Either document it as unsupported for this Cesium-terrain use case or validate/warn when it is selected.
+- `output_root` and frame capture — `sim.control_plane.output_root` is only consumed by `capture_frame`, which raises `NotImplementedError`. Nothing writes there yet. Implement viewport capture (see the existing capture item) and this becomes live.
+- Viewport config section — `sim.viewport.primary_camera` was removed (dead, and confusingly overlapping `sim.viewport_camera`). The good idea behind it survives: let the user pick the viewport camera by a logical key (`drone_0.eo`) rather than a raw prim path, and grow a `[sim.viewport]` section for multi-viewport / resolution / overlay settings. When built, it should supersede the raw `viewport_camera` prim path.
+- Runtime control-plane methods — the devkit exposes `reset()`, `features.enable/disable(...)` and `config.patch(...)`. Their handlers are now registered but raise a clear "not implemented yet" error (matching `capture_frame`). Implement them: `reset` (timeline/pose/stage reset semantics TBD), runtime feature toggling (compose/decompose a layer on the live stage), and config patching (define the safely-mutable subset first). `set_pose` and `load_scene` are defined in the `Method` enum but not yet exposed or implemented.
+- Recording serializers — `isaac_core.devkit.recording` factory functions (`video_recorder`, `pose_recorder`, `range_recorder`, `bbox_recorder`) have no unit tests for their message-field serialisation, so a ROS message field rename would go uncaught. Add round-trip tests with fake messages.
+- Cesium tile-streaming hiccup — during a moving flight the viewport hitches briefly every
+  few seconds. The pose pipeline is ruled out: sampling the live prim transform during an
+  orbit showed a smooth stream (119 samples, 0 outliers >3x mean, 0 frozen). The stall is
+  render-side, consistent with Cesium 3D Tiles loading/unloading as new terrain enters view.
+  Investigate Cesium tuning (cache size / max simultaneous tile loads / pre-warming), and
+  optionally offer client-side pose smoothing (the `slerp`/interpolation already exists) so a
+  recovered frame eases in rather than snapping to the newest pose.
+- Shell tab-completion for the CLI — `isaac-<TAB>` should complete to `isaac-core`, and `isaac-core r<TAB>` to `isaac-core run`, likewise for `doctor`/`config` and the `-inspect` / `-pose-sender` entry points. Ship completion scripts for bash and zsh (argcomplete or hand-written), and document how to source them in `scripts/setup.sh`. Quality-of-life, not functional.
 
 ---
 
@@ -183,21 +202,27 @@ them. Two were reported by Ofer as "not working", which is how the audit started
 
 | Key | Status |
 |---|---|
-| `logging.isaac_logs` | Fixed — now filters Isaac's Python loggers |
-| `cesium.tileset_server_url` | Fixed — repoints tilesets at launch |
-| `assets.hdri` | Dead |
-| `cesium.delete_cache_on_launch` | Dead |
+| `logging.isaac_logs` | Fixed — filters Isaac's Python loggers and suppresses Kit's stdout stream (~3400 log lines down to ~77) |
+| `cesium.tileset_server_url` | Fixed — repoints tilesets at launch (was also shadowed by a prim_override, which now warns) |
+| `assets.hdri` | Fixed — creates a `UsdLux.DomeLight` from the image path at runtime |
+| `cesium.delete_cache_on_launch` | Fixed — deletes `~/.cache/ov/cesium-request-cache.sqlite*` before the scene opens |
+| `vehicles.*.cameras.*.fov_deg` | Fixed — computes and binds `horizontalAperture` / `verticalAperture` |
+| `vehicles.*.cameras.*.image_topic` | Fixed — the resolver now honours an explicit value instead of always deriving |
+| `cesium.tilesets_root` | Fixed — default was `/tilesets`; the scene prim is at `/World/tilesets`, so `tileset_server_url` silently did nothing. Also corrected `BBOXES_ROOT`. |
+| `assets.hdri` (second pass) | Fixed — now repoints the scene's existing `DomeLight` instead of creating a second one |
+| `cesium.delete_cache_on_launch` (second pass) | Fixed — moved to before the app starts, so deleting no longer races Cesium's open handle (was causing intermittent `disk I/O error`) |
+| `sim.scene` relative path | Fixed — a path like `./usd/scenes/x.usda` now resolves against the working directory |
+| `ros2.domain_id` | Fixed — `None` inherits `$ROS_DOMAIN_ID`; an explicit value is exported before the bridge starts |
+| `vehicles.*.cameras.*.publish_rate_hz` | Removed — was dead; re-add with a real implementation (see After version 1) |
+| `vehicles.*.cameras.*.raw_topic` | Removed — dead, no raw-image node exists |
 | `sim.stage_units_in_meters` | Dead |
 | `vehicles.*.gimbal.start_roll_deg` / `start_pitch_deg` / `start_yaw_deg` | Dead. The USD wires the node's offset inputs to a ROS subscriber, so a config value cannot reach a connected attribute. Needs a design decision, not a binding. |
 | `vehicles.*.gimbal.max_rate_deg_s` | Dead — no slew limiting is applied |
 | `vehicles.*.primary_camera` | Dead |
-| `vehicles.*.cameras.*.publish_rate_hz` | Dead |
-| `vehicles.*.cameras.*.raw_topic` | Dead |
-| `ros.use_sim_time` | Dead |
+| `ros2.use_sim_time` | Dead |
 
-Worth fixing as a group before v1 is called finished: a config surface that silently ignores
-values is worse than one that does not offer them. The cheap guard is a test asserting every
-schema field is referenced somewhere outside the schema and the reference config.
+`test_no_dead_keys.py` guards against new dead keys and against leaving a fixed key on the
+known-dead list, so this table cannot silently rot.
 
 ## Known issues
 

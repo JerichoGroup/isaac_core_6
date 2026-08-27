@@ -51,3 +51,15 @@ resolve = "image_topic"
 prim = "{mount}/Xform/main_camera_01"
 attribute = "focalLength"
 config = "vehicles.{instance}.cameras.eo.focal_length_mm"
+
+[[bindings]]
+# Derived from fov_deg + focal_length_mm so the field of view actually takes effect.
+prim = "{mount}/Xform/main_camera_01"
+attribute = "horizontalAperture"
+resolve = "camera_horizontal_aperture"
+
+[[bindings]]
+# Kept consistent with the resolution aspect ratio to avoid a stretched image.
+prim = "{mount}/Xform/main_camera_01"
+attribute = "verticalAperture"
+resolve = "camera_vertical_aperture"

@@ -18,12 +18,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+import logging
 import math
 from typing import Any, Protocol, runtime_checkable
 
 from isaac_core.config import IsaacCoreConfig
+from isaac_core.config.schema import CameraConfig
 from isaac_core.sim.georeference import ResolvedEnuReference
 from isaac_core.sim.planner import FeaturePlan, ResolvedBinding
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigKeyError(Exception):
@@ -142,7 +146,7 @@ def _resolve_runtime_value(
         ConfigKeyError: If the resolve name is unknown.
 
     """
-    from isaac_core.contracts.topics import BBOX, DISTANCE_SENSOR, GIMBAL, GLOBAL_POSE, IMAGE_RGB
+    from isaac_core.contracts.topics import BBOX, DISTANCE_SENSOR, GIMBAL, GLOBAL_POSE
 
     resolvers: dict[str, Any] = {
         "enu_origin": lambda: [
@@ -152,11 +156,13 @@ def _resolve_runtime_value(
         ],
         "camera_prim": lambda: _resolve_camera_prim_value(camera_prim),
         "udp_port": lambda: config.resolved_udp_port(next(iter(config.vehicles))),
-        "image_topic": lambda: _resolve_topic(config, IMAGE_RGB, camera_scoped=True),
+        "image_topic": lambda: _resolve_image_topic(config),
         "global_pose_topic": lambda: _resolve_vehicle_topic(config, GLOBAL_POSE),
         "distance_topic": lambda: _resolve_vehicle_topic(config, DISTANCE_SENSOR),
         "bbox_topic": lambda: _resolve_vehicle_topic(config, BBOX),
         "gimbal_topic": lambda: _resolve_vehicle_topic(config, GIMBAL),
+        "camera_horizontal_aperture": lambda: _resolve_horizontal_aperture(config),
+        "camera_vertical_aperture": lambda: _resolve_vertical_aperture(config),
         "lla_topic": lambda: _resolve_mavros_topic(config, "global_position/global"),
         "orientation_topic": lambda: _resolve_mavros_topic(config, "local_position/pose"),
     }
@@ -211,6 +217,79 @@ def _resolve_camera_prim_value(camera_prim: str | None) -> str:
         msg = "resolve 'camera_prim' requested but no camera path is available"
         raise ConfigKeyError(msg)
     return camera_prim
+
+
+def _first_camera(config: IsaacCoreConfig) -> CameraConfig:
+    """Return the first camera of the first vehicle."""
+    vehicle_id = next(iter(config.vehicles))
+    camera_id = next(iter(config.vehicles[vehicle_id].cameras))
+    return config.vehicles[vehicle_id].cameras[camera_id]
+
+
+def _resolve_horizontal_aperture(config: IsaacCoreConfig) -> float:
+    """
+    Compute the camera horizontal aperture in mm from its field of view.
+
+    A pinhole camera relates horizontal field of view, focal length and sensor width by
+    ``aperture = 2 * focal_length * tan(fov / 2)``. Isaac's camera prim is driven by focal
+    length and aperture, not by an fov attribute, so ``fov_deg`` only takes effect once it
+    is turned into an aperture here. Before this it was read from config and applied
+    nowhere, which is why changing it did nothing visible.
+
+    Args:
+        config: The resolved configuration.
+
+    Returns:
+        Horizontal aperture in millimetres.
+
+    """
+    camera = _first_camera(config)
+    return 2.0 * camera.focal_length_mm * math.tan(math.radians(camera.fov_deg) / 2.0)
+
+
+def _resolve_vertical_aperture(config: IsaacCoreConfig) -> float:
+    """
+    Compute the vertical aperture from the horizontal aperture and the aspect ratio.
+
+    Keeping the vertical aperture consistent with the resolution's aspect ratio avoids a
+    stretched image, which is the usual symptom of setting one aperture and leaving the
+    other at its authored default.
+
+    Args:
+        config: The resolved configuration.
+
+    Returns:
+        Vertical aperture in millimetres.
+
+    """
+    camera = _first_camera(config)
+    return _resolve_horizontal_aperture(config) * (camera.height / camera.width)
+
+
+def _resolve_image_topic(config: IsaacCoreConfig) -> str:
+    """
+    Return the first camera's image topic, explicit if set, otherwise derived.
+
+    Deriving keeps the namespacing convention working for a swarm, while an explicit
+    ``image_topic`` in config is honoured as written -- the same contract the MAVROS
+    topics use. Before this, the field was silently ignored and only the derived name
+    ever reached the publisher.
+
+    Args:
+        config: The resolved configuration.
+
+    Returns:
+        The fully resolved image topic name.
+
+    """
+    from isaac_core.contracts.topics import IMAGE_RGB  # noqa: PLC0415
+
+    vehicle_id = next(iter(config.vehicles))
+    camera_id = next(iter(config.vehicles[vehicle_id].cameras))
+    explicit = config.vehicles[vehicle_id].cameras[camera_id].image_topic
+    if explicit is not None:
+        return explicit
+    return _resolve_topic(config, IMAGE_RGB, camera_scoped=True)
 
 
 def _resolve_topic(config: IsaacCoreConfig, leaf: str, *, camera_scoped: bool = False) -> str:
@@ -313,7 +392,19 @@ def compute_writes(
             value = _resolve_binding_value(binding, config=config, enu_reference=enu_reference, camera_prim=camera_prim)
             writes.append(AttributeWrite(prim=binding.prim, attribute=binding.attribute, value=value))
 
+    bound_targets = {(w.prim, w.attribute) for w in writes}
     for override in config.prim_overrides:
+        target = (override.prim, override.attribute)
+        if target in bound_targets:
+            # The override still wins, by design -- it is applied last. But a value set from
+            # two places, where only one takes effect, is exactly the confusion that makes a
+            # config file untrustworthy, so it is called out rather than left silent.
+            logger.warning(
+                "prim_override for %s.%s also has a layer binding; the override wins and the "
+                "bound value (e.g. from a config field) is ignored",
+                override.prim,
+                override.attribute,
+            )
         writes.append(AttributeWrite(prim=override.prim, attribute=override.attribute, value=override.value))
 
     return writes

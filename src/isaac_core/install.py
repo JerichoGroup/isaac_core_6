@@ -239,7 +239,15 @@ class IsaacInstall:
             # version is unsupported, so a user can deliberately target an old install.
             if _is_valid_install(explicit_path):
                 return cls(explicit_path)
-            tried.append(f"explicit: {explicit_path}")
+            # But if it is invalid, fail here rather than silently probing and using a
+            # *different* install than the one the user explicitly named -- that surprise
+            # is worse than an error.
+            msg = (
+                f"--isaac-path (or explicit isaac_sim_path) {explicit_path} is not a valid "
+                "Isaac Sim installation. A valid install contains: python.sh, isaac-sim.sh, "
+                "VERSION. Fix the path, or omit it to auto-detect."
+            )
+            raise IsaacInstallError(msg)
 
         if config_path is not None:
             found = consider(config_path, "config")

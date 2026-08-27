@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterator
+import math
 import sys
 
 from isaac_core.contracts.frames import Frame
@@ -65,6 +66,8 @@ def _orbit(args: argparse.Namespace) -> Iterator[GeodeticPose]:
         height_m=args.alt_m,
         speed_mps=args.speed_mps,
         orbit_duration_s=args.duration_s,
+        roll_r=math.radians(args.roll_deg),
+        pitch_r=math.radians(args.pitch_deg),
     ).poses(args.rate_hz)
 
 
@@ -79,7 +82,12 @@ def _path(args: argparse.Namespace) -> Iterator[GeodeticPose]:
         Lla(args.lat_deg, args.lon_deg, args.alt_m),
     )
     print(f"flying a {len(waypoints)}-point circuit at {args.speed_mps} m/s")
-    return PathTrajectory(waypoints=waypoints, speed_mps=args.speed_mps).poses(args.rate_hz)
+    return PathTrajectory(
+        waypoints=waypoints,
+        speed_mps=args.speed_mps,
+        roll_r=math.radians(args.roll_deg),
+        pitch_r=math.radians(args.pitch_deg),
+    ).poses(args.rate_hz)
 
 
 _MODES = {"hold": _hold, "orbit": _orbit, "path": _path}

@@ -113,16 +113,6 @@ def test_vehicle_id_must_be_a_legal_topic_segment() -> None:
         IsaacCoreConfig(vehicles={"my-drone": VehicleConfig()})
 
 
-def test_primary_camera_must_reference_a_configured_camera() -> None:
-    with pytest.raises(ValidationError, match="configured camera"):
-        IsaacCoreConfig(sim={"viewport": {"primary_camera": "drone_0.thermal"}})
-
-
-def test_primary_camera_accepts_a_configured_camera() -> None:
-    config = IsaacCoreConfig(sim={"viewport": {"primary_camera": "drone_0.eo"}})
-    assert config.sim.viewport.primary_camera == "drone_0.eo"
-
-
 # --------------------------------------------------------------------------- #
 # control plane safety
 # --------------------------------------------------------------------------- #

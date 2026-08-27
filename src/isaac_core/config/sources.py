@@ -159,6 +159,12 @@ def cli_source(overrides: Mapping[str, Any]) -> dict[str, Any]:
     Accepts keys like ``"vehicles.drone_0.cameras.eo.fov_deg"`` and expands them
     to nested dicts with the final segment as the leaf key.
 
+    String values (as always come from ``--set KEY VALUE``) are coerced with the same
+    rules as environment variables -- bool/int/float/JSON -- so ``--set`` and
+    ``ISAAC_CORE__*`` behave identically, including for list/dict fields like
+    ``--set sim.extensions '["a","b"]'``. Non-string values (passed programmatically, e.g.
+    from the devkit or tests) are left untouched.
+
     Args:
         overrides: Flat mapping of dotted keys to their values.
 
@@ -172,5 +178,5 @@ def cli_source(overrides: Mapping[str, Any]) -> dict[str, Any]:
         target = result
         for segment in segments[:-1]:
             target = target.setdefault(segment, {})
-        target[segments[-1]] = value
+        target[segments[-1]] = _coerce_env_value(value) if isinstance(value, str) else value
     return result

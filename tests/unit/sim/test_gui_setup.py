@@ -140,3 +140,61 @@ def test_log_level_arguments_are_added_by_default() -> None:
     config = IsaacCoreConfig(sim={"extension_search_paths": (), "boot_extensions": ()})
     args = _BareRuntime(config)._kit_startup_args()
     assert any(arg.startswith("--/log/level=") for arg in args)
+
+
+def test_domain_id_none_leaves_the_environment_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The default: the bridge inherits whatever ROS_DOMAIN_ID the shell set.
+    monkeypatch.setenv("ROS_DOMAIN_ID", "7")
+    config = IsaacCoreConfig(ros2={"domain_id": None})
+    _BareRuntime(config)._apply_ros_domain()
+    import os
+
+    assert os.environ["ROS_DOMAIN_ID"] == "7", "None must not overwrite the environment"
+
+
+def test_explicit_domain_id_is_exported(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Ofer's ask: a config value must actually reach the bridge, which reads the env var.
+    monkeypatch.setenv("ROS_DOMAIN_ID", "7")
+    config = IsaacCoreConfig(ros2={"domain_id": 42})
+    _BareRuntime(config)._apply_ros_domain()
+    import os
+
+    assert os.environ["ROS_DOMAIN_ID"] == "42"
+
+
+def test_domain_id_mismatch_with_env_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Ofer's ask: if config sets a domain that disagrees with $ROS_DOMAIN_ID, say so rather
+    # than overriding silently.
+    import logging
+
+    monkeypatch.setenv("ROS_DOMAIN_ID", "7")
+    config = IsaacCoreConfig(ros2={"domain_id": 42})
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[assignment,method-assign]
+    logger = logging.getLogger("isaac_core.sim.runtime")
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        _BareRuntime(config)._apply_ros_domain()
+    finally:
+        logger.removeHandler(handler)
+    assert any("overrides ROS_DOMAIN_ID" in r.getMessage() for r in records)
+
+
+def test_domain_id_matching_env_does_not_warn(monkeypatch: pytest.MonkeyPatch) -> None:
+    import logging
+
+    monkeypatch.setenv("ROS_DOMAIN_ID", "42")
+    config = IsaacCoreConfig(ros2={"domain_id": 42})
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[assignment,method-assign]
+    logger = logging.getLogger("isaac_core.sim.runtime")
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        _BareRuntime(config)._apply_ros_domain()
+    finally:
+        logger.removeHandler(handler)
+    assert not [r for r in records if "overrides ROS_DOMAIN_ID" in r.getMessage()]

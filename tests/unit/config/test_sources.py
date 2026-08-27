@@ -252,3 +252,25 @@ def test_cli_source_single_segment_key() -> None:
 def test_cli_source_empty_overrides() -> None:
     result = cli_source({})
     assert result == {}
+
+
+def test_cli_source_coerces_string_values_like_env() -> None:
+    # --set values are always strings; they must coerce the same way env vars do, so
+    # `--set` and ISAAC_CORE__* behave identically, including for list fields.
+    assert cli_source({"sim.extensions": '["a", "b"]'}) == {"sim": {"extensions": ["a", "b"]}}
+    assert cli_source({"sim.headless": "true"}) == {"sim": {"headless": True}}
+    assert cli_source({"sim.control_plane.port": "9000"}) == {"sim": {"control_plane": {"port": 9000}}}
+    assert cli_source({"vehicles.drone_0.cameras.eo.fov_deg": "60.0"}) == {
+        "vehicles": {"drone_0": {"cameras": {"eo": {"fov_deg": 60.0}}}}
+    }
+
+
+def test_cli_source_leaves_plain_strings_alone() -> None:
+    assert cli_source({"sim.scene": "earth"}) == {"sim": {"scene": "earth"}}
+
+
+def test_cli_source_passes_non_string_values_through() -> None:
+    # The devkit and tests pass already-typed values programmatically; those must not be
+    # run through string coercion (a bool has no .lower()).
+    assert cli_source({"sim.headless": True}) == {"sim": {"headless": True}}
+    assert cli_source({"sim.control_plane.port": 8760}) == {"sim": {"control_plane": {"port": 8760}}}

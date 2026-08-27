@@ -1,0 +1,46 @@
+"""
+Tests for the two filesystem-facing composer helpers Ofer found broken.
+
+`delete_cesium_cache` is fully testable without Isaac. `apply_hdri` needs pxr for the real
+path, so only its guard clauses (empty path, missing file) are covered here; the dome-light
+creation is verified live.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from isaac_core.sim.composer import apply_hdri, delete_cesium_cache
+
+
+def test_deletes_all_cesium_cache_files(tmp_path: Path) -> None:
+    # The .sqlite plus its -wal and -shm companions, which is what actually holds the GB.
+    for suffix in ("", "-wal", "-shm"):
+        (tmp_path / f"cesium-request-cache.sqlite{suffix}").write_text("x", encoding="utf-8")
+    (tmp_path / "unrelated.txt").write_text("keep", encoding="utf-8")
+
+    removed = delete_cesium_cache(cache_dir=tmp_path)
+
+    assert removed == 3
+    assert not list(tmp_path.glob("cesium-request-cache.sqlite*"))
+    assert (tmp_path / "unrelated.txt").exists(), "must not touch unrelated files"
+
+
+def test_deleting_an_absent_cache_is_a_no_op(tmp_path: Path) -> None:
+    assert delete_cesium_cache(cache_dir=tmp_path) == 0
+
+
+def test_deleting_when_the_dir_is_missing_does_not_raise(tmp_path: Path) -> None:
+    assert delete_cesium_cache(cache_dir=tmp_path / "nope") == 0
+
+
+def test_apply_hdri_ignores_empty_path() -> None:
+    # The default. A scene with its own lighting must be left alone. Passing None/"" must
+    # not touch the stage, so this can assert without any USD at all.
+    assert apply_hdri(stage=None, hdri="") is False
+    assert apply_hdri(stage=None, hdri=None) is False
+
+
+def test_apply_hdri_skips_a_missing_file(tmp_path: Path) -> None:
+    # A wrong path should warn and no-op, not crash the launch.
+    assert apply_hdri(stage=None, hdri=str(tmp_path / "not-here.exr")) is False

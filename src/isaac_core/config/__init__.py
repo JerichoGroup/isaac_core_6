@@ -28,7 +28,6 @@ from isaac_core.config.schema import (
     SidecarServiceConfig,
     SimConfig,
     VehicleConfig,
-    ViewportConfig,
 )
 from isaac_core.config.sources import cli_source, defaults_source, env_source, toml_file_source
 
@@ -49,7 +48,6 @@ __all__ = [
     "SidecarServiceConfig",
     "SimConfig",
     "VehicleConfig",
-    "ViewportConfig",
     "cli_source",
     "deep_merge",
     "defaults_source",

@@ -98,6 +98,27 @@ REQUIRED_EXTENSIONS: tuple[str, ...] = (
 )
 
 
+def _json_safe_usd(value: Any) -> Any:  # noqa: ANN401
+    """
+    Convert any read USD attribute value into a JSON-serialisable form.
+
+    Scalars (bool/int/float/str) pass through; Gf vectors and quaternions become lists;
+    anything else is stringified. ``None`` stays ``None``.
+
+    Args:
+        value: A value read from a USD attribute.
+
+    Returns:
+        A JSON-serialisable representation.
+
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if hasattr(value, "GetReal") or (hasattr(value, "__len__")):
+        return _usd_value_to_list(value)
+    return str(value)
+
+
 def _usd_value_to_list(value: Any) -> list[float] | None:  # noqa: ANN401
     """
     Convert a USD attribute value into a JSON-serialisable list of floats.
@@ -178,6 +199,29 @@ class SimulationRuntime:
         """Return whether the step loop is active."""
         return self._running
 
+    def _apply_ros_domain(self) -> None:
+        """
+        Export ``ROS_DOMAIN_ID`` when the config sets one explicitly.
+
+        The ROS 2 bridge's context node reads ``$ROS_DOMAIN_ID`` (``useDomainIDEnvVar`` is
+        on by default), so exporting here before the bridge starts is what makes
+        ``ros2.domain_id`` actually take effect. ``None`` leaves the environment untouched,
+        so the bridge simply inherits whatever the shell already set.
+        """
+        domain_id = self._config.ros2.domain_id
+        if domain_id is None:
+            logger.debug("ros2.domain_id unset; inheriting ROS_DOMAIN_ID=%s", os.environ.get("ROS_DOMAIN_ID", "0"))
+            return
+        env_value = os.environ.get("ROS_DOMAIN_ID")
+        if env_value is not None and env_value != str(domain_id):
+            logger.warning(
+                "ros2.domain_id=%d in config overrides ROS_DOMAIN_ID=%s from the environment",
+                domain_id,
+                env_value,
+            )
+        os.environ["ROS_DOMAIN_ID"] = str(domain_id)
+        logger.info("exported ROS_DOMAIN_ID=%d from config", domain_id)
+
     def start(self) -> None:
         """
         Create the SimulationApp, open the stage, and start the control server.
@@ -185,6 +229,18 @@ class SimulationRuntime:
         Call this AFTER the SimulationApp launch config has been set (in
         ``__main__``). The SimulationApp import triggers Kit initialisation.
         """
+        self._apply_ros_domain()
+
+        if self._config.cesium.delete_cache_on_launch:
+            # Must happen before the app starts: cesium.omniverse is a boot extension and
+            # opens the request-cache sqlite during Kit init. Deleting it afterwards, while
+            # Cesium holds it open, produced intermittent "disk I/O error" log spam. Doing
+            # it here, before the app exists, means the files are simply absent when Cesium
+            # first opens them and it recreates them cleanly.
+            from isaac_core.sim.composer import delete_cesium_cache
+
+            delete_cesium_cache()
+
         isaacsim = importlib.import_module("isaacsim")
         sim_app_cls = getattr(isaacsim, "SimulationApp")
 
@@ -544,6 +600,11 @@ class SimulationRuntime:
         self._control_server.register("step", self._handle_step)
         self._control_server.register("capture_frame", self._handle_capture_frame)
         self._control_server.register("set_config", self._handle_set_config)
+        self._control_server.register("reset", self._handle_reset)
+        self._control_server.register("enable_feature", self._handle_enable_feature)
+        self._control_server.register("disable_feature", self._handle_disable_feature)
+        self._control_server.register("get_runtime_values", self._handle_get_runtime_values)
+        self._control_server.register("read_prim_attribute", self._handle_read_prim_attribute)
         self._control_server.start()
 
     def _handle_ping(self, params: dict[str, Any] | list[Any] | None) -> str:
@@ -605,6 +666,129 @@ class SimulationRuntime:
             attr = prim.GetAttribute(attribute)
             transform[key] = _usd_value_to_list(attr.Get()) if attr.IsValid() else None
         return transform
+
+    def _handle_read_prim_attribute(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+        """
+        Read one live attribute value off a prim in the running stage.
+
+        The general "read what is actually there" primitive: given a prim path and an
+        attribute name, return the value currently on the stage, not what config asked for.
+
+        Args:
+            params: Mapping with ``prim`` and ``attribute``.
+
+        Returns:
+            ``{"prim", "attribute", "value"}`` (value ``None`` if the prim or attribute is
+            absent or unset), or an ``error`` entry.
+
+        """
+        if not isinstance(params, dict) or "prim" not in params or "attribute" not in params:
+            raise InvalidParamsError("read_prim_attribute requires params.prim and params.attribute")
+        prim_path = str(params["prim"])
+        attribute = str(params["attribute"])
+        value = self._on_main_thread(lambda: self._read_attr(prim_path, attribute))
+        return {"prim": prim_path, "attribute": attribute, "value": value}
+
+    def _handle_get_runtime_values(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+        """
+        Return the effective values actually applied on the running stage.
+
+        Reads the real attribute values off the composed prims -- port, rotation frame,
+        topic names, camera intrinsics, tileset URLs -- rather than echoing config, so an
+        inspector reports what is genuinely running. Config is consulted only for the prim
+        paths (the mount), which are not themselves stage-readable.
+
+        Args:
+            params: Optional mapping with ``vehicle``; defaults to the first vehicle.
+
+        Returns:
+            A dict of live values, or an ``error`` entry.
+
+        """
+        vehicle_id = next(iter(self._config.vehicles))
+        if isinstance(params, dict) and "vehicle" in params:
+            vehicle_id = str(params["vehicle"])
+        mount = self._config.resolved_mount(vehicle_id)
+        tilesets_root = self._config.cesium.tilesets_root
+        values: dict[str, Any] = self._on_main_thread(
+            lambda: self._read_runtime_values(vehicle_id, mount, tilesets_root)
+        )
+        return values
+
+    def _read_attr(self, prim_path: str, attribute: str) -> Any:  # noqa: ANN401
+        """
+        Read a single attribute value from the stage, JSON-serialisable. Main-thread only.
+
+        Args:
+            prim_path: Absolute prim path.
+            attribute: Attribute name.
+
+        Returns:
+            The value as a scalar or list, or ``None`` if absent/unset.
+
+        """
+        omni_usd = importlib.import_module("omni.usd")
+        stage = omni_usd.get_context().get_stage()
+        if stage is None:
+            return None
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            return None
+        attr = prim.GetAttribute(attribute)
+        return _json_safe_usd(attr.Get()) if attr.IsValid() else None
+
+    def _read_runtime_values(self, vehicle_id: str, mount: str, tilesets_root: str) -> dict[str, Any]:
+        """
+        Read the curated set of effective values off the stage. Main-thread only.
+
+        Args:
+            vehicle_id: The vehicle to report.
+            mount: The vehicle's resolved mount prim path.
+            tilesets_root: Prim path under which Cesium tilesets live.
+
+        Returns:
+            A dict of the real values found on the stage.
+
+        """
+        omni_usd = importlib.import_module("omni.usd")
+        stage = omni_usd.get_context().get_stage()
+        if stage is None:
+            return {"error": "no stage open"}
+
+        def rd(prim_path: str, attribute: str) -> Any:  # noqa: ANN401
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                return None
+            attr = prim.GetAttribute(attribute)
+            return _json_safe_usd(attr.Get()) if attr.IsValid() else None
+
+        pose_sync = f"{mount}/PoseSync"
+        camera = f"{mount}/Xform/main_camera_01"
+        values: dict[str, Any] = {
+            "vehicle": vehicle_id,
+            "mount": mount,
+            "udp_port": rd(f"{pose_sync}/udp_to_global_position", "inputs:udp_port"),
+            "rotation_frame": rd(f"{pose_sync}/global_position_to_local_position", "inputs:rotation_frame"),
+            "enu_reference": rd(f"{pose_sync}/global_position_to_local_position", "inputs:enu_reference"),
+            "global_pose_topic": rd(f"{pose_sync}/ros2_publisher", "inputs:topicName"),
+            "image_topic": rd(f"{mount}/CameraImageExport/ros2_camera_helper", "inputs:topicName"),
+            "camera": {
+                "focalLength": rd(camera, "focalLength"),
+                "horizontalAperture": rd(camera, "horizontalAperture"),
+                "verticalAperture": rd(camera, "verticalAperture"),
+            },
+        }
+
+        tilesets: dict[str, Any] = {}
+        root = stage.GetPrimAtPath(tilesets_root)
+        if root.IsValid():
+            usd = importlib.import_module("pxr.Usd")
+            for prim in usd.PrimRange(root):
+                attr = prim.GetAttribute("cesium:url")
+                if attr.IsValid() and attr.Get():
+                    tilesets[str(prim.GetPath())] = attr.Get()
+        values["tilesets"] = tilesets
+        return values
 
     def _handle_get_state(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
         """Return the current simulation state."""
@@ -668,6 +852,41 @@ class SimulationRuntime:
         """
         raise NotImplementedError(
             "set_config runtime patching is deferred until the mutable " "subset is defined and tested"
+        )
+
+    def _handle_reset(self, params: dict[str, Any] | list[Any] | None) -> str:
+        """
+        Reset the simulation to its initial state.
+
+        Registered so the call fails with a clear, honest error rather than a confusing
+        "method not found": the devkit exposes ``SimSession.reset()``, and an unregistered
+        method would look like a version mismatch. Runtime reset semantics (timeline, pose,
+        or full stage reload) are not settled yet -- see docs/roadmap.md.
+        """
+        raise NotImplementedError(
+            "reset is not implemented yet; restart the simulator, or track the runtime-control item in the roadmap"
+        )
+
+    def _handle_enable_feature(self, params: dict[str, Any] | list[Any] | None) -> str:
+        """
+        Enable a feature layer on the running stage.
+
+        Registered so the call fails honestly. Toggling a layer at runtime means composing
+        or removing it on the live stage (mount, resolve bindings, settle), which is not
+        implemented yet -- features are selected at launch via config. See docs/roadmap.md.
+        """
+        raise NotImplementedError(
+            "runtime feature toggling is not implemented yet; enable features in config before launch"
+        )
+
+    def _handle_disable_feature(self, params: dict[str, Any] | list[Any] | None) -> str:
+        """
+        Disable a feature layer on the running stage.
+
+        Registered so the call fails honestly; see :meth:`_handle_enable_feature`.
+        """
+        raise NotImplementedError(
+            "runtime feature toggling is not implemented yet; disable features in config before launch"
         )
 
 

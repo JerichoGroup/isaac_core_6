@@ -48,6 +48,11 @@ def _usd() -> Any:  # noqa: ANN401
     return importlib.import_module("pxr.Usd")
 
 
+def _usdlux() -> Any:  # noqa: ANN401
+    """Return the lazily imported ``pxr.UsdLux`` module."""
+    return importlib.import_module("pxr.UsdLux")
+
+
 def _sdf() -> Any:  # noqa: ANN401
     """Lazily import and return the pxr.Sdf module."""
     return importlib.import_module("pxr.Sdf")
@@ -179,7 +184,92 @@ def compose_stage(
     writes = compute_writes(config, plan, resolved_enu, camera_prim=camera_prim)
     _apply_stage_writes(stage, writes)
 
+    apply_hdri(stage, config.assets.hdri)
+
     return stage
+
+
+# Prim path for the environment dome light created from `assets.hdri`.
+_HDRI_DOME_PATH = "/World/Environment/EnvironmentLight"
+
+
+# Cesium's on-disk request cache. Grows without bound over long sessions -- the team saw
+# it reach 12 GB -- and there is no config inside Cesium to cap it, so the only lever is to
+# clear it at launch. The .sqlite file has -wal and -shm companions that must go too.
+_CESIUM_CACHE_DIR = Path("~/.cache/ov").expanduser()
+_CESIUM_CACHE_GLOB = "cesium-request-cache.sqlite*"
+
+
+def delete_cesium_cache(cache_dir: Path = _CESIUM_CACHE_DIR) -> int:
+    """
+    Delete Cesium's request cache files.
+
+    Args:
+        cache_dir: Directory holding the cache, overridable for testing.
+
+    Returns:
+        The number of files removed.
+
+    """
+    removed = 0
+    for cache_file in cache_dir.glob(_CESIUM_CACHE_GLOB):
+        try:
+            cache_file.unlink()
+            removed += 1
+        except OSError as exc:
+            logger.warning("could not delete Cesium cache file %s: %s", cache_file, exc)
+    if removed:
+        logger.info("deleted %d Cesium cache file(s) from %s", removed, cache_dir)
+    else:
+        logger.info("no Cesium cache files to delete in %s", cache_dir)
+    return removed
+
+
+def apply_hdri(stage: Any, hdri: str | None) -> bool:  # noqa: ANN401
+    """
+    Light the scene from an HDRI image.
+
+    `assets.hdri` is a path to an ``.exr`` / ``.hdr`` latlong image. If the scene already
+    has a dome light -- the shipped ``earth`` scene has one at
+    ``/World/Environment/DomeLight`` -- its texture is repointed at the image, which is what
+    a user actually wants: change the sky, not add a second competing light. Only when no
+    dome light exists is one created.
+
+    Args:
+        stage: The open USD stage.
+        hdri: Path to the HDRI image. Empty or ``None`` does nothing, so a scene with its
+            own lighting is left untouched.
+
+    Returns:
+        ``True`` if a dome light was created or updated.
+
+    """
+    if not hdri:
+        return False
+
+    path = Path(hdri).expanduser()
+    if not path.is_file():
+        logger.warning("assets.hdri %s does not exist; not applying an HDRI", path)
+        return False
+
+    usdlux = _usdlux()
+    existing = [usdlux.DomeLight(prim) for prim in stage.Traverse() if prim.IsA(usdlux.DomeLight)]
+
+    if existing:
+        for dome in existing:
+            dome.CreateTextureFileAttr().Set(str(path))
+            dome.CreateTextureFormatAttr().Set("latlong")
+            logger.info("repointed dome light %s at HDRI %s", dome.GetPath(), path)
+        return True
+
+    # No dome light in the scene: create one so the HDRI still lights something.
+    sdf = _sdf()
+    dome = usdlux.DomeLight.Define(stage, sdf.Path(_HDRI_DOME_PATH))
+    dome.CreateTextureFileAttr().Set(str(path))
+    # latlong matches the equirectangular .exr the team uses; the alternative is a cube map.
+    dome.CreateTextureFormatAttr().Set("latlong")
+    logger.info("no existing dome light; created %s using HDRI %s", _HDRI_DOME_PATH, path)
+    return True
 
 
 def apply_tileset_server_url(
