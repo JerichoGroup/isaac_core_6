@@ -17,11 +17,14 @@ import sys
 import time
 from typing import Any
 
-from isaac_core.contracts.ports import DEFAULT_CONTROL_PLANE_PORT
+from isaac_core.contracts.ports import DEFAULT_CONTROL_PLANE_PORT, DEFAULT_POSE_UDP_PORT
 from isaac_core.control.client import ControlClient
 
 # Tolerance for treating a pose as "still at its default".
 _IDENTITY_TOL = 1e-9
+
+# Interval used when --count is given without --poll.
+DEFAULT_POLL_INTERVAL_S = 0.5
 
 
 def _format_pose(pose: dict[str, Any]) -> str:
@@ -167,6 +170,28 @@ def poll_pose(client: ControlClient, interval: float, count: int | None = None) 
         print(f"\nStopped after {sample} samples.")
 
 
+def _wrong_port_hint(port: int) -> str:
+    """
+    Return an extra hint when the port looks like a different service's port.
+
+    Passing the UDP pose port (33333) to the inspector is an easy mistake -- both numbers
+    appear in the config -- and the bare "connection refused" does not explain it.
+
+    Args:
+        port: The port that failed to connect.
+
+    Returns:
+        A hint string, empty when the port is unremarkable.
+
+    """
+    if port == DEFAULT_POSE_UDP_PORT:
+        return (
+            f"\n\n  Note: {DEFAULT_POSE_UDP_PORT} is the UDP *pose input* port, not the control "
+            f"plane. Try --port {DEFAULT_CONTROL_PLANE_PORT} (the control plane default)."
+        )
+    return ""
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Entry point for ``python -m isaac_core.debug.inspector``.
@@ -179,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
 
     """
     parser = argparse.ArgumentParser(
-        prog="isaac-core-inspector",
+        prog="isaac-core-inspect",
         description="Inspect a running Isaac Sim session via the control plane.",
     )
     parser.add_argument(
@@ -204,7 +229,10 @@ def main(argv: list[str] | None = None) -> int:
         "--count",
         type=int,
         default=None,
-        help="Number of poll samples (default: unlimited until Ctrl-C)",
+        help=(
+            "Number of poll samples. Implies polling, so --count alone works; "
+            "the interval defaults to {}s unless --poll is given."
+        ).format(DEFAULT_POLL_INTERVAL_S),
     )
 
     args = parser.parse_args(argv)
@@ -219,14 +247,17 @@ def main(argv: list[str] | None = None) -> int:
             f"\n"
             f"  Is the simulator running? Start it with:\n"
             f"    isaac-core run\n"
-            f"  The control plane becomes available once the sim is fully initialised.",
+            f"  The control plane becomes available once the sim is fully initialised." + _wrong_port_hint(args.port),
             file=sys.stderr,
         )
         return 1
 
     try:
-        if args.poll is not None:
-            poll_pose(client, interval=args.poll, count=args.count)
+        # --count on its own means "give me N samples": polling is implied. Before this it
+        # was silently ignored and the one-shot report printed instead.
+        interval = args.poll if args.poll is not None else (DEFAULT_POLL_INTERVAL_S if args.count else None)
+        if interval is not None:
+            poll_pose(client, interval=interval, count=args.count)
         else:
             inspect_once(client)
     finally:

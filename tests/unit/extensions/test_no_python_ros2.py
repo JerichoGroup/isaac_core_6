@@ -29,10 +29,19 @@ import re
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EXTENSIONS_ROOT = REPO_ROOT / "extensions"
 
-# Modules that only exist in a ROS 2 environment built for the system Python, and so
-# can never be imported from inside Isaac Sim 6's bundled 3.12 interpreter.
+# ROS 2 Python packages an extension module must not import. Two distinct hazards:
+#
+# 1. `rclpy` and anything pulling in its C extensions can NEVER be imported inside Isaac Sim 6:
+#    Humble builds them for Python 3.10 and Isaac runs 3.12 (`No module named
+#    'rclpy._rclpy_pybind11'`).
+# 2. Pure-Python generated message packages like `isaac_core_ros2_msgs` DO import successfully --
+#    but only when a ROS workspace is sourced. At module level that makes node registration
+#    depend on the launcher's environment: without the overlay the module raises, OmniGraph
+#    abandons the file, and the node type silently never appears. Message *objects* also cannot
+#    be published from inside Isaac anyway, since their Python C typesupport is not built there.
 FORBIDDEN_ROOTS = (
     "rclpy",
+    "isaac_core_ros2_msgs",
     "sensor_msgs",
     "geometry_msgs",
     "geographic_msgs",
@@ -70,11 +79,15 @@ def test_no_extension_module_imports_a_python_ros2_package() -> None:
                 offenders.append(f"{path.relative_to(REPO_ROOT)} imports {forbidden}")
 
     assert not offenders, (
-        "Kit extension modules must not import Python ROS 2 packages -- Humble's "
-        "rclpy is a Python 3.10 C extension and Isaac Sim 6 runs Python 3.12, so the "
-        "import fails at extension load and OmniGraph abandons the node file.\n"
-        "Use Isaac's C++ isaacsim.ros2.bridge nodes (ROS2Publisher / ROS2Subscriber) "
-        "wired in the graph instead.\n  " + "\n  ".join(offenders)
+        "Kit extension modules must not import Python ROS 2 packages at module level.\n"
+        "Either the import can never succeed inside Isaac -- rclpy is a Python 3.10 C extension "
+        "and Isaac Sim 6 runs Python 3.12 -- or, for a generated message package, it succeeds "
+        "only when a ROS workspace is sourced, which makes node registration depend on the "
+        "launcher's environment: without the overlay the module raises, OmniGraph abandons the "
+        "file, and the node type silently never appears.\n"
+        "Publish through Isaac's C++ isaacsim.ros2.bridge nodes (ROS2Publisher / ROS2Subscriber) "
+        "wired in the graph, or assemble messages in a host-side process where rclpy works.\n  "
+        + "\n  ".join(offenders)
     )
 
 
@@ -100,6 +113,8 @@ def test_surviving_nodes_are_the_pure_compute_ones() -> None:
         "OgnQuaternionToEuler",
         "OgnEulerToQuaternion",
         "OgnSecondsToRosStamp",
+        "OgnDistanceSensor",
+        "OgnBboxProjector",
         "OgnUdpToGlobalPosition",
         "OgnTemplate",
     }, f"unexpected node set: {sorted(node_files)}"

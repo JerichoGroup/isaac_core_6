@@ -27,6 +27,12 @@ class StageCapability(Enum):
 
     Layers declare which capabilities they require via their manifest's
     ``requires`` field, using the enum *name* (e.g. ``"TILESETS_ROOT"``).
+
+    Some members are probed from the scene; others are only ever *provided by a layer*
+    (``DISTANCE_SENSOR``, ``BBOX``). Both live here because ``requires`` and ``provides`` draw
+    from one namespace: a layer requirement may be satisfied by the scene or by another layer,
+    and a name that is not a member is a typo that would otherwise skip a layer forever with a
+    misleading "unmet requirement" message.
     """
 
     TILESETS_ROOT = "tilesets_root"
@@ -34,6 +40,9 @@ class StageCapability(Enum):
     GEOREFERENCE = "georeference"
     CAMERA = "camera"
     SEMANTICS = "semantics"
+    # Provided by feature layers rather than probed from the scene.
+    DISTANCE_SENSOR = "distance_sensor"
+    BBOX = "bbox"
 
 
 @runtime_checkable

@@ -1,0 +1,30 @@
+# Distance sensor feature layer.
+#
+# A PhysX raycast rangefinder publishing sensor_msgs/Range. The prim paths below must match
+# docs/usd_build_sheet.md Task B exactly.
+id = "distance_sensor"
+usd = "distance_sensor.usda"
+
+# Where this layer is referenced into the stage. {instance} is the vehicle id, so the same
+# layer mounts once per aircraft in a swarm.
+mount = "/World/Environment/{instance}"
+
+# Nothing required of the stage: a rangefinder works against whatever geometry is there, and
+# reports "no detection" when the ray hits nothing.
+requires = []
+provides = ["DISTANCE_SENSOR"]
+
+[[bindings]]
+prim = "{mount}/RangeSensing/distance_sensor"
+attribute = "inputs:min_range_m"
+config = "vehicles.{instance}.distance_sensor.min_range_m"
+
+[[bindings]]
+prim = "{mount}/RangeSensing/distance_sensor"
+attribute = "inputs:max_range_m"
+config = "vehicles.{instance}.distance_sensor.max_range_m"
+
+[[bindings]]
+prim = "{mount}/RangeSensing/ros2_publisher"
+attribute = "inputs:topicName"
+resolve = "distance_topic"

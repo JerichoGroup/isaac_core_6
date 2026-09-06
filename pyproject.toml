@@ -17,6 +17,7 @@ dependencies = [
 isaac-core = "isaac_core.cli.main:cli"
 isaac-core-pose-sender = "isaac_core.debug.pose_sender_gui:main"
 isaac-core-inspect = "isaac_core.debug.inspector:main"
+isaac-core-mavlink = "isaac_core.devkit.mavlink:main"
 
 [project.optional-dependencies]
 # Installed into Isaac Sim's bundled interpreter:

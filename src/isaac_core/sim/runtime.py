@@ -21,9 +21,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import importlib
 import logging
+import math
 import os
 from pathlib import Path
 import queue
+import socket
+import struct
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -31,10 +34,28 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 from isaac_core.config import IsaacCoreConfig
+from isaac_core.contracts import packet as packet_spec
+from isaac_core.contracts.gimbal import GimbalAngles, slew_towards
+from isaac_core.contracts.prims import render
 from isaac_core.control import ControlServer, InvalidParamsError
 from isaac_core.sim.planner import FeaturePlan
 
 logger = logging.getLogger(__name__)
+
+# Frames pumped after changing the capture resolution, so the renderer converges at the new size.
+CAPTURE_SETTLE_FRAMES = 8
+
+# Frames to wait for an asynchronous capture to write its file before giving up on confirming it.
+CAPTURE_WAIT_FRAMES = 120
+
+# How long a caller waits for a capture before giving up. Generous because the request is served
+# across several frames, but bounded so a stalled renderer cannot hang a script forever.
+CAPTURE_TIMEOUT_S: float = 20.0
+
+# Config paths that something re-reads while the simulator runs, and so can be patched safely.
+# Anything applied once at composition time is deliberately absent: patching it would change the
+# config object while the stage kept the old value.
+PATCHABLE_CONFIG_KEYS: frozenset[str] = frozenset({"gimbal.max_rate_deg_s"})
 
 # How long a control-plane handler waits for the step loop to run its task.
 #
@@ -147,6 +168,160 @@ def _usd_value_to_list(value: Any) -> list[float] | None:  # noqa: ANN401
         return None
 
 
+@dataclass
+class _CaptureRequest:
+    """An in-flight frame capture, advanced one step per simulation frame."""
+
+    target: Path
+    width: int | None
+    height: int | None
+    stage: str = "start"
+    frames: int = 0
+    original: tuple[int, int] = (0, 0)
+    used: tuple[int, int] = (0, 0)
+    render_product: str | None = None
+    result: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+    done: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(frozen=True, slots=True)
+class _GimbalTarget:
+    """A commanded gimbal attitude in degrees."""
+
+    roll_deg: float
+    pitch_deg: float
+    yaw_deg: float
+
+
+def _as_mapping(params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+    """
+    Return JSON-RPC params as a mapping.
+
+    Args:
+        params: The raw params.
+
+    Returns:
+        A mapping, empty when none were supplied.
+
+    Raises:
+        InvalidParamsError: If positional params were supplied, which these methods do not take.
+
+    """
+    if params is None:
+        return {}
+    if isinstance(params, list):
+        raise InvalidParamsError("this method takes named params, not positional")
+    return params
+
+
+def _optional_positive_int(values: dict[str, Any], name: str) -> int | None:
+    """
+    Read an optional positive integer from params.
+
+    Args:
+        values: The params mapping.
+        name: Parameter name.
+
+    Returns:
+        The value, or ``None`` when absent.
+
+    Raises:
+        InvalidParamsError: If present but not a positive integer.
+
+    """
+    if name not in values or values[name] is None:
+        return None
+    try:
+        parsed = int(values[name])
+    except (TypeError, ValueError) as exc:
+        raise InvalidParamsError(f"{name} must be an integer") from exc
+    if parsed <= 0:
+        raise InvalidParamsError(f"{name} must be greater than zero")
+    return parsed
+
+
+def _optional_float(values: dict[str, Any], name: str, fallback: float) -> float:
+    """
+    Read a named float from params, falling back when absent.
+
+    Args:
+        values: The params mapping.
+        name: Parameter name.
+        fallback: Value to use when the parameter is absent.
+
+    Returns:
+        The parsed float.
+
+    Raises:
+        InvalidParamsError: If present but not a number.
+
+    """
+    if name not in values or values[name] is None:
+        return fallback
+    try:
+        return float(values[name])
+    except (TypeError, ValueError) as exc:
+        raise InvalidParamsError(f"{name} must be a number") from exc
+
+
+def _claim_capture_output(target: Path) -> bool:
+    """
+    Move Isaac's suffixed capture file to the path the caller asked for.
+
+    Kit names captures after the render variable, so a request for ``shot.png`` lands as
+    ``shot_LdrColorSD.png``. Returning that name to the caller would break the obvious next step
+    of opening the path they passed, so the file is renamed into place instead.
+
+    Args:
+        target: The path the caller requested.
+
+    Returns:
+        ``True`` once the file exists at ``target``.
+
+    """
+    if target.exists():
+        return True
+    matches = sorted(
+        (p for p in target.parent.glob(f"{target.stem}*{target.suffix}") if p != target),
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not matches:
+        return False
+    matches[-1].replace(target)
+    for leftover in matches[:-1]:
+        leftover.unlink(missing_ok=True)
+    return True
+
+
+def _encode_pose_packet(pose: dict[str, float]) -> bytes:
+    """
+    Build the 51-byte UDP pose packet for a pose given in degrees.
+
+    Uses the shared wire contract rather than a private layout, so this cannot drift from what the
+    receiver expects. Angles are converted to the radians the wire carries -- the degrees/radians
+    boundary is the single most common source of confusion in this protocol, which is why every
+    name here states its unit.
+
+    Args:
+        pose: ``lat_deg``, ``lon_deg``, ``alt_m``, ``roll_deg``, ``pitch_deg``, ``yaw_deg``.
+
+    Returns:
+        The encoded packet.
+
+    """
+    payload = struct.pack(
+        packet_spec.PAYLOAD_FORMAT,
+        pose["lat_deg"],
+        pose["lon_deg"],
+        pose["alt_m"],
+        math.radians(pose["roll_deg"]),
+        math.radians(pose["pitch_deg"]),
+        math.radians(pose["yaw_deg"]),
+    )
+    return bytes(packet_spec.HEADER) + payload + bytes([packet_spec.checksum(payload)])
+
+
 class SimulationRuntime:
     """
     Isaac Sim application lifecycle and step loop.
@@ -183,6 +358,14 @@ class SimulationRuntime:
         self._main_thread_tasks: queue.Queue[_MainThreadTask] = queue.Queue()
         self._loop_thread_id: int | None = None
         self._running = False
+        # Gimbal aiming state. `_gimbal_target` is set by the control plane and cleared once
+        # reached; `_gimbal_current` is where the gimbal actually is, integrated per frame.
+        self._gimbal_target: _GimbalTarget | None = None
+        self._gimbal_current: GimbalAngles | None = None
+        self._gimbal_prim_path: str | None = None
+        self._capture_request: _CaptureRequest | None = None
+        # Runtime config patches, consulted ahead of the frozen config models.
+        self._config_overrides: dict[str, Any] = {}
 
     @property
     def config(self) -> IsaacCoreConfig:
@@ -500,6 +683,8 @@ class SimulationRuntime:
         try:
             while self._running and self._app.is_running():
                 app_utils.update_app()
+                self._step_gimbal()
+                self._step_capture()
                 self._drain_main_thread_tasks()
         finally:
             self._running = False
@@ -592,6 +777,9 @@ class SimulationRuntime:
         self._control_server = ControlServer(self._config.sim.control_plane)
         self._control_server.register("ping", self._handle_ping)
         self._control_server.register("get_pose", self._handle_get_pose)
+        self._control_server.register("set_gimbal", self._handle_set_gimbal)
+        self._control_server.register("set_pose", self._handle_set_pose)
+        self._control_server.register("load_scene", self._handle_load_scene)
         self._control_server.register("get_state", self._handle_get_state)
         self._control_server.register("get_capabilities", self._handle_get_capabilities)
         self._control_server.register("get_config", self._handle_get_config)
@@ -611,6 +799,149 @@ class SimulationRuntime:
         """Respond to a ping request."""
         return "pong"
 
+    def _stage(self) -> Any:  # noqa: ANN401
+        """
+        Return the currently open USD stage, or ``None``.
+
+        Returns:
+            The stage, or ``None`` before one is open.
+
+        """
+        omni_usd = importlib.import_module("omni.usd")
+        return omni_usd.get_context().get_stage()
+
+    @property
+    def _frame_dt_s(self) -> float:
+        """
+        Return the per-frame timestep used for slewing.
+
+        Uses the configured physics dt rather than measured wall time so a commanded slew takes
+        the same number of simulated seconds regardless of how fast the machine renders.
+        """
+        return float(self._config.sim.physics_dt)
+
+    def _resolve_gimbal_prim(self) -> None:
+        """
+        Locate the prim carrying the gimbal offset inputs, once.
+
+        Resolved from the first vehicle's mount rather than hardcoded, so a renamed vehicle still
+        works. Left as ``None`` when the pose graph is absent, which simply makes ``set_gimbal``
+        a no-op instead of an error -- a scene with no camera layer has no gimbal to move.
+        """
+        if self._gimbal_prim_path is not None:
+            return
+        vehicle_id = next(iter(self._config.vehicles))
+        mount = self._config.resolved_mount(vehicle_id)
+        candidate = f"{mount}/PoseSync/global_position_to_local_position"
+        stage = self._stage()
+        if stage is None:
+            return
+        sdf = importlib.import_module("pxr.Sdf")
+        if stage.GetPrimAtPath(sdf.Path(candidate)).IsValid():
+            self._gimbal_prim_path = candidate
+            logger.debug("gimbal offsets resolved to %s", candidate)
+
+    def _write_float_attribute(self, prim_path: str, attribute: str, value: float) -> None:
+        """
+        Write one float attribute on the simulation thread.
+
+        Args:
+            prim_path: Absolute prim path.
+            attribute: Attribute name.
+            value: Value to write.
+
+        """
+        stage = self._stage()
+        if stage is None:
+            return
+        sdf = importlib.import_module("pxr.Sdf")
+        prim = stage.GetPrimAtPath(sdf.Path(prim_path))
+        if not prim.IsValid():
+            return
+        attr = prim.GetAttribute(attribute)
+        if attr.IsValid():
+            attr.Set(float(value))
+
+    def _handle_set_gimbal(self, params: dict[str, Any] | list[Any] | None) -> dict[str, float]:
+        """
+        Aim the gimbal at a new attitude, slewing there if a rate limit is configured.
+
+        Only records the target. The prim writes happen on the simulation loop, which is the one
+        thread allowed to touch USD -- so this handler never needs the main-thread task queue and
+        cannot block the caller behind a frame.
+
+        Args:
+            params: ``roll_deg``, ``pitch_deg`` and ``yaw_deg``; any omitted axis holds.
+
+        Returns:
+            The requested target in degrees.
+
+        Raises:
+            RpcError: If a supplied angle is not a number.
+
+        """
+        values = _as_mapping(params)
+        gimbal = self._config.vehicles[next(iter(self._config.vehicles))].gimbal
+        held = self._gimbal_current.to_degrees() if self._gimbal_current is not None else None
+        current = _GimbalTarget(
+            roll_deg=held[0] if held else gimbal.start_roll_deg,
+            pitch_deg=held[1] if held else gimbal.start_pitch_deg,
+            yaw_deg=held[2] if held else gimbal.start_yaw_deg,
+        )
+        target = _GimbalTarget(
+            roll_deg=_optional_float(values, "roll_deg", current.roll_deg),
+            pitch_deg=_optional_float(values, "pitch_deg", current.pitch_deg),
+            yaw_deg=_optional_float(values, "yaw_deg", current.yaw_deg),
+        )
+        self._gimbal_target = target
+        logger.info(
+            "gimbal target set to roll=%.2f pitch=%.2f yaw=%.2f deg",
+            target.roll_deg,
+            target.pitch_deg,
+            target.yaw_deg,
+        )
+        return {"roll_deg": target.roll_deg, "pitch_deg": target.pitch_deg, "yaw_deg": target.yaw_deg}
+
+    def _step_gimbal(self) -> None:
+        """
+        Move the gimbal one frame's worth toward its target.
+
+        Called every frame from the simulation loop. Does nothing until a target has been
+        commanded, so a run that never touches the gimbal pays nothing and leaves the config's
+        start angles exactly as composed.
+        """
+        target = self._gimbal_target
+        if target is None:
+            return
+        self._resolve_gimbal_prim()
+        if self._gimbal_prim_path is None:
+            return
+
+        limit = self._gimbal_max_rate_deg_s()
+        target_angles = GimbalAngles.from_degrees(target.roll_deg, target.pitch_deg, target.yaw_deg)
+        if self._gimbal_current is None:
+            gimbal = self._config.vehicles[next(iter(self._config.vehicles))].gimbal
+            self._gimbal_current = GimbalAngles.from_degrees(
+                gimbal.start_roll_deg, gimbal.start_pitch_deg, gimbal.start_yaw_deg
+            )
+        else:
+            # A rate of None means unlimited, matching the config default and the previous
+            # generation's unconditional snap.
+            rate_r_s = math.radians(limit) if limit is not None else 0.0
+            self._gimbal_current = slew_towards(self._gimbal_current, target_angles, rate_r_s, self._frame_dt_s)
+
+        roll_deg, pitch_deg, yaw_deg = self._gimbal_current.to_degrees()
+        for attribute, value in (
+            ("inputs:offset_roll_deg", roll_deg),
+            ("inputs:offset_pitch_deg", pitch_deg),
+            ("inputs:offset_yaw_deg", yaw_deg),
+        ):
+            self._write_float_attribute(self._gimbal_prim_path, attribute, value)
+
+        if self._gimbal_current.as_tuple() == target_angles.as_tuple():
+            self._gimbal_target = None
+            logger.debug("gimbal reached target")
+
     def _handle_get_pose(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
         """
         Return the live local transform of a vehicle's moved prim.
@@ -628,9 +959,7 @@ class SimulationRuntime:
             entry explaining why they could not be read.
 
         """
-        vehicle_id = next(iter(self._config.vehicles))
-        if isinstance(params, dict) and "vehicle" in params:
-            vehicle_id = str(params["vehicle"])
+        vehicle_id = self._vehicle_from(_as_mapping(params))
 
         mount = self._config.resolved_mount(vehicle_id)
         prim_path = f"{mount}/Xform"
@@ -827,45 +1156,471 @@ class SimulationRuntime:
             self._on_main_thread(self._app_utils.update_app)
         return "stepped"
 
-    def _handle_capture_frame(self, params: dict[str, Any] | list[Any] | None) -> dict[str, str]:
+    def _handle_capture_frame(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
         """
-        Capture the current frame to disk.
+        Capture the camera's current frame to an image on disk.
 
-        Require ``params.path`` (confined under ``output_root``).
+        This is 2023's ``--sat``, moved off ROS because a capture is a *command*, not telemetry
+        (D20). ``width``/``height`` capture at a resolution independent of the viewport -- which
+        2023 could not do -- by resizing the render product for the shot and restoring it after.
+
+        The work is driven by the simulation loop across several frames rather than done inline,
+        because changing the resolution needs frames to converge and the capture itself writes
+        asynchronously. Doing it in a main-thread task would mean pumping frames from inside the
+        loop's own frame, which is re-entrant and hangs.
+
+        Args:
+            params: ``path`` (required, confined under ``output_root``) plus optional ``width``
+                and ``height`` in pixels.
+
+        Returns:
+            The absolute path written and the resolution actually captured.
+
+        Raises:
+            InvalidParamsError: If ``path`` is missing, only one dimension is given, or a
+                dimension is not a positive integer.
+            RuntimeError: If the capture does not complete, or no viewport exists.
+
         """
-        from isaac_core.control.server import confine_path
+        from isaac_core.control.server import confine_path  # noqa: PLC0415
 
-        if not isinstance(params, dict) or "path" not in params:
+        values = _as_mapping(params)
+        if "path" not in values:
             raise InvalidParamsError("capture_frame requires params.path")
-        output_root = self._config.sim.control_plane.output_root
-        target = confine_path(params["path"], output_root)
+        target = confine_path(values["path"], self._config.sim.control_plane.output_root)
         target.parent.mkdir(parents=True, exist_ok=True)
-        raise NotImplementedError(
-            "capture_frame requires Isaac viewport capture API; " "implement once the viewport is accessible"
+
+        width = _optional_positive_int(values, "width")
+        height = _optional_positive_int(values, "height")
+        if (width is None) != (height is None):
+            raise InvalidParamsError("capture_frame needs both width and height, or neither")
+
+        request = _CaptureRequest(target=target, width=width, height=height)
+        self._capture_request = request
+        if not request.done.wait(timeout=CAPTURE_TIMEOUT_S):
+            self._capture_request = None
+            message = f"capture did not complete within {CAPTURE_TIMEOUT_S}s"
+            raise RuntimeError(message)
+        if request.error is not None:
+            raise RuntimeError(request.error)
+        return request.result
+
+    def _step_capture(self) -> None:
+        """
+        Advance an in-flight capture by one frame.
+
+        Each state transition happens on a *different* loop iteration, which is what lets the
+        renderer converge at a new resolution and the asynchronous file write land without ever
+        calling ``update_app`` re-entrantly.
+        """
+        request = self._capture_request
+        if request is None:
+            return
+        try:
+            self._advance_capture(request)
+        except Exception as exc:  # noqa: BLE001 - report to the caller rather than kill the loop
+            logger.exception("capture failed")
+            request.error = str(exc)
+            self._capture_request = None
+            request.done.set()
+
+    def _advance_capture(self, request: _CaptureRequest) -> None:
+        """
+        Run one step of the capture state machine.
+
+        Args:
+            request: The in-flight capture.
+
+        Raises:
+            RuntimeError: If no viewport is available.
+
+        """
+        utility = importlib.import_module("omni.kit.viewport.utility")
+        request.frames += 1
+
+        if request.stage == "start":
+            viewport = self._capture_viewport(utility)
+            if viewport is None:
+                message = "no viewport available to capture from"
+                raise RuntimeError(message)
+            request.render_product = self._camera_render_product()
+            original = self._render_product_resolution(request.render_product) or tuple(
+                int(v) for v in viewport.resolution
+            )
+            request.original = (original[0], original[1])
+            if request.width is not None and request.height is not None:
+                self._set_render_product_resolution(request.render_product, request.width, request.height)
+            request.stage = "settle"
+            request.frames = 0
+            return
+
+        viewport = self._capture_viewport(utility)
+        if request.stage == "settle":
+            if request.frames >= CAPTURE_SETTLE_FRAMES:
+                used = self._render_product_resolution(request.render_product) or request.original
+                request.used = (used[0], used[1])
+                utility.capture_viewport_to_file(
+                    viewport,
+                    file_path=str(request.target),
+                    render_product_path=request.render_product,
+                )
+                request.stage = "await_file"
+                request.frames = 0
+            return
+
+        if request.stage == "await_file":
+            if _claim_capture_output(request.target) or request.frames >= CAPTURE_WAIT_FRAMES:
+                if request.used != request.original:
+                    self._set_render_product_resolution(
+                        request.render_product, request.original[0], request.original[1]
+                    )
+                request.stage = "finish"
+                request.frames = 0
+            return
+
+        if not request.target.exists():
+            request.error = f"capture produced no file at {request.target}"
+        else:
+            request.result = {
+                "path": str(request.target),
+                "width": request.used[0],
+                "height": request.used[1],
+            }
+            logger.info("captured %dx%d frame to %s", request.used[0], request.used[1], request.target)
+        self._capture_request = None
+        request.done.set()
+
+    def _render_product_resolution(self, render_product: str | None) -> tuple[int, int] | None:
+        """
+        Read a render product's pixel resolution.
+
+        Args:
+            render_product: The render product prim path, or ``None``.
+
+        Returns:
+            ``(width, height)``, or ``None`` when unavailable.
+
+        """
+        if render_product is None:
+            return None
+        stage = self._stage()
+        if stage is None:
+            return None
+        sdf = importlib.import_module("pxr.Sdf")
+        prim = stage.GetPrimAtPath(sdf.Path(render_product))
+        if not prim.IsValid():
+            return None
+        attr = prim.GetAttribute("resolution")
+        value = attr.Get() if attr.IsValid() else None
+        if value is None:
+            return None
+        return int(value[0]), int(value[1])
+
+    def _set_render_product_resolution(self, render_product: str | None, width: int, height: int) -> None:
+        """
+        Resize a render product so a capture can be taken at an arbitrary resolution.
+
+        Resizing the render product rather than the viewport widget is what actually changes the
+        captured image: the capture reads the render product, so changing only the widget left a
+        4K request producing a 720p file.
+
+        Args:
+            render_product: The render product prim path, or ``None``.
+            width: Width in pixels.
+            height: Height in pixels.
+
+        """
+        if render_product is None:
+            return
+        stage = self._stage()
+        if stage is None:
+            return
+        sdf = importlib.import_module("pxr.Sdf")
+        gf = importlib.import_module("pxr.Gf")
+        prim = stage.GetPrimAtPath(sdf.Path(render_product))
+        if not prim.IsValid():
+            return
+        attr = prim.GetAttribute("resolution")
+        if attr.IsValid():
+            attr.Set(gf.Vec2i(int(width), int(height)))
+
+    def _camera_render_product(self) -> str | None:
+        """
+        Return the camera layer's render product path, or ``None``.
+
+        Read off the graph rather than guessed, because it is created at runtime by
+        ``isaac_get_viewport_render_product``. In headless mode the *active* viewport has no
+        colour resource to capture -- Kit reports "Capture of LdrColor was requested, but no valid
+        resource!" -- while this render product is the one actually rendering, since it is what
+        feeds the image topic.
+
+        Returns:
+            The render product path, or ``None`` when the camera graph is absent.
+
+        """
+        try:
+            og = importlib.import_module("omni.graph.core")
+        except ImportError:
+            return None
+        vehicle_id = next(iter(self._config.vehicles))
+        mount = self._config.resolved_mount(vehicle_id)
+        node_path = f"{mount}/CameraImageExport/isaac_get_viewport_render_product"
+        try:
+            node = og.Controller.node(node_path)
+            value = og.Controller.get(node.get_attribute("outputs:renderProductPath"))
+        except Exception:  # noqa: BLE001 - OmniGraph raises bare errors for a missing node
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _capture_viewport(self, utility: Any) -> Any:  # noqa: ANN401
+        """
+        Return the viewport showing the vehicle camera, or the active one.
+
+        Args:
+            utility: The imported ``omni.kit.viewport.utility`` module.
+
+        Returns:
+            A viewport API handle, or ``None``.
+
+        """
+        wanted = self._config.sim.viewport_camera
+        if wanted:
+            vehicle_id = next(iter(self._config.vehicles))
+            wanted = render(wanted, instance=vehicle_id, mount=self._config.resolved_mount(vehicle_id))
+            try:
+                for window in utility.get_viewport_window_instances() or ():
+                    api = getattr(window, "viewport_api", None)
+                    if api is not None and str(getattr(api, "camera_path", "")) == wanted:
+                        return api
+            except Exception:  # noqa: BLE001 - the utility raises bare errors with no windows
+                pass
+        return utility.get_active_viewport()
+
+    def _handle_load_scene(self, params: dict[str, Any] | list[Any] | None) -> str:
+        """
+        Swap the open scene at runtime.
+
+        Registered so the call fails with an explanation rather than "method not found", which
+        reads like a version mismatch between client and simulator.
+
+        Deferred deliberately, with a concrete reason: swapping the scene means closing a stage
+        that Cesium, the ROS bridge and several OmniGraph graphs all hold references to. Every
+        stage-lifecycle shortcut tried so far in this project has produced a silent abort rather
+        than an error -- the startup warm-up frames exist because of exactly that. Restarting the
+        process is currently the safe way to change scene.
+
+        Args:
+            params: Ignored.
+
+        Raises:
+            NotImplementedError: Always.
+
+        """
+        del params
+        message = (
+            "load_scene is not implemented: swapping the stage at runtime means closing one that "
+            "Cesium, the ROS bridge and the action graphs still reference, which aborts the "
+            "process rather than erroring. Restart the simulator with a different sim.scene."
         )
+        raise NotImplementedError(message)
 
-    def _handle_set_config(self, params: dict[str, Any] | list[Any] | None) -> str:
+    def _handle_set_config(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
         """
-        Patch mutable config values at runtime.
+        Patch a runtime-mutable config value.
 
-        Only a safe subset is patchable; the full config is frozen.
-        """
-        raise NotImplementedError(
-            "set_config runtime patching is deferred until the mutable " "subset is defined and tested"
-        )
+        The patchable set is an explicit allowlist, not a general deep-merge, and it is short by
+        design. Most config is applied **once** at composition -- a binding writes it to a prim and
+        the value is never consulted again -- so "patching" it would change the config object while
+        the stage kept the old value: a silent lie, and worse than refusing. Only fields something
+        re-reads while running are accepted; everything else says so and names the restart.
 
-    def _handle_reset(self, params: dict[str, Any] | list[Any] | None) -> str:
-        """
-        Reset the simulation to its initial state.
+        Args:
+            params: ``key`` (a dotted config path) and ``value``.
 
-        Registered so the call fails with a clear, honest error rather than a confusing
-        "method not found": the devkit exposes ``SimSession.reset()``, and an unregistered
-        method would look like a version mismatch. Runtime reset semantics (timeline, pose,
-        or full stage reload) are not settled yet -- see docs/roadmap.md.
+        Returns:
+            The key, the previous value and the new value.
+
+        Raises:
+            InvalidParamsError: If the key is missing, not patchable, or the value is the wrong
+                type.
+
         """
-        raise NotImplementedError(
-            "reset is not implemented yet; restart the simulator, or track the runtime-control item in the roadmap"
-        )
+        values = _as_mapping(params)
+        if "key" not in values or "value" not in values:
+            raise InvalidParamsError("set_config requires params.key and params.value")
+        key = str(values["key"])
+        if key not in PATCHABLE_CONFIG_KEYS:
+            allowed = ", ".join(sorted(PATCHABLE_CONFIG_KEYS))
+            message = (
+                f"{key!r} is not patchable at runtime. Most config is applied once when the stage "
+                f"is composed, so changing it later would update the config object while the stage "
+                f"kept the old value. Restart the simulator to change it. Patchable now: {allowed}"
+            )
+            raise InvalidParamsError(message)
+
+        return self._patch_config_key(key, values["value"])
+
+    def _patch_config_key(self, key: str, raw: Any) -> dict[str, Any]:  # noqa: ANN401
+        """
+        Apply one allowlisted config patch.
+
+        Args:
+            key: The dotted config path, already checked against the allowlist.
+            raw: The requested value.
+
+        Returns:
+            The key, previous and new values.
+
+        Raises:
+            InvalidParamsError: If the value cannot be coerced to the field's type.
+
+        """
+        vehicle_id = next(iter(self._config.vehicles))
+        gimbal = self._config.vehicles[vehicle_id].gimbal
+
+        if key == "gimbal.max_rate_deg_s":
+            previous = gimbal.max_rate_deg_s
+            new: float | None
+            if raw is None:
+                new = None
+            else:
+                try:
+                    new = float(raw)
+                except (TypeError, ValueError) as exc:
+                    raise InvalidParamsError("gimbal.max_rate_deg_s must be a number or null") from exc
+                if new <= 0.0:
+                    raise InvalidParamsError("gimbal.max_rate_deg_s must be greater than zero, or null for unlimited")
+            # Config models are frozen, so the override lives beside them and is consulted first
+            # by the slew step. Mutating the model is not an option and would not be safe anyway.
+            self._config_overrides[key] = new
+            logger.info("patched %s: %s -> %s", key, previous, new)
+            return {"key": key, "previous": previous, "new": new}
+
+        message = f"{key!r} is allowlisted but has no handler; this is a bug"
+        raise InvalidParamsError(message)
+
+    def _gimbal_max_rate_deg_s(self) -> float | None:
+        """
+        Return the effective gimbal slew limit, honouring a runtime patch.
+
+        Returns:
+            Degrees per second, or ``None`` for unlimited.
+
+        """
+        if "gimbal.max_rate_deg_s" in self._config_overrides:
+            patched: float | None = self._config_overrides["gimbal.max_rate_deg_s"]
+            return patched
+        return self._config.vehicles[next(iter(self._config.vehicles))].gimbal.max_rate_deg_s
+
+    def _handle_reset(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+        """
+        Restart the timeline and clear commanded state.
+
+        Scope is deliberately narrow and stated plainly, because "reset" could mean three very
+        different things. This resets **simulation time** to zero and drops any commanded gimbal
+        target so the gimbal returns to its configured start angles. It does **not** reload the
+        stage or re-open the scene: doing that at runtime means closing a stage other subsystems
+        hold references to, which is the same territory as the startup crash the warm-up frames
+        exist to avoid.
+
+        Resetting simulation time is the useful part for repeatability: every published
+        ``header.stamp`` derives from it, so a recording made after a reset starts from zero.
+
+        Args:
+            params: Ignored; accepted for forward compatibility.
+
+        Returns:
+            What was reset.
+
+        """
+        del params
+
+        def _do() -> dict[str, Any]:
+            timeline = importlib.import_module("omni.timeline").get_timeline_interface()
+            timeline.stop()
+            timeline.set_current_time(0.0)
+            timeline.play()
+            return {"timeline": "restarted", "simulation_time": 0.0}
+
+        self._gimbal_target = None
+        self._gimbal_current = None
+        result: dict[str, Any] = self._on_main_thread(_do)
+        logger.info("reset: timeline restarted, gimbal target cleared")
+        return {**result, "gimbal": "returned to configured start angles"}
+
+    def _vehicle_from(self, values: dict[str, Any]) -> str:
+        """
+        Resolve which vehicle a request targets.
+
+        Defaults to the first configured vehicle so single-vehicle callers need not name one, and
+        rejects an unknown id by listing the real ones -- a typo would otherwise silently act on
+        the wrong aircraft.
+
+        Args:
+            values: The request's params mapping.
+
+        Returns:
+            A valid vehicle id.
+
+        Raises:
+            InvalidParamsError: If a named vehicle does not exist.
+
+        """
+        requested = values.get("vehicle")
+        if requested is None:
+            return next(iter(self._config.vehicles))
+        name = str(requested)
+        if name not in self._config.vehicles:
+            known = ", ".join(sorted(self._config.vehicles))
+            message = f"unknown vehicle {name!r}; configured vehicles: {known}"
+            raise InvalidParamsError(message)
+        return name
+
+    def _handle_set_pose(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+        """
+        Place the vehicle at a geodetic pose.
+
+        Sends the pose through the **same UDP path a real sender uses** rather than writing the
+        prim directly. Writing the prim looks simpler but does not work: the pose graph rewrites
+        that transform every frame from whatever the receiver last held, so a direct write is
+        overwritten within one frame. Feeding the receiver instead means the pose persists exactly
+        as if it had arrived over the wire.
+
+        Consequently the usual UDP rule applies: if something else is streaming to the same port,
+        the last packet wins and this pose will be replaced by the next one.
+
+        Args:
+            params: ``lat_deg``, ``lon_deg``, ``alt_m`` and optional ``roll_deg``/``pitch_deg``/
+                ``yaw_deg`` (degrees, NED -- converted to the radians the wire carries).
+
+        Returns:
+            The pose sent and the port it was sent to.
+
+        Raises:
+            InvalidParamsError: If a required field is missing or not a number.
+
+        """
+        values = _as_mapping(params)
+        for required in ("lat_deg", "lon_deg", "alt_m"):
+            if required not in values:
+                raise InvalidParamsError(f"set_pose requires params.{required}")
+
+        pose = {
+            "lat_deg": _optional_float(values, "lat_deg", 0.0),
+            "lon_deg": _optional_float(values, "lon_deg", 0.0),
+            "alt_m": _optional_float(values, "alt_m", 0.0),
+            "roll_deg": _optional_float(values, "roll_deg", 0.0),
+            "pitch_deg": _optional_float(values, "pitch_deg", 0.0),
+            "yaw_deg": _optional_float(values, "yaw_deg", 0.0),
+        }
+        vehicle_id = self._vehicle_from(values)
+        port = self._config.resolved_udp_port(vehicle_id)
+        packet = _encode_pose_packet(pose)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.sendto(packet, ("127.0.0.1", port))
+        logger.info("set_pose sent to udp port %d: %s", port, pose)
+        return {"sent": pose, "udp_port": port, "vehicle": vehicle_id}
 
     def _handle_enable_feature(self, params: dict[str, Any] | list[Any] | None) -> str:
         """

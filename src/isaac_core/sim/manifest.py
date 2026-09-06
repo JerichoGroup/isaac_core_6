@@ -24,8 +24,14 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+# Placeholder for a vehicle's camera key, resolved at compose time. Lets a binding
+# template the camera name instead of hardcoding one (e.g. "eo"), so renaming a
+# camera or giving a vehicle a differently-named camera does not require editing the
+# manifest.
+CAMERA: Final[str] = "camera"
+
 # The set of placeholders the system can supply at compose time.
-KNOWN_PLACEHOLDERS: Final[frozenset[str]] = frozenset({MOUNT, INSTANCE})
+KNOWN_PLACEHOLDERS: Final[frozenset[str]] = frozenset({MOUNT, INSTANCE, CAMERA})
 
 
 class Binding(BaseModel):
@@ -119,6 +125,14 @@ class LayerManifest(BaseModel):
             )
             raise ValueError(msg)
 
+        if CAMERA in found:
+            msg = (
+                f"mount template {value!r} references {{{CAMERA}}}, which is not available here: "
+                f"a mount is per-vehicle and is rendered before any camera is chosen. "
+                f"Use {{{CAMERA}}} in a binding's prim or config instead."
+            )
+            raise ValueError(msg)
+
         unknown = found - KNOWN_PLACEHOLDERS
         if unknown:
             msg = (
@@ -161,6 +175,7 @@ def load_manifest(path: Path) -> LayerManifest:
 
 __all__ = [
     "Binding",
+    "CAMERA",
     "KNOWN_PLACEHOLDERS",
     "LayerManifest",
     "load_manifest",

@@ -20,6 +20,7 @@ import argparse
 import sys
 from typing import Sequence
 
+from isaac_core.cli.completion import register_completion_subcommand, run_completion
 from isaac_core.cli.config_cmd import register_config_subcommand, run_config_dump, run_config_explain
 from isaac_core.cli.doctor import run_doctor
 
@@ -62,6 +63,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- config ---
     register_config_subcommand(subparsers)
 
+    # --- completion ---
+    register_completion_subcommand(subparsers)
+
     return parser
 
 
@@ -89,6 +93,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_doctor()
     if args.command == "config":
         return _dispatch_config(args)
+    if args.command == "completion":
+        return run_completion(args)
 
     parser.print_help()
     return 1

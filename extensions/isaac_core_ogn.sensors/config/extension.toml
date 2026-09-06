@@ -1,0 +1,26 @@
+[package]
+version = "1.0.0"
+icon = "data/sensors_pic.png"
+category = "SIM"
+title = "Isaac Core Sensors"
+description = "Physics-based sensing OmniGraph nodes: raycast range sensing"
+authors = ["isaac_core team"]
+repository = ""
+readme = "docs/README.md"
+keywords = ["sensors", "raycast", "range", "distance", "physx"]
+
+[[python.module]]
+name = "isaac_core_ogn.sensors"
+
+[ogn]
+path = "isaac_core_ogn/sensors/nodes"
+
+[fswatcher.patterns]
+include = ["*.ogn", "*.py"]
+exclude = ["Ogn*Database.py"]
+
+[dependencies]
+"omni.graph" = {}
+# raycast_closest comes from the PhysX scene-query interface.
+"omni.kit.raycast.query" = {}
+"omni.syntheticdata" = {}

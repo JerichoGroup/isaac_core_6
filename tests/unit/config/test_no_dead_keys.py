@@ -23,16 +23,7 @@ SCHEMA = REPO_ROOT / "src" / "isaac_core" / "config" / "schema.py"
 _SEARCH_ROOTS: Final = ("src/isaac_core", "extensions", "scripts")
 
 # Fields known to be unapplied, tracked in docs/roadmap.md. Shrink this; do not grow it.
-_KNOWN_DEAD: Final[frozenset[str]] = frozenset(
-    {
-        "stage_units_in_meters",
-        "start_roll_deg",
-        "start_pitch_deg",
-        "start_yaw_deg",
-        "max_rate_deg_s",
-        "use_sim_time",
-    }
-)
+_KNOWN_DEAD: Final[frozenset[str]] = frozenset()
 
 
 def _schema_fields() -> list[str]:

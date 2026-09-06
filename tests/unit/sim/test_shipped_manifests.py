@@ -19,6 +19,7 @@ import pytest
 from isaac_core.assets import LAYERS_DIR
 from isaac_core.config import IsaacCoreConfig
 from isaac_core.contracts.prims import render
+from isaac_core.sim.capabilities import StageCapability
 from isaac_core.sim.discovery import discover_layers
 from isaac_core.sim.manifest import Binding, LayerManifest, load_manifest
 
@@ -37,6 +38,9 @@ _REPRESENTATIVE_MOUNT: Final = "/Root"
 
 # Representative instance used to render {instance} in prim templates.
 _REPRESENTATIVE_INSTANCE: Final = "drone_0"
+
+# Representative camera used to render {camera} in prim and config templates.
+_REPRESENTATIVE_CAMERA: Final = "eo"
 
 # Match a USD prim definition: `def <type> "<name>"` or `def "<name>"`
 _PRIM_DEF_RE: Final = re.compile(r'^\s*def\s+(?:\w+\s+)?"([^"]+)"')
@@ -285,20 +289,48 @@ def test_camera_ros_mount_is_instance_templated(ros_manifest: LayerManifest) -> 
     assert "{mount}" not in ros_manifest.mount
 
 
+# --- Camera key is templated, not hardcoded ----------------------------------
+
+
+def test_camera_udp_templates_the_camera_key(udp_manifest: LayerManifest) -> None:
+    # Hardcoding "eo" meant a config whose camera was named anything else died at compose
+    # time with ConfigKeyError: vehicles.drone_0.cameras.eo.width does not exist. The
+    # camera key is now templated, so renaming a camera needs no manifest edit.
+    camera_config_bindings = [b for b in udp_manifest.bindings if b.config and "cameras" in b.config]
+    assert camera_config_bindings, "expected at least one camera config binding"
+    for binding in camera_config_bindings:
+        assert binding.config is not None
+        assert "{camera}" in binding.config
+        assert ".cameras.eo." not in binding.config
+
+
+def test_camera_ros_templates_the_camera_key(ros_manifest: LayerManifest) -> None:
+    # See test_camera_udp_templates_the_camera_key: same hardcoded-"eo" bug.
+    camera_config_bindings = [b for b in ros_manifest.bindings if b.config and "cameras" in b.config]
+    assert camera_config_bindings, "expected at least one camera config binding"
+    for binding in camera_config_bindings:
+        assert binding.config is not None
+        assert "{camera}" in binding.config
+        assert ".cameras.eo." not in binding.config
+
+
 # --- Binding count sanity check ----------------------------------------------
 
 
 def test_camera_udp_has_expected_binding_count(udp_manifest: LayerManifest) -> None:
     # 1 udp_port + 1 enu_reference + 1 rotation_frame + 1 global_pose topic
-    # + 2 viewport resolution + 1 image topic + 1 focalLength + 2 aperture = 10
-    assert len(udp_manifest.bindings) == 10
+    # + 2 viewport resolution + 1 image topic + 1 focalLength + 2 aperture
+    # + 2 intrinsics (focusDistance + fStop) + 2 RTSP (port + mountPath)
+    # + 3 gimbal start angles = 17
+    assert len(udp_manifest.bindings) == 17
 
 
 def test_camera_ros_has_expected_binding_count(ros_manifest: LayerManifest) -> None:
     # 1 enu_reference + 1 rotation_frame + 2 subscriber topics (lla + orientation)
     # + 1 global_pose topic + 2 viewport resolution + 1 image topic + 1 focalLength
-    # + 2 aperture = 11
-    assert len(ros_manifest.bindings) == 11
+    # + 2 aperture + 2 intrinsics (focusDistance + fStop) + 2 RTSP
+    # + 3 gimbal start angles = 18
+    assert len(ros_manifest.bindings) == 18
 
 
 # --- Binding source correctness ----------------------------------------------
@@ -337,6 +369,7 @@ def _render_binding_path(binding: Binding) -> str:
         binding.prim,
         mount=_REPRESENTATIVE_MOUNT,
         instance=_REPRESENTATIVE_INSTANCE,
+        camera=_REPRESENTATIVE_CAMERA,
     )
 
 
@@ -528,9 +561,10 @@ def test_camera_ros_has_no_udp_port_binding(ros_manifest: LayerManifest) -> None
 
 
 def _lookup_config_key(config: IsaacCoreConfig, dotted: str) -> object:
-    """Walk a dotted binding key against a real config, resolving {instance}."""
+    """Walk a dotted binding key against a real config, resolving {instance} and {camera}."""
     node: object = config
-    for part in dotted.replace("{instance}", "drone_0").split("."):
+    resolved = dotted.replace("{instance}", "drone_0").replace("{camera}", "eo")
+    for part in resolved.split("."):
         node = node[part] if isinstance(node, dict) else getattr(node, part)
     return node
 
@@ -567,3 +601,14 @@ def test_no_binding_uses_config_for_a_derive_me_field(layer_id: str) -> None:
             f"config={binding.config!r}, which defaults to None (meaning 'derive it'). "
             f"Use a `resolve` binding instead so a real value is written."
         )
+
+
+@pytest.mark.parametrize("layer_id", ["camera_udp", "camera_ros", "distance_sensor", "bbox"])
+def test_shipped_manifest_capability_names_are_all_known(layer_id: str) -> None:
+    # requires/provides share one namespace with StageCapability. An unknown name is a typo,
+    # and the failure mode is nasty: the layer is skipped on every launch with "unmet stage
+    # requirement", which reads like a stage problem rather than a spelling mistake.
+    known = {c.name for c in StageCapability}
+    manifest = load_manifest(LAYERS_DIR / layer_id / "layer.toml")
+    for name in (*manifest.requires, *manifest.provides):
+        assert name in known, f"{layer_id} uses unknown capability {name!r}; known: {sorted(known)}"

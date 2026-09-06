@@ -16,9 +16,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from isaac_core.contracts.prims import render
+from isaac_core.contracts.prims import placeholders, render
 from isaac_core.sim.capabilities import StageCapabilities
-from isaac_core.sim.manifest import LayerManifest
+from isaac_core.sim.manifest import CAMERA, INSTANCE, LayerManifest
 
 
 class PlanningError(Exception):
@@ -52,11 +52,17 @@ class PlannedLayer:
     Args:
         manifest: The validated layer manifest.
         resolved_bindings: Bindings with concrete prim paths.
+        instance: The vehicle id this layer was planned for.
+        camera: The camera id this layer was planned for, when camera-scoped.
 
     """
 
     manifest: LayerManifest
     resolved_bindings: tuple[ResolvedBinding, ...] = ()
+    # The identity this layer was planned for. Carried per layer rather than assumed globally so a
+    # swarm can compose one camera layer per vehicle and each resolves its own ports and topics.
+    instance: str = "default"
+    camera: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +93,19 @@ class FeaturePlan:
     enabled: tuple[PlannedLayer, ...] = ()
     skipped: tuple[SkippedLayer, ...] = ()
 
+    def _is_repeated(self, planned: PlannedLayer) -> bool:
+        """
+        Report whether another enabled layer shares this one's id.
+
+        Args:
+            planned: The layer being described.
+
+        Returns:
+            ``True`` when the same layer id appears more than once, i.e. one copy per vehicle.
+
+        """
+        return sum(1 for other in self.enabled if other.manifest.id == planned.manifest.id) > 1
+
     def render_report(self) -> str:
         """
         Produce a human-readable startup summary.
@@ -101,7 +120,10 @@ class FeaturePlan:
         """
         lines: list[str] = []
         for planned in self.enabled:
-            lines.append(f"  \u2713 {planned.manifest.id}")
+            # Name the vehicle when there is more than one layer for the same id, otherwise a
+            # swarm's report is just the same line repeated with no way to tell them apart.
+            suffix = f" [{planned.instance}]" if planned.instance != "default" and self._is_repeated(planned) else ""
+            lines.append(f"  \u2713 {planned.manifest.id}{suffix}")
         for skipped in self.skipped:
             lines.append(f"  \u2298 {skipped.id} \u2014 {skipped.reason}")
         return "\n".join(lines)
@@ -133,10 +155,58 @@ def _render_mount(mount_template: str, instance: str) -> str:
     return mount_template.format(instance=instance)
 
 
+def _render_config_key(template: str, *, instance: str, camera: str | None) -> str:
+    """
+    Substitute placeholders in a binding's dotted config key.
+
+    Both ``{instance}`` and ``{camera}`` are substituted here, mirroring what
+    :func:`~isaac_core.contracts.prims.render` does for prim paths. A leftover
+    ``{placeholder}`` raises rather than silently passing through: an unrendered key
+    reaches the configurator as a literal like ``vehicles.{camera}.x``, which fails far
+    from the manifest with a config-key error that does not name the real mistake.
+
+    Args:
+        template: The dotted config key from the binding, possibly templated.
+        instance: The instance identifier, normally the vehicle id.
+        camera: The camera key to substitute for ``{camera}``, or ``None`` if this
+            layer instance serves no specific camera.
+
+    Returns:
+        The config key with all supported placeholders substituted.
+
+    Raises:
+        PlanningError: If a ``{camera}`` placeholder is present but no camera was
+            supplied, or if any unknown placeholder remains.
+
+    """
+    found = placeholders(template)
+    if CAMERA in found and camera is None:
+        msg = (
+            f"config key {template!r} uses {{{CAMERA}}} but no camera was supplied to the "
+            f"planner; pass a camera id to resolve it"
+        )
+        raise PlanningError(msg)
+
+    substitutions = {INSTANCE: instance}
+    if camera is not None:
+        substitutions[CAMERA] = camera
+
+    unknown = found - substitutions.keys()
+    if unknown:
+        msg = (
+            f"config key {template!r} uses unknown placeholder(s): {', '.join(sorted(unknown))}; "
+            f"allowed: {', '.join(sorted(substitutions))}"
+        )
+        raise PlanningError(msg)
+
+    return template.format(**substitutions)
+
+
 def _resolve_bindings(
     manifest: LayerManifest,
     mount: str,
     instance: str,
+    camera: str | None,
 ) -> tuple[ResolvedBinding, ...]:
     """
     Render each binding's prim template and config key into concrete strings.
@@ -145,21 +215,31 @@ def _resolve_bindings(
     ``config = "vehicles.{instance}.rotation_frame"`` is meaningless until
     ``{instance}`` becomes a real vehicle id, and leaving it unrendered produced a
     ``ConfigKeyError`` at compose time complaining that ``vehicles.{instance}`` does not
-    exist. "Resolved" has to mean resolved on every axis, or the name lies.
+    exist. "Resolved" has to mean resolved on every axis, or the name lies. The same is
+    true of ``{camera}``, which lets a binding template the camera key instead of
+    hardcoding one.
 
     Args:
         manifest: The layer manifest whose bindings to resolve.
         mount: The concrete mount path for this layer.
         instance: The instance identifier, normally the vehicle id.
+        camera: The camera key to substitute for ``{camera}``, or ``None`` if this layer
+            instance serves no specific camera.
 
     Returns:
         Resolved bindings with concrete prim paths and config keys.
 
     """
+    render_substitutions = {"mount": mount, "instance": instance}
+    if camera is not None:
+        render_substitutions["camera"] = camera
+
     resolved: list[ResolvedBinding] = []
     for binding in manifest.bindings:
-        concrete_prim = render(binding.prim, mount=mount, instance=instance)
-        concrete_config = binding.config.replace("{instance}", instance) if binding.config is not None else None
+        concrete_prim = render(binding.prim, **render_substitutions)
+        concrete_config = (
+            _render_config_key(binding.config, instance=instance, camera=camera) if binding.config is not None else None
+        )
         resolved.append(
             ResolvedBinding(
                 prim=concrete_prim,
@@ -171,6 +251,19 @@ def _resolve_bindings(
     return tuple(resolved)
 
 
+def _capability_names() -> tuple[str, ...]:
+    """
+    Return every known stage capability name.
+
+    Returns:
+        Enum member names usable in a manifest's ``requires``/``provides``.
+
+    """
+    from isaac_core.sim.capabilities import StageCapability  # noqa: PLC0415
+
+    return tuple(c.name for c in StageCapability)
+
+
 def plan_features(
     requested_ids: Sequence[str],
     manifests: Mapping[str, LayerManifest],
@@ -178,6 +271,7 @@ def plan_features(
     *,
     strict: bool = False,
     instance: str = "default",
+    camera: str | None = None,
 ) -> FeaturePlan:
     """
     Decide which layers to compose and which to skip.
@@ -193,16 +287,22 @@ def plan_features(
             :func:`~isaac_core.sim.capabilities.probe`.
         strict: If ``True``, raise :class:`PlanningError` instead of skipping.
         instance: Instance identifier for prim path template substitution.
+        camera: Camera key for ``{camera}`` substitution in prim paths and config keys.
+            A layer instance today serves one camera; the caller passes that camera's key
+            (for v1 parity, the vehicle's first camera). ``None`` means this plan has no
+            camera, which is only valid when no binding references ``{camera}``.
 
     Returns:
         A complete feature plan.
 
     Raises:
-        PlanningError: In strict mode, if any requested layer cannot be composed.
+        PlanningError: In strict mode, if any requested layer cannot be composed, or if
+            a binding references ``{camera}`` without a camera being supplied.
 
     """
     builder = _PlanBuilder()
 
+    pending: list[str] = []
     for layer_id in sorted(set(requested_ids)):
         if layer_id not in manifests:
             reason = f"unknown layer id {layer_id!r}"
@@ -210,28 +310,52 @@ def plan_features(
                 raise PlanningError(reason)
             builder.skipped.append(SkippedLayer(id=layer_id, reason=reason))
             continue
+        pending.append(layer_id)
 
-        manifest = manifests[layer_id]
+    # A layer's requirement can be satisfied by the scene OR by another enabled layer: a bbox
+    # projector requires CAMERA, which the camera layer provides. So capabilities are grown as
+    # layers are admitted, and admission repeats until a pass changes nothing. Checking only the
+    # scene's capabilities made a layer-provided requirement permanently unsatisfiable.
+    #
+    # The resulting order is also the COMPOSITION order, which matters independently: a layer
+    # that references another layer's prim must be composed after it, or the target does not
+    # exist yet. Alphabetical order got this wrong (bbox before camera_udp).
+    available = {name for name in _capability_names() if capabilities.has_named(name)}
 
-        # Check all required capabilities.
-        unmet: list[str] = []
-        for req in manifest.requires:
-            try:
-                if not capabilities.has_named(req):
-                    unmet.append(req)
-            except KeyError:
-                unmet.append(req)
+    while pending:
+        admitted_this_pass: list[str] = []
+        for layer_id in pending:
+            manifest = manifests[layer_id]
+            if any(req not in available for req in manifest.requires):
+                continue
 
-        if unmet:
-            reason = f"unmet stage requirement(s): {', '.join(unmet)}"
-            if strict:
-                raise PlanningError(reason)
-            builder.skipped.append(SkippedLayer(id=layer_id, reason=reason))
-            continue
+            mount = _render_mount(manifest.mount, instance=instance)
+            resolved = _resolve_bindings(manifest, mount=mount, instance=instance, camera=camera)
+            builder.enabled.append(
+                PlannedLayer(
+                    manifest=manifest,
+                    resolved_bindings=resolved,
+                    instance=instance,
+                    camera=camera,
+                )
+            )
+            admitted_this_pass.append(layer_id)
 
-        mount = _render_mount(manifest.mount, instance=instance)
-        resolved = _resolve_bindings(manifest, mount=mount, instance=instance)
-        builder.enabled.append(PlannedLayer(manifest=manifest, resolved_bindings=resolved))
+        if not admitted_this_pass:
+            break
+
+        for layer_id in admitted_this_pass:
+            available.update(manifests[layer_id].provides)
+            pending.remove(layer_id)
+
+    # Whatever is still pending cannot be satisfied by the scene or by any layer that was
+    # admitted, which also covers a genuine dependency cycle.
+    for layer_id in pending:
+        unmet = [req for req in manifests[layer_id].requires if req not in available]
+        reason = f"unmet stage requirement(s): {', '.join(unmet)}"
+        if strict:
+            raise PlanningError(reason)
+        builder.skipped.append(SkippedLayer(id=layer_id, reason=reason))
 
     return FeaturePlan(
         enabled=tuple(builder.enabled),

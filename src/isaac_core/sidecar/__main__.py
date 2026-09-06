@@ -19,9 +19,6 @@ import sys
 import threading
 
 from isaac_core.config import load
-
-# Ensure the RTP service is registered by importing the module.
-import isaac_core.sidecar.rtp  # noqa: F401
 from isaac_core.sidecar.service import RestartPolicy, ServiceSupervisor
 
 logger = logging.getLogger("isaac_core.sidecar")

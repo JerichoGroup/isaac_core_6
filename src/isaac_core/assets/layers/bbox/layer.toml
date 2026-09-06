@@ -1,0 +1,38 @@
+# Bounding-box publishing feature layer.
+#
+# Projects every object under the targets root into camera pixel space and publishes one
+# FrameBboxes message per frame. Prim paths must match docs/usd_build_sheet.md Task C exactly.
+id = "bbox"
+usd = "bbox.usda"
+
+mount = "/World/Environment/{instance}"
+
+# A camera is genuinely required: there is nothing to project into without one.
+requires = ["CAMERA"]
+provides = ["BBOX"]
+
+# The projector's intrinsics are bound from the same camera config that drives the camera prim,
+# so the projection cannot drift out of step with the camera actually rendering the image.
+
+
+
+
+
+[[bindings]]
+prim = "{mount}/BboxExport/ros2_publisher"
+attribute = "inputs:topicName"
+resolve = "bbox_topic"
+
+# Plain path attributes, not USD relationships. Two reasons, both discovered the hard way:
+# changing a live OmniGraph node's relationship after the graph has resolved its topology
+# aborts Kit, and a relationship into another layer cannot be authored in the GUI because the
+# picker only shows prims in the file being edited.
+[[bindings]]
+prim = "{mount}/BboxExport/bbox_projector"
+attribute = "inputs:cameraPath"
+resolve = "camera_prim"
+
+[[bindings]]
+prim = "{mount}/BboxExport/bbox_projector"
+attribute = "inputs:targetsRootPath"
+resolve = "bboxes_root"

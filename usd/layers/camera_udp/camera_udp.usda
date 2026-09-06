@@ -195,7 +195,7 @@ def Xform "Root"
             )
             custom token outputs:viewport
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (93.53684, 175.15742)
+            uniform float2 ui:nodegraph:node:pos = (103.12232, 190.49422)
         }
 
         def OmniGraphNode "isaac_set_viewport_resolution" (
@@ -242,7 +242,7 @@ def Xform "Root"
             )
             custom token outputs:renderProductPath
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (514.6299, 254.10864)
+            uniform float2 ui:nodegraph:node:pos = (515.58844, 254.10864)
         }
 
         def OmniGraphNode "isaac_set_camera" (
@@ -273,7 +273,7 @@ def Xform "Root"
                 }
             )
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (895.0088, 218.42134)
+            uniform float2 ui:nodegraph:node:pos = (874.6749, 185.88716)
         }
 
         def OmniGraphNode "ros2_camera_helper" (
@@ -306,11 +306,11 @@ def Xform "Root"
             custom token inputs:type (
                 allowedTokens = ["rgb", "rgb_h264", "depth", "depth_pcl", "instance_segmentation", "semantic_segmentation", "bbox_2d_tight", "bbox_2d_loose", "bbox_3d"]
             )
-            custom bool inputs:useSystemTime
+            custom bool inputs:useSystemTime = 0
             token node:type = "isaacsim.ros2.bridge.ROS2CameraHelper"
             int node:typeVersion = 3
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (1312.5596, 111.174805)
+            uniform float2 ui:nodegraph:node:pos = (1312.5596, 109.56273)
         }
 
         def OmniGraphNode "counter" (
@@ -366,6 +366,28 @@ def Xform "Root"
             uniform token ui:nodegraph:node:expansionState = "open"
             uniform float2 ui:nodegraph:node:pos = (1008.84045, 630.5458)
         }
+
+        def OmniGraphNode "rtsp_camera_helper" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom bool inputs:enabled
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
+            custom string inputs:mountPath
+            custom int inputs:port
+            custom token inputs:renderProductPath
+            prepend token inputs:renderProductPath.connect = </Root/CameraImageExport/isaac_get_viewport_render_product.outputs:renderProductPath>
+            custom bool inputs:useRawEncoding
+            token node:type = "isaacsim.streaming.rtsp.RTSPCameraHelper"
+            int node:typeVersion = 1
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (1316.029, -95.7572)
+        }
     }
 
     def OmniGraph "PoseSync"
@@ -410,11 +432,8 @@ def Xform "Root"
             custom vector3d inputs:global_position
             prepend vector3d inputs:global_position.connect = </Root/PoseSync/udp_to_global_position.outputs:global_position>
             custom float inputs:offset_pitch_deg
-            prepend float inputs:offset_pitch_deg.connect = </Root/PoseSync/ros2_subscriber.outputs:pitch>
             custom float inputs:offset_roll_deg
-            prepend float inputs:offset_roll_deg.connect = </Root/PoseSync/ros2_subscriber.outputs:roll>
             custom float inputs:offset_yaw_deg
-            prepend float inputs:offset_yaw_deg.connect = </Root/PoseSync/ros2_subscriber.outputs:yaw>
             custom string inputs:rotation_frame
             token node:type = "isaac_core_ogn.math.GlobalPositionToLocalPosition"
             int node:typeVersion = 1
@@ -561,39 +580,6 @@ def Xform "Root"
             custom uint64 outputs:context
             uniform token ui:nodegraph:node:expansionState = "open"
             uniform float2 ui:nodegraph:node:pos = (-219.45038, 254.8512)
-        }
-
-        def OmniGraphNode "ros2_subscriber" (
-            prepend apiSchemas = ["NodeGraphNodeAPI"]
-        )
-        {
-            custom uint64 inputs:context
-            prepend uint64 inputs:context.connect = </Root/PoseSync/ros2_context.outputs:context>
-            custom uint inputs:execIn (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            prepend uint inputs:execIn.connect = </Root/PoseSync/on_playback_tick.outputs:tick>
-            custom string inputs:messageName = "Gimbal"
-            custom string inputs:messagePackage = "isaac_ros2_messages"
-            custom string inputs:messageSubfolder
-            custom string inputs:nodeNamespace
-            custom string inputs:qosProfile
-            custom uint64 inputs:queueSize
-            custom string inputs:topicName = "/isaac_core/gimbal"
-            token node:type = "isaacsim.ros2.bridge.ROS2Subscriber"
-            int node:typeVersion = 1
-            custom uint outputs:execOut (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            custom float outputs:pitch
-            custom float outputs:roll
-            custom float outputs:yaw
-            uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (117.621155, 240.47305)
         }
 
         def OmniGraphNode "ros2_publisher" (

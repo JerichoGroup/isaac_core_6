@@ -139,3 +139,55 @@ def test_inspect_prints_live_values_read_from_the_stage(capsys: pytest.CaptureFi
     assert "22.7885" in out, "the real camera focalLength must be shown"
     assert "http://host/tileset.json" in out, "the real tileset URL must be shown"
     assert "no UDP/ROS pose received yet" in out, "idle pose should be explained"
+
+
+def test_count_alone_polls_instead_of_printing_the_one_shot_report(
+    server: ControlServer, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Ofer's bug: `--count 10` silently fell back to the one-shot report because --count only
+    # took effect alongside --poll. Now --count implies polling.
+    port = _port_of(server)
+    assert main(["--port", port, "--count", "3"]) == 0
+    out = capsys.readouterr().out
+    assert "=== Simulator State ===" not in out, "--count must poll, not print the one-shot report"
+    assert out.count("983.300") == 3, "should emit exactly --count samples"
+
+
+def test_poll_and_count_together_still_work(server: ControlServer, capsys: pytest.CaptureFixture[str]) -> None:
+    port = _port_of(server)
+    assert main(["--port", port, "--poll", "0.01", "--count", "2"]) == 0
+    assert capsys.readouterr().out.count("983.300") == 2
+
+
+def test_no_poll_and_no_count_prints_the_one_shot_report(
+    server: ControlServer, capsys: pytest.CaptureFixture[str]
+) -> None:
+    port = _port_of(server)
+    assert main(["--port", port]) == 0
+    assert "=== Simulator State ===" in capsys.readouterr().out
+
+
+def test_using_the_udp_pose_port_gets_a_specific_hint(capsys: pytest.CaptureFixture[str]) -> None:
+    # 33333 is the UDP pose input port; passing it to the inspector is an easy mistake and the
+    # bare "connection refused" does not explain it.
+    from isaac_core.contracts.ports import DEFAULT_POSE_UDP_PORT
+
+    assert main(["--port", str(DEFAULT_POSE_UDP_PORT)]) == 1
+    err = capsys.readouterr().err
+    assert "UDP" in err and "pose input" in err
+    assert "8760" in err, "should point at the control plane default"
+
+
+def test_the_help_prog_name_matches_the_installed_command() -> None:
+    # The help used to say "isaac-core-inspector", which is not a command that exists.
+    import subprocess
+    import sys as _sys
+
+    result = subprocess.run(
+        [_sys.executable, "-m", "isaac_core.debug.inspector", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "isaac-core-inspect " in result.stdout or "isaac-core-inspect\n" in result.stdout
+    assert "isaac-core-inspector" not in result.stdout

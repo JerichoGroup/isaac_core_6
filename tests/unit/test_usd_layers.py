@@ -26,6 +26,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 USD_ROOT = REPO_ROOT / "usd"
 
 CAMERA_LAYERS = sorted(USD_ROOT.glob("layers/camera_*/*.usda"))
+# Every feature layer, not just the cameras: a new layer must be validated the moment it
+# lands, which is how a mis-nested OmniGraph slipped through once.
+ALL_LAYERS = sorted(USD_ROOT.glob("layers/*/*.usda"))
 SCENES = sorted(USD_ROOT.glob("scenes/*.usda"))
 
 # The prim the pose graph drives. Its transform stack is a contract: the writers
@@ -262,3 +265,33 @@ def test_camera_looks_along_the_body_forward_axis(layer: Path) -> None:
     assert np.allclose(
         image_up, body_up, atol=1e-6
     ), f"{layer.name}: camera image-up is {np.round(image_up, 3)}, expected {body_up}"
+
+
+def _default_prim(text: str) -> str | None:
+    """Return the layer's declared defaultPrim, or None."""
+    match = re.search(r'defaultPrim\s*=\s*"([^"]+)"', text)
+    return match.group(1) if match else None
+
+
+def _column_zero_prims(text: str) -> list[str]:
+    """Return the names of prims declared at column 0 (layer root level)."""
+    return re.findall(r'^def\s+\w*\s*"([^"]+)"', text, re.M)
+
+
+@pytest.mark.parametrize("layer", ALL_LAYERS, ids=lambda p: p.stem)
+def test_layer_graphs_live_under_the_default_prim(layer: Path) -> None:
+    # A feature layer is composed onto the stage by REFERENCE, which brings in the
+    # defaultPrim's subtree. Anything declared as a sibling of the defaultPrim is silently
+    # dropped -- the prim simply never appears in the composed stage, with no error. That
+    # happened for real: a distance-sensor layer had its OmniGraph at layer root instead of
+    # under /Root, so the whole sensor did nothing.
+    text = _text(layer)
+    default = _default_prim(text)
+    assert default is not None, f"{layer.name} declares no defaultPrim"
+
+    graphs_at_root = re.findall(r'^def\s+OmniGraph\s+"([^"]+)"', text, re.M)
+    assert not graphs_at_root, (
+        f"{layer.name}: OmniGraph(s) {graphs_at_root} are declared at layer root, siblings of "
+        f"the defaultPrim {default!r}. A reference composes only the defaultPrim's subtree, so "
+        f"these would silently never appear in the stage. Nest them under {default!r}."
+    )

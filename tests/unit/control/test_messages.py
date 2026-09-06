@@ -30,6 +30,7 @@ def test_method_enum_contains_all_required_names() -> None:
         "resume",
         "step",
         "capture_frame",
+        "set_gimbal",
         "set_pose",
         "ping",
         "get_pose",

@@ -9,7 +9,6 @@ the simulator rather than a fork-and-forget child.
 Run with ``python3 -m isaac_core.sidecar --config <path>``.
 """
 
-from isaac_core.sidecar.rtp import RtpVideoService
 from isaac_core.sidecar.service import (
     RestartPolicy,
     Service,
@@ -19,7 +18,6 @@ from isaac_core.sidecar.service import (
 
 __all__ = [
     "RestartPolicy",
-    "RtpVideoService",
     "Service",
     "ServiceRegistry",
     "ServiceSupervisor",

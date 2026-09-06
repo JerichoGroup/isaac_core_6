@@ -138,6 +138,149 @@ Published topics:
 
 ---
 
+## Video stream and custom messages
+
+### RTSP
+
+Every camera streams H.264 over RTSP the whole time the simulator is up, using Isaac's native
+`isaacsim.streaming.rtsp`. There is no flag to turn it on and no separate sidecar process: the
+stream is there for whoever wants it and costs nothing to ignore.
+
+```bash
+ffplay rtsp://127.0.0.1:8554/stream
+```
+
+Configurable per camera:
+
+```toml
+[vehicles.drone_0.cameras.eo]
+rtsp_port = 8554
+rtsp_mount_path = "/stream"   # unset = derived, namespaced once there is more than one camera
+```
+
+### Custom ROS 2 messages
+
+Bounding boxes need two message types that are not in any standard package. They ship as a
+normal ROS 2 package in `ros2/isaac_core_ros2_msgs/`:
+
+| Message | Contents |
+|---|---|
+| `isaac_core_ros2_msgs/msg/FrameBboxes` | `header` + 16 parallel arrays, one entry per detection |
+
+`FrameBboxes` carries **parallel arrays** rather than an array of per-object messages, because
+Isaac Sim 6 cannot publish an array of nested messages -- its generic ROS 2 publisher exposes such
+a field as an unusable `token[]` that segfaults when written, while primitive arrays publish
+correctly. Index `i` refers to the same object in every array, and `len(target_name)` is the
+detection count:
+
+```python
+for i in range(len(msg.target_name)):
+    if msg.is_visible[i]:
+        print(msg.target_name[i], msg.x1[i], msg.y1[i], msg.lat[i], msg.lon[i])
+```
+
+`scripts/setup.sh` copies the package into `$ROS_WS/src` (default
+`~/IsaacSim-ros_workspaces/humble_ws`) and builds just that package. By hand:
+
+```bash
+cp -r ros2/isaac_core_ros2_msgs ~/IsaacSim-ros_workspaces/humble_ws/src/
+cd ~/IsaacSim-ros_workspaces/humble_ws && colcon build --packages-select isaac_core_ros2_msgs
+source install/setup.bash
+```
+
+**Migrating from the 2023 repo:** field *names* are unchanged, but two things move. The package
+is now `isaac_core_ros2_msgs` -- `isaac_ros2_messages` is NVIDIA's, and it also carries the `.srv`
+files Isaac's own ROS tooling depends on, so a second package under that name would collide. And
+the index moves from the outer struct to the inner array: `msg.bboxes[i].x1` becomes `msg.x1[i]`.
+There is no longer a standalone `Bbox` message.
+
+---
+
+## Camera gimbal
+
+The gimbal is commanded over the control plane, not a ROS topic — moving it is a *command*, and
+the data plane is for telemetry.
+
+```toml
+[vehicles.drone_0.gimbal]
+start_roll_deg  = 0.0
+start_pitch_deg = -15.0    # nose-down look angle at launch
+start_yaw_deg   = 0.0
+max_rate_deg_s  = 20.0     # omit for an instant snap
+rotation_frame  = "body"   # a gimbal is bolted to the airframe
+```
+
+```python
+with Sim.attach() as session:
+    session.set_gimbal(pitch_deg=-30.0)          # slews at max_rate_deg_s
+    session.set_gimbal(yaw_deg=90.0)             # untouched axes hold
+```
+
+`set_gimbal` returns as soon as the target is accepted, not when the gimbal arrives: with a rate
+limit the move takes real simulated time, so blocking would make a script look hung. Poll
+`get_pose()` to observe arrival.
+
+Angles are offsets applied **on top of** the airframe attitude, in the frame named by
+`rotation_frame` (`body` by default, so they follow the aircraft). Sign conventions match the
+airframe: `+pitch` raises the look direction, `+roll` drops the right side, `+yaw` turns right.
+
+---
+
+## Frame capture
+
+`capture_frame` writes a still to disk. Unlike the previous generation it can capture at a
+resolution independent of the viewport, so a high-resolution still can be taken from a small
+window; the render product is resized for the shot and restored afterwards.
+
+```python
+with Sim.attach() as session:
+    session.capture_frame("shot.png")                            # viewport resolution
+    session.capture_frame("big.png", width=3840, height=2160)    # 4K from a 720p viewport
+```
+
+Paths are resolved under `sim.control_plane.output_root` and confined to it. Width and height
+must be given together or not at all. The returned dict reports the path written and the
+resolution actually used.
+
+---
+
+## Multiple vehicles
+
+Declare more than one vehicle and each gets its own camera layer, UDP port, topic namespace and
+prim mount. Nothing else changes.
+
+```toml
+[vehicles.lead]
+[vehicles.lead.cameras.eo]
+
+[vehicles.wing]
+[vehicles.wing.cameras.eo]
+```
+
+| | `lead` | `wing` |
+|---|---|---|
+| UDP pose port | 33333 | 33334 |
+| Pose topic | `/isaac_core/lead/global_pose` | `/isaac_core/wing/global_pose` |
+| Image topic | `/isaac_core/lead/image_rgb` | `/isaac_core/wing/image_rgb` |
+| Prim mount | `/World/Environment/lead` | `/World/Environment/wing` |
+
+Ports are allocated as `udp_port + index`. Topics are namespaced **only** when more than one
+vehicle is configured, so a single-vehicle setup keeps the unprefixed names
+(`/isaac_core/global_pose`) and existing consumers are unaffected.
+
+Control-plane calls take an optional `vehicle`, defaulting to the first configured one:
+
+```python
+with Sim.attach() as session:
+    session.set_pose(vehicle="wing", lat_deg=32.2, lon_deg=35.3, alt_m=900.0)
+    print(session.get_pose(vehicle="wing"))
+```
+
+An unknown vehicle name is rejected with the list of configured ones rather than silently acting
+on the wrong aircraft.
+
+---
+
 ## Coordinate conventions
 
 This is the thing newcomers get wrong. Read it once.
@@ -229,10 +372,11 @@ with Sim.attach(host="192.168.1.50", port=8760) as session:
     print(caps)  # {'enabled': ['camera_udp'], 'skipped': []}
 ```
 
-These calls are backed by real control-plane handlers today. Some `SimSession` methods are
-deferred and fail with a clear "not implemented yet" error rather than silently doing
-nothing: `config.patch(...)` (runtime config patching), `features.enable/disable(...)`
-(runtime layer toggling), `reset()`, and `capture_frame(...)`. They are tracked in
+These calls are backed by real control-plane handlers today. Two remain deferred and fail with
+a clear explanation rather than silently doing nothing: `features.enable/disable(...)`
+(composing a layer onto a live stage) and `load_scene(...)` (swapping the stage, which means
+closing one that Cesium, the ROS bridge and the action graphs still reference). They are
+tracked in
 [docs/roadmap.md](docs/roadmap.md); features are selected in config before launch for now.
 
 `Sim.attach(...)` returns a `SimSession` using only the JSON-RPC control plane, so scripts
@@ -458,6 +602,17 @@ If you have an older config file that predates these settings, either delete it 
 from `config/default.toml` or copy the three keys across.
 
 
+### Terrain vanished after changing `sim.renderer`
+
+`MinimalRendering` (and its `Minimal` alias) skips the RTX passes Cesium 3D Tiles terrain
+relies on, so the scene loads and reports healthy while drawing no terrain at all -- a
+symptom identical to a broken tileset URL or a missing extension. This is expected: it is a
+frame-rate mode for profiling without terrain. Config load prints a warning when you select
+it. Set `renderer = "RaytracedLighting"` to get terrain back. A misspelled renderer
+(e.g. `"Raytraced"`) is rejected at config load with the list of valid options, rather than
+being passed to Isaac and failing later.
+
+
 ### Poses seem to be ignored, or snap back to something you did not send
 
 Only one sender can meaningfully own a UDP port. If `isaac-core-pose-sender` is open, or an
@@ -525,10 +680,20 @@ Long sessions grow `~/.cache/ov/cesium-request-cache.sqlite-wal` until Isaac fai
 
 ## What does not work yet
 
-- Sensor layers (distance sensor, bounding-box publishing, satellite imagery) are not yet built.
-- RTP/GStreamer streaming exists as a sidecar skeleton only.
-- `capture_frame` raises `NotImplementedError`.
-- Monotonic frame id cannot reach the image topic with the current node API; `header.stamp` covers most of that need.
+Version 1 is the core sandbox: pose in (UDP or ROS 2), camera over real terrain, geodetic
+pose and image published. The following are **Version 2**, planned in
+[docs/roadmap.md](docs/roadmap.md) with milestones:
+
+- SAT frame capture, and `capture_frame()` generally (M5). Distance-sensor and bounding-box
+  layers now have working nodes and manifests; the USD layers are being authored (M2).
+- `reset()`, `features.enable/disable()`, `config.patch()` and `capture_frame()` are registered
+  but raise a clear "not implemented yet" (M5).
+- Monotonic frame id cannot reach the image topic with the current node API; `header.stamp`
+  covers most of that need.
+
+**Migrating from the 2023 repo:** `/isaac_core/global_pose` now carries a *real* quaternion.
+The old repo packed roll/pitch/yaw into the quaternion's x/y/z fields, so any consumer that
+read RPY out of those fields must be updated.
 
 ---
 

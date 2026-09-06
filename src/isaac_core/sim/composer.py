@@ -18,14 +18,19 @@ import importlib
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 from typing import Any, Final
 
 from isaac_core.config import IsaacCoreConfig
+from isaac_core.contracts.prims import BBOXES_ROOT, render
 from isaac_core.sim.capabilities import probe
-from isaac_core.sim.configurator import AttributeWrite, compute_writes
+from isaac_core.sim.configurator import (
+    AttributeWrite,
+    compute_writes,
+)
 from isaac_core.sim.georeference import describe_mismatch, resolve_enu_reference
 from isaac_core.sim.planner import FeaturePlan, PlannedLayer
 from isaac_core.sim.stage import UsdStageInspector
@@ -51,6 +56,11 @@ def _usd() -> Any:  # noqa: ANN401
 def _usdlux() -> Any:  # noqa: ANN401
     """Return the lazily imported ``pxr.UsdLux`` module."""
     return importlib.import_module("pxr.UsdLux")
+
+
+def _usdgeom() -> Any:  # noqa: ANN401
+    """Return the lazily imported ``pxr.UsdGeom`` module."""
+    return importlib.import_module("pxr.UsdGeom")
 
 
 def _sdf() -> Any:  # noqa: ANN401
@@ -153,12 +163,16 @@ def compose_stage(
 
     stage = usd_context.get_stage()
 
+    # Establish metres-per-unit before anything reads geometry: the pose pipeline and
+    # camera intrinsics all assume 1 unit == 1 metre.
+    apply_stage_units(stage, config.sim.stage_units_in_meters)
+
     # Let the base scene finish loading before any layer graph exists. See `settle`.
     if settle is not None:
         settle()
 
-    # The instance is the vehicle id, so prim paths match the manifests' {instance}
-    # templates and each aircraft in a swarm gets its own mount.
+    # Each planned layer carries the vehicle it was planned for; this is only the fallback for a
+    # plan that predates per-vehicle planning.
     instance = next(iter(config.vehicles))
     _mount_layers(stage, plan, layer_search_paths, instance)
 
@@ -183,6 +197,8 @@ def compose_stage(
     camera_prim = _resolve_camera_prim(config, stage)
     writes = compute_writes(config, plan, resolved_enu, camera_prim=camera_prim)
     _apply_stage_writes(stage, writes)
+
+    apply_target_semantics(stage, BBOXES_ROOT)
 
     apply_hdri(stage, config.assets.hdri)
 
@@ -223,6 +239,60 @@ def delete_cesium_cache(cache_dir: Path = _CESIUM_CACHE_DIR) -> int:
     else:
         logger.info("no Cesium cache files to delete in %s", cache_dir)
     return removed
+
+
+# Floating-point slack when comparing metres-per-unit values. USD stores the value as a
+# double and a scene authored in the GUI can land a hair off 1.0; anything inside this
+# window is treated as equal so a rounding artefact is not reported as a conflict.
+_METERS_PER_UNIT_TOL: Final = 1e-9
+
+
+def apply_stage_units(stage: Any, meters_per_unit: float) -> bool:  # noqa: ANN401
+    """
+    Set the stage's metres-per-unit metadata from config.
+
+    The whole pipeline assumes one stage unit is one metre: the ENU translate values the
+    pose graph writes are metres, and the camera intrinsics are authored in millimetres
+    against a metre stage. Changing this rescales the entire world relative to the poses,
+    so anything other than ``1.0`` is applied but WARNED about loudly rather than accepted
+    silently as if it were a supported mode.
+
+    A scene that already declares a different metres-per-unit than config is a real
+    conflict -- one of the two is wrong about what the numbers mean -- so it is reported
+    before config overwrites it.
+
+    ``pxr`` is imported lazily so this module imports without Isaac Sim.
+
+    Args:
+        stage: The open USD stage.
+        meters_per_unit: The configured metres per stage unit, from ``sim.stage_units_in_meters``.
+
+    Returns:
+        ``True`` if the stage metadata was written.
+
+    """
+    usdgeom = _usdgeom()
+
+    existing = usdgeom.GetStageMetersPerUnit(stage)
+    if abs(existing - meters_per_unit) > _METERS_PER_UNIT_TOL:
+        logger.warning(
+            "scene declares metersPerUnit=%s but config sim.stage_units_in_meters=%s; "
+            "overwriting the scene with the configured value",
+            existing,
+            meters_per_unit,
+        )
+
+    if abs(meters_per_unit - 1.0) > _METERS_PER_UNIT_TOL:
+        logger.warning(
+            "sim.stage_units_in_meters=%s is not 1.0; the rest of the pipeline assumes 1 unit == 1 metre "
+            "(ENU translates are metres, camera intrinsics are authored against a metre stage), so this "
+            "silently rescales the world relative to the poses. Setting it anyway, but this is unsupported.",
+            meters_per_unit,
+        )
+
+    usdgeom.SetStageMetersPerUnit(stage, meters_per_unit)
+    logger.info("set stage metersPerUnit to %s", meters_per_unit)
+    return True
 
 
 def apply_hdri(stage: Any, hdri: str | None) -> bool:  # noqa: ANN401
@@ -272,6 +342,72 @@ def apply_hdri(stage: Any, hdri: str | None) -> bool:  # noqa: ANN401
     return True
 
 
+# USD attribute on a Cesium tileset prim that holds the tileset.json URL.
+_CESIUM_URL_ATTR: Final = "cesium:url"
+
+
+def _parse_server_override(override: str) -> tuple[str, str, str] | None:
+    """
+    Split a server override into its scheme, network location and path prefix.
+
+    The override supplies only the server: scheme, host and (optional) port. A missing
+    scheme is tolerated -- ``newhost:9000`` and ``//newhost:9000`` are parsed as a network
+    location rather than a scheme, defaulting the scheme to ``http``. Any path component on
+    the override is treated as a prefix prepended to each tileset's own path; the normal
+    case (no path) leaves each path untouched. A query or fragment on the override is
+    ignored, since those belong to the individual tileset.
+
+    Args:
+        override: The configured server override, for example ``http://newhost:9000``.
+
+    Returns:
+        A ``(scheme, netloc, path_prefix)`` triple, or ``None`` if the override has no
+        parseable host.
+
+    """
+    split = urlsplit(override)
+    scheme, netloc, path = split.scheme, split.netloc, split.path
+
+    # A bare "host:port" parses with the host as the scheme and no netloc; re-parse it as
+    # a network location so authority-only overrides work without a scheme. Only do this
+    # when the override carries no "scheme://" marker, so a malformed "http://" stays
+    # hostless rather than being mangled into a host named "http".
+    if not netloc and "://" not in override:
+        split = urlsplit(f"//{override.lstrip('/')}")
+        scheme, netloc, path = split.scheme, split.netloc, split.path
+
+    if not split.hostname:
+        return None
+
+    scheme = scheme or "http"
+    path_prefix = path.rstrip("/")
+    return scheme, netloc, path_prefix
+
+
+def _rewrite_url(original: str, scheme: str, netloc: str, path_prefix: str) -> str:
+    """
+    Swap the server of ``original`` while preserving its path, query and fragment.
+
+    A relative or path-only original (no scheme and no host) is treated as a path under
+    the new server, so it gains the override's scheme and host rather than being left
+    server-less.
+
+    Args:
+        original: The tileset's current URL.
+        scheme: Replacement scheme.
+        netloc: Replacement network location (host and optional port).
+        path_prefix: Path fragment prepended to the original path, usually empty.
+
+    Returns:
+        The rewritten URL.
+
+    """
+    parts = urlsplit(original)
+    path = parts.path if parts.path.startswith("/") or not parts.path else f"/{parts.path}"
+    combined_path = f"{path_prefix}{path}" if path_prefix else path
+    return urlunsplit((scheme, netloc, combined_path, parts.query, parts.fragment))
+
+
 def apply_tileset_server_url(
     stage: Any,  # noqa: ANN401
     url: str | None,
@@ -281,12 +417,15 @@ def apply_tileset_server_url(
     Repoint every Cesium tileset under ``tilesets_root`` at a different server.
 
     Lets a team member switch tile servers from config instead of hand-editing the scene
-    in the GUI, which matters because the URL is otherwise baked into the USD. Carried over
-    from the previous generation, which did the same thing.
+    in the GUI, which matters because the URL is otherwise baked into the USD. Only the
+    scheme, host and port are taken from ``url``; each tileset keeps its own path and query,
+    so N tilesets that share a server but differ by path all move together. A bad override
+    (unparseable or hostless) is logged and ignored rather than blanking out the terrain.
 
     Args:
         stage: The open USD stage.
-        url: Replacement base URL. ``None`` leaves the scene's own URLs untouched.
+        url: Server override supplying scheme/host/port. ``None`` or empty leaves the
+            scene's own URLs untouched.
         tilesets_root: Prim path whose subtree is searched for tilesets.
 
     Returns:
@@ -296,6 +435,12 @@ def apply_tileset_server_url(
     if not url:
         return 0
 
+    parsed = _parse_server_override(url)
+    if parsed is None:
+        logger.warning("tileset server override %r has no host; leaving tileset URLs untouched", url)
+        return 0
+    scheme, netloc, path_prefix = parsed
+
     root = stage.GetPrimAtPath(tilesets_root)
     if not root.IsValid():
         logger.warning("tilesets root %s does not exist; not applying the tileset URL", tilesets_root)
@@ -303,18 +448,20 @@ def apply_tileset_server_url(
 
     changed = 0
     for prim in _usd().PrimRange(root):
-        attribute = prim.GetAttribute("cesium:url")
+        attribute = prim.GetAttribute(_CESIUM_URL_ATTR)
         if not attribute.IsValid():
             continue
         previous = attribute.Get()
-        if previous == url:
+        if not previous:
+            logger.warning("tileset %s has an empty %s; leaving it alone", prim.GetPath(), _CESIUM_URL_ATTR)
             continue
-        attribute.Set(url)
-        logger.info("tileset %s: %s -> %s", prim.GetPath(), previous, url)
+        rewritten = _rewrite_url(previous, scheme, netloc, path_prefix)
+        if rewritten == previous:
+            continue
+        attribute.Set(rewritten)
+        logger.info("tileset %s: %s -> %s", prim.GetPath(), previous, rewritten)
         changed += 1
 
-    if changed == 0:
-        logger.warning("no cesium:url attributes found under %s", tilesets_root)
     return changed
 
 
@@ -335,7 +482,11 @@ def _mount_layers(
 
     """
     for planned in plan.enabled:
-        mount = mount_path_for_layer(planned, instance)
+        # Each planned layer records the vehicle it belongs to, so a swarm mounts one copy per
+        # aircraft. Falling back to the caller's instance keeps a plan built before per-vehicle
+        # planning working unchanged.
+        layer_instance = planned.instance if planned.instance != "default" else instance
+        mount = mount_path_for_layer(planned, layer_instance)
         usd_path = layer_usd_path(planned, layer_search_paths)
         if usd_path is None:
             logger.warning(
@@ -368,24 +519,97 @@ def _resolve_camera_prim(config: IsaacCoreConfig, stage: Any) -> str | None:  # 
     """
     Determine the active camera prim path for bindings.
 
+    Tries ``sim.viewport_camera`` first, because that is already the single place naming the
+    vehicle's camera -- the runtime points the main viewport at it -- so a layer binding and the
+    viewport cannot disagree about which camera is "the" camera.
+
+    Falls back to searching the vehicle's mount for the first ``Camera``-typed prim, which keeps
+    a custom camera layer working without anyone editing config.
+
+    This used to guess ``{mount}/Camera_{camera_id}``, a path no shipped layer has ever used
+    (the real one is ``{mount}/Xform/main_camera_01``). It therefore always returned ``None``,
+    and any layer binding ``resolve = "camera_prim"`` aborted composition with
+    "no camera path is available" -- which is what stopped the bbox layer from ever loading.
+
     Args:
         config: The resolved configuration.
         stage: The open stage.
 
     Returns:
-        The camera prim path, or ``None`` if not found.
+        The camera prim path, or ``None`` if no camera can be found.
 
     """
-    first_vehicle_id = next(iter(config.vehicles))
-    first_camera_id = next(iter(config.vehicles[first_vehicle_id].cameras))
-    mount = config.resolved_mount(first_vehicle_id)
-    camera_path = f"{mount}/Camera_{first_camera_id}"
-
     sdf = _sdf()
-    prim = stage.GetPrimAtPath(sdf.Path(camera_path))
-    if prim.IsValid():
-        return camera_path
+    first_vehicle_id = next(iter(config.vehicles))
+    mount = config.resolved_mount(first_vehicle_id)
+
+    configured = config.sim.viewport_camera
+    if configured:
+        candidate = render(configured, instance=first_vehicle_id, mount=mount)
+        if stage.GetPrimAtPath(sdf.Path(candidate)).IsValid():
+            return candidate
+        logger.debug("sim.viewport_camera %r is not on the stage; searching the mount", candidate)
+
+    mount_prim = stage.GetPrimAtPath(sdf.Path(mount))
+    if not mount_prim.IsValid():
+        return None
+    usd = importlib.import_module("pxr.Usd")
+    for prim in usd.PrimRange(mount_prim):
+        if prim.GetTypeName() == "Camera":
+            found = str(prim.GetPath())
+            logger.debug("resolved camera prim by type search: %s", found)
+            return found
     return None
+
+
+def apply_target_semantics(stage: Any, targets_root: str) -> int:  # noqa: ANN401
+    """
+    Give every child of the targets root a semantic label.
+
+    Isaac's bounding-box annotators report only prims carrying a ``SemanticsAPI``, and they key
+    off it entirely -- an unlabelled prim is invisible to them no matter how solid it looks on
+    screen. The 2023 scene labelled each target by hand in the GUI, which is easy to forget and
+    silently yields an empty detection list.
+
+    Applied at composition time instead, so adding an object to the scene is all a user has to
+    do. The label is the prim's own name, which is also what the projector publishes as
+    ``target_name``, keeping the two consistent by construction.
+
+    Args:
+        stage: The open stage.
+        targets_root: Absolute path of the scope holding the tracked objects.
+
+    Returns:
+        Number of prims labelled.
+
+    """
+    sdf = _sdf()
+    root = stage.GetPrimAtPath(sdf.Path(targets_root))
+    if not root.IsValid():
+        logger.debug("targets root %s absent; no semantics to apply", targets_root)
+        return 0
+
+    try:
+        # Top-level `Semantics`, not `pxr.Semantics`: the latter is deprecated in Isaac Sim 6 and
+        # warns on import.
+        semantics = importlib.import_module("Semantics")
+    except ImportError:
+        logger.warning("Semantics module unavailable; bbox annotators will report nothing")
+        return 0
+
+    labelled = 0
+    for prim in root.GetChildren():
+        try:
+            api = semantics.SemanticsAPI.Apply(prim, "Semantics")
+            api.CreateSemanticTypeAttr().Set("class")
+            api.CreateSemanticDataAttr().Set(prim.GetName())
+        except Exception as exc:  # noqa: BLE001 - USD raises Tf.ErrorException
+            logger.warning("could not label %s: %s", prim.GetPath(), exc)
+            continue
+        labelled += 1
+
+    logger.info("labelled %d bbox target(s) under %s", labelled, targets_root)
+    return labelled
 
 
 def _apply_stage_writes(stage: Any, writes: list[AttributeWrite]) -> None:  # noqa: ANN401
@@ -479,6 +703,7 @@ def _coerce_for_attribute(attr: Any, value: Any) -> Any:  # noqa: ANN401
 
 
 __all__ = [
+    "apply_stage_units",
     "compose_stage",
     "layer_usd_path",
     "mount_path_for_layer",

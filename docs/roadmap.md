@@ -1,18 +1,34 @@
 # Project status — isaac_core_6
 
-## Status summary
+## Version 1 — shipped (2026-09-02)
 
-The simulator works end to end. `isaac-core run` launches Isaac Sim 6.0.1, composes the
-stage from layer manifests, a UDP pose packet moves the camera over real Cesium 3D Tiles
-terrain, and both ROS 2 topics publish (`/isaac_core/global_pose` at ~100 Hz,
-`/isaac_core/image_rgb` at ~115 Hz) with real advancing timestamps. 1103 tests pass in
-9 seconds with no GPU, no Isaac Sim, and no ROS 2 installed. 23 import-linter contracts
-enforce the layering and cannot silently rot. The intermittent startup segfault that
-plagued launches (5 in 10) is fixed (0 in 27 after the warm-up change).
+The core sandbox is done, tested, and validated by hand as well as by suite.
 
-Verdict: ready for v1. The core pipeline — pose in, image out, geodetic pose published —
-matches and exceeds what the 2023 repo did, with a clean architecture that the old repo
-never had.
+`isaac-core run` launches Isaac Sim 6.0.1, composes the stage from layer manifests, and a
+pose from **either UDP or ROS 2/MAVROS** drives the camera over real Cesium 3D Tiles
+terrain. Both ROS 2 topics publish with real advancing timestamps
+(`/isaac_core/global_pose` ~100 Hz, `/isaac_core/image_rgb` ~115 Hz).
+
+- **1279 tests** pass in ~12 s with no GPU, no Isaac Sim and no ROS 2 installed.
+- **23 import-linter contracts** enforce the layering and cannot silently rot.
+- The intermittent startup segfault is fixed (0 in 27 launches, from 5 in 10).
+- Eyes-on non-headless flight confirmed by Ofer: terrain renders, the viewport tracks the
+  drone camera, motion is smooth and holds on stop, heading follows travel.
+- Pose-sender GUI confirmed by Ofer: every control works.
+- A feature audit went through the config surface, position/math pipeline, devkit, control
+  plane, CLI/install, OGN nodes, contracts and debug tools. Everything now either works,
+  is fixed, is honestly roadmapped, or was removed with approval. Nothing ships claiming to
+  work while broken.
+
+What v1 deliberately does **not** include: the sensor layers (distance sensor, bbox, SAT),
+live-tested streaming, runtime scene/feature mutation, and swarm. Those are Version 2.
+
+### v1 closeout
+
+| Item | Status |
+|---|---|
+| Eyes-on non-headless flight | Done — confirmed correct by Ofer |
+| README images | Deferred by Ofer to a later pass (not blocking) |
 
 ---
 
@@ -93,7 +109,7 @@ All are thin adapters delegating to `isaac_core.geo`/`.protocol`/`.contracts`. N
 
 ### Testing
 
-- 1103 tests passing (verified this session: `python3 -m pytest -q` → `1022 passed in 9.60s`).
+- 1279 tests passing (`python3 -m pytest -q` → `1279 passed in ~12s`).
 - Guard tests: kernel purity (imports in subprocess with omni/rclpy/gi forced unimportable), no-dead-Isaac-API (AST scan), no-Python-ROS2-in-extensions, no-deprecated-OGN-API, USD layer validation (dangling connections, two-source inputs, missing orient op, Globe Anchor presence, layer size), graph wiring (unconnected `execIn` detection), extension packaging, OGN key naming.
 - 23 import-linter contracts KEPT (verified this session).
 
@@ -105,6 +121,11 @@ All are thin adapters delegating to `isaac_core.geo`/`.protocol`/`.contracts`. N
 ---
 
 ## Parity with isaac_core_2023
+
+Built from the 2023 README's own feature list (its flags, config constants, and ROS topic
+tables), cross-checked against its source tree. This is the definitive gap list driving
+Version 2.
+
 
 | Capability | 2023 | isaac_core_6 | Notes |
 |---|---|---|---|
@@ -127,72 +148,268 @@ All are thin adapters delegating to `isaac_core.geo`/`.protocol`/`.contracts`. N
 | VS Code autocomplete (`link_app.sh`) | Yes | Dropped | Isaac 6 installs differently; not needed with the type stubs approach |
 | Custom ROS 2 messages (Gimbal, Bbox, SAT) | Yes (`isaac_ros2_messages`) | Not needed for camera pipeline | Bbox/SAT layers will need their own msgs |
 | Monotonic frame id in image header | Attempted (broken: baked at init) | Not yet | `header.stamp` covers most of the need; C++ node likely required |
+| `--distance-sensor` → `/isaac_core/distance_sensor` (`sensor_msgs/Range`) | Yes | **Missing** | Needs USD layer + publisher; Isaac 6 has a native raycast sensor. Also `LASER_MIN/MAX_RANGE` config |
+| `--bbox-publisher` → `/isaac_core/bbox` (`FrameBboxes`) | Yes | **Missing** | Needs USD layer, custom msgs, per-object Globe Anchors |
+| `--sat` frame capture | Yes (ROS topic in) | **Missing**, and moving to the control plane (D20) | Capture is a *command*, not data, so it becomes `capture_frame(path, width, height)` in M5 — with a requested resolution, which 2023 could not do |
+| `--image-rtp` → RTP video stream | Yes (custom sidecar) | Superseded by **native RTSP** (D21) | Isaac 6's own RTSP, wired into both camera graphs and always on — no flag, no sidecar. M4 |
+| Live gimbal control | Yes (ROS topic) | Moving to the **control plane** (D20), M3 | The ROS subscriber is removed; `set_gimbal` replaces it, and external callers use `Sim.attach()`. Config start angles and `max_rate_deg_s` become live at the same time |
+| Custom ROS 2 messages | Yes: `Gimbal`, `Bbox`, `FrameBboxes`, `SATOutput` | Vendoring **only `Bbox` + `FrameBboxes`** (M1) | We *import* `isaac_ros2_messages` but ship no definitions — it only resolves because the 2023 workspace is built on this machine. `Gimbal`/`SATOutput` are not vendored: both became control-plane commands (D20), so nothing would consume them (D23) |
+| Second scene (`full_warehouse.usda`, no Cesium) | Yes | Not planned | Ofer's call: feature development first, not scene work. Revisit if offline/CI runs are ever needed |
+| `MAX_OUTPUTS_ROS_HRZ` (publish rate cap) | Yes | **Deliberately not carried over** (D22) | No ROS 2 rate manipulation anywhere — it invites untimed-message chaos. The related real problem, correct video frame timing, is handled in M7 via message timestamps |
+| Global pose orientation semantics | Abused quaternion (x=roll, y=pitch, z=yaw) | Real quaternion (D16) | **Migration note:** any 2023 consumer reading RPY out of the quaternion fields must be updated |
 
 ---
 
-## Remaining for version 1
+## Version 2 — plan
 
-Nothing here blocks declaring v1 in the sense of "the camera pipeline works and is shippable." These are polish items that strengthen the release.
+**Goal:** everything the 2023 repo could do, plus the features already designed for but not
+built, and the whole thing production ready.
 
-| Item | Why it matters | Size | Owner |
-|---|---|---|---|
-| Eyes-on non-headless flight | Nobody has visually confirmed the camera looks along the nose | Ofer sits in front of the GUI | Ofer |
-| README images | The README has no screenshots; the old repo's were effective | One session | Ofer |
+**Definition of done for v2** (the v1 bar, plus one):
+1. Every feature verified against a running simulator, not just unit-tested.
+2. No config key that parses but does nothing (`test_no_dead_keys.py` stays green with an
+   empty known-dead list).
+3. No claim in the README that is not true.
+4. Runs on a machine that has never seen the 2023 repo.
+5. **No dead or unused code** (D23). A sweep before sign-off is the backstop, not the method —
+   the habit is to delete on the way past and to prefer what Isaac Sim already offers over
+   building our own. The RTP sidecar is the cautionary tale: ~340 lines superseded by a native
+   feature.
 
-Two items previously listed here are now done: `Sim.launch()` spawns a simulator and the
-returned session owns the process, and `import-linter` runs as a pre-commit hook (verified
-to fail on an injected layering violation).
+Milestones are ordered by dependency, then by value. M1 unblocks M2-M4.
 
----
+### M1 — Vendor the ROS 2 messages we actually use (foundation)
 
-## After version 1
+The portability gap. `devkit.recording` imports `isaac_ros2_messages.msg.FrameBboxes`, but this
+repo ships **no** message definitions. It resolves today only because the 2023 workspace happens
+to be built on Ofer's machine — a fresh clone would fail.
 
-Features not in the 2023 repo. Ordered by stated priority.
+**Decided (Ofer):** take the 2023 `simulation/ros2_interfaces/` package and keep the name
+`isaac_ros2_messages`, so existing consumers keep working — but vendor **only what has a
+consumer** (D23, no dead code):
 
-- Swarm / multi-drone — the architecture already supports N vehicles (topic namespacing, `{instance}` in manifests, per-vehicle UDP port). Needs: multiple camera layers composed simultaneously, per-vehicle `get_pose`, mixed pose sources.
-- Camera-key templating in manifests — the shipped `camera_udp` / `camera_ros` manifests hardcode the camera key `eo` in their bindings (`config = "vehicles.{instance}.cameras.eo.width"`), while the vehicle is templated as `{instance}`. So renaming a camera (e.g. `eo` -> `rgb`) or giving a vehicle a differently-named camera needs the two `layer.toml` files edited, not just config, or composition fails with `ConfigKeyError: ...cameras.eo... does not exist`. Add a `{camera}` placeholder to the binding resolver (parallel to `{instance}`) so camera keys stop being hardcoded. This also unblocks multiple differently-named cameras per vehicle cleanly.
-- Sensor layers — distance sensor (physics raycast sensor, native in Isaac 6), bbox publisher (Globe Anchors on targets), SAT capture.
-- Waypoint missions — loiter/hold, takeoff/land/RTL. Vehicle generators exist; needs a mission file format and a control-plane command.
-- Velocity/acceleration-limited motion — `MotionLimits` is coded and tested but the runtime does not enforce it yet (no physics, just pose injection).
-- Gimbal servo dynamics — `max_rate_deg_s` is in config; the node needs to integrate rather than snap.
+| Message | Vendor? | Why |
+|---|---|---|
+| `Bbox.msg` | Yes | Needed by the bbox publisher (M2) |
+| `FrameBboxes.msg` | Yes | The published wrapper (`Header` + `Bbox[]`) |
+| `Gimbal.msg` | **No** | Gimbal becomes a control-plane command (D20) and the ROS subscriber is being removed (M3) — nothing would publish or consume it |
+| `SATOutput.msg` | **No** | Frame capture becomes a control-plane command (D20) — nothing would consume it |
+
+Already inspected (the "validate it" part): package `isaac_ros2_messages` **v0.2.0**,
+`ament_cmake` + `rosidl_default_generators`, depends on `std_msgs`, `geometry_msgs`,
+`builtin_interfaces`. `Bbox.msg` carries **16 fields** — name, in_frame, is_visible, pixel box
+(x1,y1,x2,y2), **lat/lon/alt, roll/pitch/yaw, distance_x/y/z**.
+
+**Finding to fix in M2:** our `bbox_recorder` serialiser reads only **7 of those 16 fields** —
+it silently drops the geodetic position, orientation and per-axis distances the publisher sends.
+
+Work: vendor the trimmed package; build instructions in `scripts/setup.sh`; a `doctor` check
+that the messages are importable; a guard test so the recorders fail with an actionable message
+rather than an opaque `ModuleNotFoundError` when the package is missing.
+
+Acceptance: a machine with only this repo + ROS 2 Humble can build the messages, and
+`bbox_recorder()` constructs without the 2023 repo present. Size: small-medium. Owner: Kiro.
+
+### M2 — Sensor layers (the biggest parity gap)
+
+Two features, one pattern each: a USD layer Ofer authors, a `layer.toml` manifest, a config
+block, tests, and live verification. Both are **data out**, so both are ROS topics (D20).
+
+- **Distance sensor** → `/isaac_core/distance_sensor` (`sensor_msgs/Range`). Isaac 6 ships a
+  native physics raycast sensor that likely replaces 2023's custom script node entirely —
+  evaluate that first. Needs `min_range`/`max_range` config (2023's `LASER_MIN/MAX_RANGE`).
+- **Bbox publisher** → `/isaac_core/bbox` (`FrameBboxes`). This is where Cesium Globe Anchors
+  genuinely belong: each target pinned to a fixed geographic spot, unlike the camera. Depends
+  on M1.
+
+Frame capture (2023's `--sat`) is deliberately **not here** — per D20 it is a command, so it
+lives on the control plane in M5, not on a ROS topic.
+
+Acceptance: each publishes correct values against a running sim, verified the way the camera
+pipeline was (real numbers on the topic, not just "a topic exists"). Size: medium-large.
+Owner: Kiro for code/manifests/tests, Ofer for USD authoring (D15).
+
+### M3 — Gimbal over the control plane
+
+Half-built today: the USD has a gimbal ROS subscriber, the config is dead, and nothing limits
+the slew rate.
+
+**Decided (Ofer):** commanding the gimbal is control-plane work (D20), and the ROS
+`/isaac_core/gimbal` subscriber is **removed** — anything external that wants to move the gimbal
+uses `Sim.attach()` and commands it from there. That also removes the need for `Gimbal.msg`.
+
+- Add a **`set_gimbal(roll_deg, pitch_deg, yaw_deg)`** control method.
+- **Remove** the `ros2_subscriber` gimbal node from `camera_udp.usda` and `camera_ros.usda`
+  (Ofer, USD). This also unblocks the config problem below: those node inputs are currently
+  *connected* to the subscriber, and a connected USD attribute ignores authored values — with
+  the subscriber gone, config and commands can both write them.
+- `start_roll_deg` / `start_pitch_deg` / `start_yaw_deg` then actually reach the node at launch.
+- `max_rate_deg_s` slew limiting — integrate toward the target instead of snapping. 2023 snapped
+  unconditionally, so this is a real improvement over parity, not just parity.
+- Document the angle convention in text (2023 relied on a reference image).
+
+Acceptance: config start angles visible on the prim at launch; a commanded step visibly slews at
+the configured rate rather than jumping; no gimbal ROS topic remains. Size: medium.
+Owner: Kiro + Ofer (USD).
+
+### M4 — Native RTSP streaming (replaces the RTP sidecar)
+
+**Decided (Ofer, D21):** use Isaac Sim 6's **native RTSP** rather than our own RTP
+implementation, wired into the **image-publisher action graph in both camera layers** so it is
+**always on** — no flag, no sidecar process. Whoever wants the stream consumes it; whoever does
+not ignores it, exactly like the image topic.
+
+- Investigate how Isaac 6 exposes RTSP: which extension/node, what settings, what URL form.
+- Add it to `camera_udp.usda` and `camera_ros.usda` beside the existing image publish, so both
+  pose sources stream identically (Ofer, USD; Kiro specifies).
+- Config surface for the stream URL/port, consistent with how topics are configured.
+- Verify a real client (VLC/ffplay) plays the stream off-box.
+- **Cleanup (D23), decided:** delete `sidecar/rtp.py` (~340 lines) and `tests/unit/sidecar/test_rtp.py`
+  (16 tests), plus the `RtpVideoService` export in `sidecar/__init__.py` and its registration
+  import in `sidecar/__main__.py`. **Keep** `sidecar/service.py` — the supervisor/registry
+  framework (~310 lines, 15 tests) is genuinely reusable for future out-of-process services.
+  Also retire `DEFAULT_RTP_VIDEO_PORT` / `DEFAULT_RTP_META_PORT` from `contracts/ports.py` if
+  native RTSP does not need them.
+
+Acceptance: a stream plays off-box from a default `isaac-core run` with no extra flags, and no
+RTP code remains. Size: medium. Owner: Kiro (+ Ofer to view the stream and author the USD).
+
+### M5 — Runtime control (commands over the control plane, D20)
+
+The devkit already exposes most of these; they currently fail with an honest
+"not implemented".
+
+- **`capture_frame(path, width, height)`** — this is 2023's `--sat`, moved off ROS per D20.
+  Ideally capture at a **requested resolution** independent of the viewport, which 2023 could
+  not do. Makes `sim.control_plane.output_root` live (it is confined against traversal
+  already).
+- `reset()` — define the semantics first: timeline only, pose, or full stage reload?
+- `features.enable/disable(...)` — compose/decompose a layer on a live stage.
+- `config.patch(...)` — define the safely-mutable subset; most config is frozen for good
+  reason.
+- `set_pose` and `load_scene` — in the `Method` enum, not yet exposed.
+- `set_gimbal` — see M3.
+
+Acceptance: each devkit method works against a live sim. The static coverage guard already
+prevents any of them regressing to unregistered. Size: medium-large. Owner: Kiro.
+
+### M6 — Swarm / multi-vehicle
+
+The architecture was built for this (per-vehicle ports, topic namespacing, `{instance}`
+templating) but it has never been exercised with more than one vehicle.
+
+- **Camera-key templating** — manifests hardcode `cameras.eo`; add a `{camera}` placeholder
+  so camera keys and multiple cameras per vehicle work without editing `layer.toml`.
+- **Unify the vehicle mount** — `config.mount` and the manifest `mount` are separate axes
+  today; add a `{vehicle_mount}` placeholder rather than blindly overriding.
+- Compose multiple camera layers simultaneously; per-vehicle `get_pose`; mixed pose sources
+  (one drone on UDP, another on ROS).
+
+Acceptance: two vehicles flying independently, correctly namespaced topics
+(`/isaac_core/<vehicle>/...`), `get_pose` per vehicle. Size: large. Owner: Kiro.
+
+### M7 — Production readiness
+
+The polish that makes it safe for the team to depend on.
+
+- **Video recording at the true frame rate.** The one place frame rate legitimately matters
+  (D22). 2023's `video_capture` took a destination path *and an fps the user had to guess*,
+  then wrote an mp4 at that constant rate — but Isaac runs at a variable ~30-50 fps, so parts
+  of every recording played too fast and parts too slow. Fix it properly: derive the real
+  timing from each message's `header.stamp` (we publish real advancing timestamps now, which
+  2023 did not, so this is finally possible) and write either a variable-frame-rate video or
+  one whose fps matches the measured average, with no fps argument from the user.
+- **Cesium base-URL + multi-tileset** — config should carry only `http://<host>:<port>` and
+  preserve each tileset's path, so several tilesets can be served from one host. Today the
+  whole `cesium:url` is replaced.
+- **Tile-streaming hiccup** — the render-side hitch during flight (the pose pipeline is proven
+  smooth: 119 samples, 0 outliers). Investigate Cesium cache size / concurrent tile loads /
+  pre-warming; optionally ease recovered frames in with the existing `slerp`.
+- **Camera intrinsics as first-class config** — `focus_distance` and direct aperture control,
+  so common tuning does not need a `prim_override`. (Note: **no** `publish_rate_hz` — rate
+  manipulation is deliberately out of scope per D22.)
+- **Resolve the remaining dead config keys** — `stage_units_in_meters`, `ros2.use_sim_time`,
+  and the gimbal keys (M3). Target: the known-dead list is empty.
+- **Fully silent boot** — the launcher/Warp banner still prints before Kit initialises.
+- **`MinimalRendering`** — document as unsupported for Cesium terrain, or validate and warn.
+- **Two georeferences** — unify `geo.enu_reference` with the scene's `/CesiumGeoreference`
+  (today they can disagree and only a warning fires).
+- **Monotonic frame id** — needs a C++ OmniGraph node; `header.stamp` covers most of it.
+- **MAVLink pose source** — `pose_source = "mavlink"` is in the schema, unimplemented.
+- **CLI tab-completion**, **README images**, and **Docker workflow** if the team wants
+  reproducible deployments again (dropped in D10).
+
+Explicitly **not** in scope: a Cesium-free scene. Ofer's call — the goal now is feature
+development, not scene work. `earth.usda` and the layer/sensor USDs are maintained as normal.
+
+Acceptance: known-dead config list empty; README fully true; recordings play at the correct
+speed; a new team member can go from clone to flying without tribal knowledge. Size: large,
+incremental. Owner: Kiro + Ofer.
+
+### M8 — Dead-code and dead-config sweep (v2 exit gate)
+
+The backstop for D23, not the method — the habit is to delete on the way past. This is the
+final check before v2 is called done.
+
+- Every config field is read by something (`test_no_dead_keys.py` known-dead list is **empty**).
+- No module, class, function or ROS message definition without a consumer. Candidates already
+  known: `sidecar/rtp.py` (M4), `Gimbal.msg` / `SATOutput.msg` (never vendored, M1),
+  `DEFAULT_RTP_*` ports.
+- No control-plane `Method` enum member without a registered handler *and* a caller (the
+  coverage guard already checks registration; extend it to flag unused enum members).
+- No `NotImplementedError` left that the README implies works.
+- Consider a coverage run to surface never-executed code paths as a starting list.
+
+Acceptance: the sweep finds nothing, and the guards that keep it that way are in the suite.
+Size: small (if the habit held). Owner: Kiro.
+
+## Version 3 — new capability (later)
+
+Genuinely new ground, not parity. Not planned in detail yet; candidates raised so far:
+
+- Waypoint missions — loiter/hold, takeoff/land/RTL, a mission file format and a
+  control-plane command. The `vehicle` generators already exist.
+- Velocity/acceleration-limited motion — `MotionLimits` is coded and tested but nothing
+  enforces it at runtime (today the sim injects poses, it does not simulate dynamics).
 - Target tracking / follow-me — pure vehicle logic, no new nodes needed.
-- Sidecar live-testing — `sidecar.rtp` is coded; needs a live GStreamer pipeline test.
-- `capture_frame` via the control plane — viewport capture API.
-- Native RTSP (Isaac 6 documents it) vs custom GStreamer RTP — evaluate.
-- Docker / container workflow — if the team needs reproducible deployments again.
-- MAVLink pose source (without MAVROS) — `pose_source = "mavlink"` is in the schema but unimplemented.
-- Cesium base-URL and multi-tileset — `cesium.tileset_server_url` currently replaces the whole `cesium:url`. The team will serve several tilesets from one host (`<ip>:<port>/city1/tileset.json`, `/city2/...`), so the config should carry only the base `http://<ip>:<port>` and each tileset's path should be preserved: read the existing `cesium:url` per prim and swap only the scheme+host+port. Also support per-tileset selection rather than one URL for all.
-- Unify the vehicle mount — `config.vehicles.<id>.mount` sets the vehicle mount used for camera-prim resolution and `get_pose`, but layers actually mount at the manifest's own `mount` template (`/World/Environment/{instance}`). By default these agree; overriding `mount` makes them diverge and the camera prim resolves to a path no layer created. Manifest mount and vehicle mount are different axes (a sensor layer may mount elsewhere on purpose), so unifying them needs a `{vehicle_mount}` placeholder in the manifest resolver, not a blind override. Until then, treat `mount` as fixed.
-- Two georeferences — changing `geo.enu_reference` moves the PoseSync ENU origin but not the scene's authored `/CesiumGeoreference` prim, because Cesium listens to USD notices and the tooling does not author USD (decisions D18/D19). The compositor already warns when the two disagree; a cleaner answer would derive one from the other or drive the Cesium georeference at runtime through its own API.
-- Camera intrinsics as first-class config — support `focus_distance`, and expose `horizontalAperture` / `verticalAperture` directly, alongside `fov_deg` / `focal_length_mm`, so common camera tuning does not need a `prim_override`. Re-add `publish_rate_hz` here with a real implementation (throttling the camera helper / render product rate).
-- Fully silent boot — with `isaac_logs=false` the Kit log stream is suppressed (~3400 lines to ~77), but the `isaacsim` launcher and Warp still print a boot banner and a GPU capability table to stdout via `print()` before Kit initialises, outside any logging control. Suppressing those cleanly means redirecting stdout around `SimulationApp()` construction without hiding genuine startup errors.
-- MinimalRendering black screen — `renderer = "MinimalRendering"` produces a black viewport with no terrain (Ofer observed). Either document it as unsupported for this Cesium-terrain use case or validate/warn when it is selected.
-- `output_root` and frame capture — `sim.control_plane.output_root` is only consumed by `capture_frame`, which raises `NotImplementedError`. Nothing writes there yet. Implement viewport capture (see the existing capture item) and this becomes live.
-- Viewport config section — `sim.viewport.primary_camera` was removed (dead, and confusingly overlapping `sim.viewport_camera`). The good idea behind it survives: let the user pick the viewport camera by a logical key (`drone_0.eo`) rather than a raw prim path, and grow a `[sim.viewport]` section for multi-viewport / resolution / overlay settings. When built, it should supersede the raw `viewport_camera` prim path.
-- Runtime control-plane methods — the devkit exposes `reset()`, `features.enable/disable(...)` and `config.patch(...)`. Their handlers are now registered but raise a clear "not implemented yet" error (matching `capture_frame`). Implement them: `reset` (timeline/pose/stage reset semantics TBD), runtime feature toggling (compose/decompose a layer on the live stage), and config patching (define the safely-mutable subset first). `set_pose` and `load_scene` are defined in the `Method` enum but not yet exposed or implemented.
-- Recording serializers — `isaac_core.devkit.recording` factory functions (`video_recorder`, `pose_recorder`, `range_recorder`, `bbox_recorder`) have no unit tests for their message-field serialisation, so a ROS message field rename would go uncaught. Add round-trip tests with fake messages.
-- Cesium tile-streaming hiccup — during a moving flight the viewport hitches briefly every
-  few seconds. The pose pipeline is ruled out: sampling the live prim transform during an
-  orbit showed a smooth stream (119 samples, 0 outliers >3x mean, 0 frozen). The stall is
-  render-side, consistent with Cesium 3D Tiles loading/unloading as new terrain enters view.
-  Investigate Cesium tuning (cache size / max simultaneous tile loads / pre-warming), and
-  optionally offer client-side pose smoothing (the `slerp`/interpolation already exists) so a
-  recovered frame eases in rather than snapping to the newest pose.
-- Shell tab-completion for the CLI — `isaac-<TAB>` should complete to `isaac-core`, and `isaac-core r<TAB>` to `isaac-core run`, likewise for `doctor`/`config` and the `-inspect` / `-pose-sender` entry points. Ship completion scripts for bash and zsh (argcomplete or hand-written), and document how to source them in `scripts/setup.sh`. Quality-of-life, not functional.
+- Physics-based flight instead of pose injection.
+- Multi-sensor payloads (IR alongside EO) — the camera dict already supports it, M6 unblocks.
 
 ---
 
-## Needs Ofer specifically
+## Ofer's task list for Version 2
 
-- Eyes-on flight in the GUI: run non-headless, confirm the camera orientation looks correct visually.
-- README screenshot: a frame of the sim flying over terrain. Save as `docs/images/sim_terrain.png`.
-- Architecture diagram: a block diagram showing the data flow (UDP → node → prim → image publish). Save as `docs/images/architecture.png`.
-- Pose-sender GUI screenshot: save as `docs/images/pose_sender.png`.
-- Any future USD authoring (D15 — Kiro never writes `.usda` files).
-- Cesium tileset server URL for the team's production use (currently no default in config).
-- Hardware validation of the sidecar RTP pipeline (needs GStreamer packages installed).
+The things Kiro cannot do. Ordered by the milestone that needs them, so nothing blocks late.
 
----
+### USD authoring (D15 — Kiro never writes `.usda`; Kiro specifies exactly what to build)
+
+| # | Task | Milestone | Blocks |
+|---|---|---|---|
+| 1 | **Distance sensor layer** — `usd/layers/distance_sensor/`. Kiro will first evaluate Isaac 6's native physics raycast sensor and hand you a precise build sheet | M2 | Range publishing |
+| 2 | **Bbox publisher layer** — `usd/layers/bbox_publisher/`, with a Cesium Globe Anchor per target object under `/World/bboxes` (this is where Globe Anchors genuinely belong) | M2 | Bbox publishing |
+| 3 | **Remove the gimbal ROS subscriber** from `camera_udp.usda` and `camera_ros.usda` — the `ros2_subscriber` node wired to the gimbal offsets. Removing it also frees those inputs so config/commands can write them | M3 | Gimbal config + slew |
+| 4 | **Add the native RTSP node** to the image-publisher graph in both camera layers, once Kiro has identified the right node and settings | M4 | Streaming |
+
+### Eyes-on validation (needs a display and your judgement)
+
+| # | Task | Milestone |
+|---|---|---|
+| 5 | Distance sensor: confirm the beam/range behaves sensibly against terrain | M2 |
+| 6 | Bbox: confirm boxes track their objects on screen and drop out when occluded/off-frame | M2 |
+| 7 | Gimbal: confirm a commanded angle slews smoothly at the configured rate rather than snapping | M3 |
+| 8 | RTSP: play the stream off-box (VLC/ffplay) and confirm it is the camera view | M4 |
+| 9 | Swarm: confirm two vehicles fly independently in one scene | M6 |
+
+### Environment / decisions
+
+| # | Task | Milestone |
+|---|---|---|
+| 10 | Cesium tileset server URL(s) for production use, and the base-URL form you want for multi-tileset | M7 |
+| 11 | README images: `docs/images/sim_terrain.png`, `architecture.png`, `pose_sender.png` | M7 |
+| 12 | Decide whether to revive the Docker workflow (dropped in D10) | M7 |
+
+Already done, thank you: eyes-on non-headless flight validation and the full pose-sender GUI
+walkthrough — both confirmed correct, and both closed out v1.
 
 ## Config keys that are declared but not applied
 

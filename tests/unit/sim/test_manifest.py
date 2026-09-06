@@ -223,3 +223,32 @@ def test_mount_may_use_the_instance_placeholder(tmp_path: Path) -> None:
     manifest = tmp_path / "layer.toml"
     manifest.write_text('id = "x"\nusd = "x.usda"\nmount = "/Environment/{instance}"\n', encoding="utf-8")
     assert load_manifest(manifest).mount == "/Environment/{instance}"
+
+
+def test_camera_placeholder_accepted_in_binding_prim(tmp_path: Path) -> None:
+    # {camera} is a known placeholder; a binding may template the camera key.
+    content = """\
+id = "cam"
+usd = "cam.usda"
+mount = "/Environment/{instance}"
+
+[[bindings]]
+prim = "{mount}/{camera}/node"
+attribute = "inputs:width"
+config = "vehicles.{instance}.cameras.{camera}.width"
+"""
+    manifest = load_manifest(_write_toml(tmp_path, content))
+    assert manifest.bindings[0].prim == "{mount}/{camera}/node"
+    assert manifest.bindings[0].config == "vehicles.{instance}.cameras.{camera}.width"
+
+
+def test_camera_placeholder_rejected_in_mount(tmp_path: Path) -> None:
+    # A mount is per-vehicle and rendered before any camera is chosen, so {camera} there
+    # would leave a stray placeholder. Reject it at load with a clear message.
+    content = """\
+id = "cam"
+usd = "cam.usda"
+mount = "/Environment/{instance}/{camera}"
+"""
+    with pytest.raises(ValueError, match="camera"):
+        load_manifest(_write_toml(tmp_path, content))

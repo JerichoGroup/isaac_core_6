@@ -20,10 +20,11 @@ Optional means "derive it"
     view. Setting a value explicitly always wins.
 """
 
+import logging
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from isaac_core.contracts import prims, topics
 from isaac_core.contracts.frames import PoseSource, RotationFrame
@@ -46,6 +47,30 @@ _POSE_SOURCE_LAYERS: Final[dict[str, str]] = {
     "ros": "camera_ros",
 }
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# Emits the "MinimalRendering draws no terrain" warning. Named so a test can attach a
+# handler to it directly -- pytest's ``caplog`` does not capture this project's warnings.
+logger = logging.getLogger(__name__)
+
+# RTX render modes SimulationApp accepts, mapping each lower-cased spelling to its
+# canonical form. Isaac lower-cases the value before matching (see
+# ``isaacsim.simulation_app.SimulationApp._set_render_settings``), so the accepted set is
+# case-insensitive and "Minimal" is an alias for "MinimalRendering". Any value outside this
+# map is passed straight through to Kit's ``/rtx/rendermode`` carb setting, where a typo
+# fails late or silently rather than at config load -- exactly the foot-gun this validator
+# closes.
+_RENDERER_CANONICAL: Final[dict[str, str]] = {
+    "raytracedlighting": "RaytracedLighting",
+    "pathtracing": "PathTracing",
+    "realtimepathtracing": "RealTimePathTracing",
+    "minimalrendering": "MinimalRendering",
+    "minimal": "MinimalRendering",
+}
+
+# Renderers that produce a healthy but empty scene over Cesium 3D Tiles terrain: the RTX
+# passes those tilesets depend on do not run, so nothing is drawn and no error is raised.
+# Selecting one is legitimate (profiling without terrain), so this only warns.
+_RENDERERS_WITHOUT_TERRAIN: Final[frozenset[str]] = frozenset({"MinimalRendering"})
 
 Port = Annotated[int, Field(ge=MIN_PORT, le=MAX_PORT)]
 LogLevel = Literal["debug", "info", "warning", "error"]
@@ -121,8 +146,13 @@ class SimConfig(_Strict):
         "omni.graph.nodes",
         "isaacsim.core.nodes",
         "isaacsim.ros2.bridge",
+        # Native RTSP (D21). Always on: the stream is there for whoever wants it, and
+        # costs nothing to ignore. Without this the RTSPCameraHelper node in the camera
+        # layers logs "Could not find node type interface" and silently does nothing.
+        "isaacsim.streaming.rtsp",
         "isaac_core_ogn.math",
         "isaac_core_ogn.position",
+        "isaac_core_ogn.sensors",
     )
     # Kit experience (app config) to launch.
     #
@@ -180,11 +210,49 @@ class SimConfig(_Strict):
     # Tiles was also implicated in an intermittent startup segfault inside OmniGraph's
     # render-stage execution. "RaytracedLighting" is materially lighter and stable.
     #
-    # Also accepts "PathTracing", "RealTimePathTracing" and "MinimalRendering".
+    # Also accepts "PathTracing", "RealTimePathTracing" and "MinimalRendering" (alias
+    # "Minimal"). Matching is case-insensitive, mirroring Isaac; an unknown value is
+    # rejected at config load rather than passed through. "MinimalRendering" validates but
+    # warns: it draws no Cesium 3D Tiles terrain.
     renderer: str = "RaytracedLighting"
     physics_dt: float = Field(1.0 / 60.0, gt=0.0)
     stage_units_in_meters: float = Field(1.0, gt=0.0)
     control_plane: ControlPlaneConfig = ControlPlaneConfig()
+
+    @field_validator("renderer")
+    @classmethod
+    def _check_renderer(cls, value: str) -> str:
+        """
+        Reject an unknown renderer and warn when the choice draws no terrain.
+
+        Validation happens here, at config load, because Isaac silently passes an
+        unrecognised value through to a raw carb setting where it fails late or not at
+        all. "MinimalRendering" is accepted but warned about: the scene stays healthy
+        yet empty over Cesium terrain, a symptom indistinguishable from a broken tileset.
+
+        Args:
+            value: The renderer name as written in config.
+
+        Returns:
+            The value unchanged, so an explicit setting reaches Isaac verbatim.
+
+        Raises:
+            ValueError: If the value is not one Isaac accepts.
+
+        """
+        canonical = _RENDERER_CANONICAL.get(value.lower())
+        if canonical is None:
+            options = ", ".join(sorted(set(_RENDERER_CANONICAL.values())))
+            raise ValueError(f"unknown renderer {value!r}; valid options are: {options}")
+        if canonical in _RENDERERS_WITHOUT_TERRAIN:
+            logger.warning(
+                "renderer %r draws no Cesium 3D Tiles terrain: the scene will render but "
+                "the terrain will be absent, which looks like a broken tileset. Use "
+                "'RaytracedLighting' to see terrain; keep %s only for profiling without it.",
+                value,
+                canonical,
+            )
+        return value
 
 
 class AssetsConfig(_Strict):
@@ -229,7 +297,33 @@ class GimbalConfig(_Strict):
     start_yaw_deg: float = 0.0
     max_rate_deg_s: float | None = Field(None, gt=0.0)
     rotation_frame: RotationFrame = RotationFrame.BODY
+
+
+class DistanceSensorConfig(_Strict):
+    """
+    Rangefinder settings for a vehicle's distance sensor.
+
+    The rated band is a sensor property, not a preference: readings outside it are reported
+    as the `sensor_msgs/Range` out-of-band values rather than clamped, so a consumer can tell
+    "nothing detected" from "something at exactly max range".
+    """
+
+    min_range_m: float = Field(0.2, ge=0.0)
+    # 5 km, not the 100 m a ground rangefinder would use: this sensor points down from an
+    # aircraft typically 500-2000 m above terrain, so a 100 m ray never reaches the ground and
+    # the sensor reports "no detection" forever while looking perfectly healthy.
+    max_range_m: float = Field(5000.0, gt=0.0)
     topic: str | None = None
+
+    @model_validator(mode="after")
+    def _require_a_positive_band(self) -> "DistanceSensorConfig":
+        """Reject a band where every reading would be meaningless."""
+        if self.max_range_m <= self.min_range_m:
+            message = (
+                f"distance_sensor.max_range_m ({self.max_range_m}) must exceed " f"min_range_m ({self.min_range_m})"
+            )
+            raise ValueError(message)
+        return self
 
 
 class CameraConfig(_Strict):
@@ -238,7 +332,9 @@ class CameraConfig(_Strict):
 
     ``focal_length_mm`` together with ``fov_deg`` determines the horizontal
     aperture applied to the USD camera prim; the vertical aperture follows from
-    the resolution aspect ratio.
+    the resolution aspect ratio. Both apertures can instead be set directly with
+    ``horizontal_aperture_mm`` / ``vertical_aperture_mm``, in which case
+    ``fov_deg`` is ignored for that axis.
     """
 
     resolution: tuple[Annotated[int, Field(gt=0)], Annotated[int, Field(gt=0)]] = (
@@ -248,6 +344,30 @@ class CameraConfig(_Strict):
     fov_deg: float = Field(78.1, gt=0.0, le=_MAX_FOV_DEG)
     focal_length_mm: float = Field(22.7885, gt=0.0)
     image_topic: str | None = None
+
+    # Distance in scene units the lens is focused at. Only visible when depth of field is
+    # on, i.e. when ``f_stop`` is non-zero.
+    focus_distance: float = Field(400.0, gt=0.0)
+
+    # Lens f-number. USD treats an ``fStop`` of 0 as "depth of field OFF", producing the
+    # everything-in-focus pinhole image this project has always rendered. The default keeps
+    # that behaviour; set a positive value (and ``focus_distance``) for a photographic
+    # blur, and be aware that leaving it at 0 means the effect is disabled, not merely wide.
+    f_stop: float = Field(0.0, ge=0.0)
+
+    # Direct sensor-aperture override, in millimetres. ``None`` means derive the aperture
+    # from ``fov_deg`` and ``focal_length_mm`` (the historical behaviour). Setting either
+    # value wins for that axis and makes ``fov_deg`` irrelevant to it; setting both an
+    # explicit aperture and a non-default ``fov_deg`` is flagged by the configurator.
+    horizontal_aperture_mm: float | None = Field(None, gt=0.0)
+    vertical_aperture_mm: float | None = Field(None, gt=0.0)
+
+    # RTSP stream settings for this camera (D21: always streaming, no enable flag).
+    #
+    # `rtsp_mount_path` of ``None`` means derive: ``/stream`` for a single camera, and a
+    # namespaced path once there is more than one, mirroring how topics are derived.
+    rtsp_port: Port = 8554
+    rtsp_mount_path: str | None = None
 
     @property
     def width(self) -> int:
@@ -278,6 +398,7 @@ class VehicleConfig(_Strict):
     orientation_topic: str | None = None
     rotation_frame: RotationFrame = RotationFrame.WORLD
     gimbal: GimbalConfig = GimbalConfig()
+    distance_sensor: DistanceSensorConfig = DistanceSensorConfig()
     cameras: dict[str, CameraConfig] = Field(default_factory=lambda: {"eo": CameraConfig()})
 
     @model_validator(mode="after")
@@ -300,7 +421,6 @@ class Ros2Config(_Strict):
     # override the environment when needed. A hardcoded default here was misleading: it
     # looked authoritative but never reached the bridge.
     domain_id: int | None = Field(None, ge=0, le=232)
-    use_sim_time: bool = True
 
 
 class SidecarServiceConfig(BaseModel):
@@ -532,6 +652,7 @@ __all__ = [
     "AssetsConfig",
     "CameraConfig",
     "CesiumConfig",
+    "DistanceSensorConfig",
     "ControlPlaneConfig",
     "EnuReference",
     "FeaturesConfig",

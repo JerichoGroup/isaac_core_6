@@ -39,7 +39,10 @@ viewport_camera = "/World/Environment/{instance}/Xform/main_camera_01"
 
 # RTX render mode. This project wants a correct image, not a photoreal one, so it does not
 # use Isaac's "RealTimePathTracing" default. Also accepts "PathTracing",
-# "RealTimePathTracing" and "MinimalRendering".
+# "RealTimePathTracing" and "MinimalRendering" (alias "Minimal"). Matching is
+# case-insensitive; an unknown value is rejected at config load, not passed to Isaac.
+# "MinimalRendering" draws NO Cesium 3D Tiles terrain -- the scene loads healthy but empty
+# -- so it validates with a warning. Use "RaytracedLighting" to see terrain.
 renderer = "RaytracedLighting"
 
 # Kit experience to launch. A bare filename resolves against Isaac's apps directory; an
@@ -68,6 +71,9 @@ extension_search_paths = ["~/.local/share/ov/data/exts/v2"]
 strict_features = false
 
 physics_dt = 0.016666666666666666
+# Metres per stage unit. The whole pipeline assumes 1 unit == 1 metre (ENU translates are
+# metres); the compositor applies this via UsdGeom.SetStageMetersPerUnit and warns loudly if
+# it is not 1.0 or if it conflicts with the scene's own declaration.
 stage_units_in_meters = 1.0
 
 
@@ -138,7 +144,7 @@ delete_cache_on_launch = true
 # [features] -- which feature layers to compose onto the scene
 # -----------------------------------------------------------------------------
 [features]
-enabled = []
+enabled = ["camera_udp", "distance_sensor"]
 
 
 # -----------------------------------------------------------------------------
@@ -202,6 +208,24 @@ resolution = [1280, 720]
 fov_deg = 78.1
 focal_length_mm = 22.7885
 
+# Lens focus distance in scene units (metres, since stage_units_in_meters = 1.0). Only has a
+# visible effect once f_stop is non-zero; with depth of field off, everything is in focus.
+focus_distance = 400.0
+
+# Lens f-number. IMPORTANT: 0 means depth of field is OFF -- the everything-in-focus pinhole
+# image this project has always produced, and the default here. It does NOT mean a wide-open
+# aperture. Set a positive value together with focus_distance to get a photographic blur.
+f_stop = 0.0
+
+# Direct sensor-aperture override in millimetres. Leave unset (the default) to derive the
+# aperture from fov_deg + focal_length_mm, which is the historical behaviour. Set either axis
+# to pin it, in which case fov_deg is IGNORED for that axis -- setting both an explicit
+# aperture and a non-default fov_deg is a mistake the configurator warns about, naming which
+# value won. The vertical axis, when left unset, follows the horizontal aperture and the
+# resolution aspect ratio so the image is not stretched.
+# horizontal_aperture_mm = 36.0
+# vertical_aperture_mm = 20.25
+
 # Topics default to the namespaced convention; override to publish elsewhere.
 # image_topic = "/isaac_core/image_rgb"
 
@@ -236,7 +260,11 @@ root_prim = "/bboxes"
 # -----------------------------------------------------------------------------
 [ros2]
 domain_id = 13
-use_sim_time = true
+# NOTE: there is no `use_sim_time` key. It is a consumer-side rclpy node parameter (a node
+# reads /clock instead of the wall clock), but this project runs no rclpy nodes inside Isaac
+# and the C++ bridge's ROS2Context node exposes no such input. Our publishers already stamp
+# every message with real simulation time via IsaacReadSimulationTime -> SecondsToRosStamp,
+# so the setting was redundant by construction. Removed rather than faked.
 
 
 # -----------------------------------------------------------------------------
@@ -247,13 +275,15 @@ use_sim_time = true
 [sidecar]
 enabled = false
 
-# [sidecar.services.image_rtp]
-# kind = "rtp_stream"
-# source_topic = "/isaac_core/image_rgb"
-# host = "127.0.0.1"
-# video_port = 5004
-# meta_port = 5005
-# bitrate_kbps = 10000
+# No services ship today. Video streaming used to live here and now does not: Isaac's native
+# RTSP publishes straight from the camera graph, so no out-of-process helper is needed for it.
+#
+# The mechanism is kept deliberately, for work that genuinely cannot run inside Isaac's
+# interpreter -- anything needing rclpy, for instance, which is built for Python 3.10 while
+# Isaac runs 3.12.
+#
+# [sidecar.services.my_service]
+# kind = "my_service_kind"
 
 
 # -----------------------------------------------------------------------------

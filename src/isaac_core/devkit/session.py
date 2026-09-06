@@ -186,9 +186,86 @@ class SimSession:
         """
         return self._client.call(Method.GET_STATE.value)
 
-    def get_pose(self) -> Any:  # noqa: ANN401
+    def set_gimbal(
+        self,
+        *,
+        roll_deg: float | None = None,
+        pitch_deg: float | None = None,
+        yaw_deg: float | None = None,
+    ) -> Any:  # noqa: ANN401
         """
-        Return the live prim transform of the vehicle's moved camera.
+        Aim the camera gimbal, slewing there if a rate limit is configured.
+
+        Returns as soon as the target is accepted, not when the gimbal arrives: with
+        ``gimbal.max_rate_deg_s`` set the move takes real simulated time, and blocking the caller
+        for it would make a script look hung. Poll :meth:`get_pose` to observe arrival.
+
+        Any axis left as ``None`` holds its current angle, so a single axis can be nudged without
+        restating the other two.
+
+        Args:
+            roll_deg: Target roll in degrees, or ``None`` to hold.
+            pitch_deg: Target pitch in degrees, or ``None`` to hold.
+            yaw_deg: Target yaw in degrees, or ``None`` to hold.
+
+        Returns:
+            The accepted target angles in degrees.
+
+        """
+        params = {"roll_deg": roll_deg, "pitch_deg": pitch_deg, "yaw_deg": yaw_deg}
+        return self._client.call(Method.SET_GIMBAL.value, {k: v for k, v in params.items() if v is not None})
+
+    def set_pose(
+        self,
+        *,
+        vehicle: str | None = None,
+        lat_deg: float,
+        lon_deg: float,
+        alt_m: float,
+        roll_deg: float = 0.0,
+        pitch_deg: float = 0.0,
+        yaw_deg: float = 0.0,
+    ) -> Any:  # noqa: ANN401
+        """
+        Place the vehicle at a geodetic pose.
+
+        Delivered through the same UDP path a real sender uses, so the usual rule applies: if
+        something else is streaming poses to that port, the last packet wins and this one will be
+        replaced by the next arrival. Useful for scripted positioning when nothing else is
+        sending.
+
+        Args:
+            vehicle: Which vehicle to move; defaults to the first configured one.
+            lat_deg: Latitude in degrees.
+            lon_deg: Longitude in degrees.
+            alt_m: Altitude in metres above sea level.
+            roll_deg: Roll in degrees, NED.
+            pitch_deg: Pitch in degrees, NED.
+            yaw_deg: Yaw in degrees, NED.
+
+        Returns:
+            The pose sent and the UDP port used.
+
+        """
+        params: dict[str, Any] = {}
+        if vehicle is not None:
+            params["vehicle"] = vehicle
+        return self._client.call(
+            Method.SET_POSE.value,
+            {
+                **params,
+                "lat_deg": lat_deg,
+                "lon_deg": lon_deg,
+                "alt_m": alt_m,
+                "roll_deg": roll_deg,
+                "pitch_deg": pitch_deg,
+                "yaw_deg": yaw_deg,
+            },
+        )
+
+    def get_pose(self, *, vehicle: str | None = None) -> Any:  # noqa: ANN401
+        """
+        Return the live prim transform of a vehicle's moved camera.
 
         This reads what the pose graph has actually written to the stage -- the only way
         to confirm from outside the process that UDP or ROS pose input is reaching the
@@ -199,20 +276,37 @@ class SimSession:
             ``error`` entry if the prim could not be read).
 
         """
-        return self._client.call(Method.GET_POSE.value)
+        return self._client.call(Method.GET_POSE.value, {"vehicle": vehicle} if vehicle else None)
 
-    def capture_frame(self, path: str | Path) -> Any:  # noqa: ANN401
+    def capture_frame(
+        self,
+        path: str | Path,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> Any:  # noqa: ANN401
         """
-        Capture the current frame and save it to a file.
+        Capture the camera's current frame to an image file.
+
+        Supplying ``width`` and ``height`` captures at that resolution regardless of the
+        viewport's own size, so a high-resolution still can be taken from a small window; the
+        viewport is restored afterwards. Both must be given together or neither.
 
         Args:
-            path: The output path (relative to the server's output root).
+            path: Output path, resolved relative to the server's ``output_root``.
+            width: Optional capture width in pixels.
+            height: Optional capture height in pixels.
 
         Returns:
-            The server's response (typically the resolved path).
+            A dict with the ``path`` written and the ``width``/``height`` actually captured.
 
         """
-        return self._client.call(Method.CAPTURE_FRAME.value, {"path": str(path)})
+        params: dict[str, Any] = {"path": str(path)}
+        if width is not None:
+            params["width"] = width
+        if height is not None:
+            params["height"] = height
+        return self._client.call(Method.CAPTURE_FRAME.value, params)
 
     def pause(self) -> Any:  # noqa: ANN401
         """

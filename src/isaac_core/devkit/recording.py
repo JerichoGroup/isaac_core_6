@@ -15,9 +15,10 @@ tested property that keeps CI working.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import logging
 from pathlib import Path
+import statistics
 from typing import Any, Generic, TypeVar
 
 from isaac_core.contracts import topics
@@ -26,6 +27,88 @@ logger = logging.getLogger(__name__)
 
 # Type variable for the ROS message type.
 MsgT = TypeVar("MsgT")
+
+# Nanoseconds per second -- ROS 2 ``header.stamp`` is split into ``sec`` + ``nanosec``.
+_NS_PER_S = 1_000_000_000
+
+# Fallback frame rate (Hz) used only when timing cannot be measured (fewer than two
+# frames, or every timestamp identical) and no override is supplied. A single-frame clip
+# has no meaningful rate; one frame per second keeps the writer valid without guessing.
+_FALLBACK_FPS = 1.0
+
+# Minimum frames needed to measure an inter-frame interval (and hence a rate).
+_MIN_FRAMES_FOR_RATE = 2
+
+
+def _stamp_to_ns(stamp: Any) -> int:  # noqa: ANN401
+    """
+    Convert a ROS 2 ``builtin_interfaces/Time`` stamp to integer nanoseconds.
+
+    Args:
+        stamp: An object exposing ``sec`` and ``nanosec`` integer fields.
+
+    Returns:
+        The stamp as a single nanosecond count.
+
+    """
+    return int(stamp.sec) * _NS_PER_S + int(stamp.nanosec)
+
+
+def measured_fps(stamps_ns: Sequence[int]) -> float:
+    """
+    Derive the true average frame rate (Hz) from per-frame timestamps.
+
+    This is the heart of D22's "derive timing, never ask the user for an fps". The
+    median inter-frame interval is used rather than the mean so a single dropped frame
+    (a large gap) or a burst does not skew the rate; the median ignores outliers.
+    Non-monotonic and duplicate timestamps contribute non-positive deltas which are
+    discarded before the median is taken.
+
+    Args:
+        stamps_ns: Presentation timestamps in nanoseconds, in capture order.
+
+    Returns:
+        The measured frame rate in Hz, or :data:`_FALLBACK_FPS` when it cannot be
+        measured (fewer than two frames, or no strictly positive interval exists).
+
+    """
+    if len(stamps_ns) < _MIN_FRAMES_FOR_RATE:
+        return _FALLBACK_FPS
+    deltas = [b - a for a, b in zip(stamps_ns, stamps_ns[1:]) if b - a > 0]
+    if not deltas:
+        return _FALLBACK_FPS
+    median_ns = statistics.median(deltas)
+    return _NS_PER_S / median_ns
+
+
+def presentation_times_s(stamps_ns: Sequence[int]) -> list[float]:
+    """
+    Convert absolute timestamps to presentation times in seconds from the first frame.
+
+    The first frame sits at ``0.0``; every later frame is offset by its real elapsed
+    time. These are the exact per-frame times a variable-frame-rate muxer would need,
+    written to the sidecar file so true timing survives even though the constant-rate
+    writer below cannot express it directly.
+
+    Args:
+        stamps_ns: Presentation timestamps in nanoseconds, in capture order.
+
+    Returns:
+        Presentation times in seconds relative to the first frame. Non-monotonic
+        inputs are clamped so the sequence never goes backwards.
+
+    """
+    if not stamps_ns:
+        return []
+    origin = stamps_ns[0]
+    times: list[float] = []
+    last = 0.0
+    for ns in stamps_ns:
+        t = (ns - origin) / _NS_PER_S
+        # Clamp backwards jumps (non-monotonic input) so playback time never rewinds.
+        last = max(t, last)
+        times.append(last)
+    return times
 
 
 def _require_rclpy() -> Any:  # noqa: ANN401
@@ -230,6 +313,67 @@ class TopicRecorder(Generic[MsgT]):
         logger.info("saved %d frames to %s", len(self._frames), out)
         return out
 
+    def save_video(self, path: str | Path, *, fps_override: float | None = None) -> Path:
+        """
+        Write the recorded image frames to an mp4 at their true measured rate.
+
+        This exists because 2023's capture asked the user for an fps and wrote a
+        constant-rate mp4, but Isaac Sim renders at a variable ~30-50 fps, so every
+        recording played partly too fast and partly too slow. Each frame here carries
+        the real ``header.stamp`` captured at receive time (see :func:`video_recorder`),
+        so the timing is derived rather than guessed -- honouring D22.
+
+        Tradeoff, stated honestly: the only video library importable in this environment
+        is OpenCV, whose ``VideoWriter`` emits **constant**-frame-rate output. True
+        variable-frame-rate encoding would need PyAV or imageio-ffmpeg, which are not
+        installed. So the mp4 is written at the *measured average* rate (the median
+        inter-frame interval, robust to dropped frames), which already fixes the
+        wrong-speed defect. To preserve the exact per-frame timing that a constant-rate
+        container cannot express, a sidecar ``<name>.timestamps.txt`` is written next to
+        the video with one presentation time (seconds, from the first frame) per line; a
+        VFR remux with the system ``ffmpeg`` can consume it later without re-recording.
+
+        Args:
+            path: Output mp4 path. The sidecar timestamps file is derived from it.
+            fps_override: Explicit constant rate to force. ``None`` (the default) derives
+                the rate from the timestamps; any other value is used verbatim.
+
+        Returns:
+            The resolved output video path.
+
+        Raises:
+            RuntimeError: If no frames were recorded (nothing to write).
+
+        """
+        import cv2  # noqa: PLC0415
+
+        frames = [self._frames[i] for i in sorted(self._frames)]
+        if not frames:
+            msg = "no frames recorded -- nothing to write"
+            raise RuntimeError(msg)
+
+        stamps_ns = [int(f["stamp_ns"]) for f in frames]
+        fps = fps_override if fps_override is not None else measured_fps(stamps_ns)
+
+        times = presentation_times_s(stamps_ns)
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        sidecar = out.with_suffix(out.suffix + ".timestamps.txt")
+        sidecar.write_text("\n".join(f"{t:.9f}" for t in times) + "\n")
+
+        first = frames[0]["image"]
+        height, width = first.shape[0], first.shape[1]
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(out), fourcc, fps, (width, height))
+        try:
+            for f in frames:
+                writer.write(f["image"])
+        finally:
+            writer.release()
+
+        logger.info("wrote %d frames to %s at %.3f fps (measured)", len(frames), out, fps)
+        return out
+
     def shutdown(self) -> None:
         """Tear down the rclpy node and executor."""
         if self._executor is not None:
@@ -268,8 +412,11 @@ def video_recorder(
     """
     Create a recorder for RGB image messages.
 
-    The serialiser converts sensor_msgs/Image to a numpy array via cv_bridge.
-    Requires ``cv_bridge`` and ``cv2`` at usage time (not at import time).
+    The serialiser converts sensor_msgs/Image to a numpy array via cv_bridge and
+    captures the message's ``header.stamp`` as integer nanoseconds. That timestamp is
+    what lets :meth:`TopicRecorder.save_video` reconstruct the true frame rate instead
+    of asking the user to guess one. Requires ``cv_bridge`` and ``cv2`` at usage time
+    (not at import time).
 
     Args:
         topic: The image topic to subscribe to.
@@ -280,11 +427,15 @@ def video_recorder(
 
     """
 
-    def _serialise_image(msg: Any, frame_index: int) -> Any:  # noqa: ANN401
+    def _serialise_image(msg: Any, frame_index: int) -> dict[str, Any]:  # noqa: ANN401
         from cv_bridge import CvBridge  # noqa: PLC0415
 
         bridge = CvBridge()
-        return bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        return {
+            "frame": frame_index,
+            "stamp_ns": _stamp_to_ns(msg.header.stamp),
+            "image": bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8"),
+        }
 
     return TopicRecorder(
         topic=topic,
@@ -366,6 +517,46 @@ def range_recorder(
     )
 
 
+# Every per-detection array on isaac_core_ros2_msgs/FrameBboxes, in message declaration order.
+_BBOX_ARRAY_FIELDS = (
+    "target_name",
+    "in_frame",
+    "is_visible",
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+    "lat",
+    "lon",
+    "alt",
+    "roll",
+    "pitch",
+    "yaw",
+    "distance_x",
+    "distance_y",
+    "distance_z",
+)
+
+
+def _scalar(value: Any) -> Any:  # noqa: ANN401
+    """
+    Convert a numpy scalar from a ROS array field into a plain Python value.
+
+    ROS array fields deserialise to numpy arrays, whose elements are numpy scalars that the
+    json module cannot encode. Recording silently failing at write time is worse than a
+    conversion here.
+
+    Args:
+        value: One element read out of a message array field.
+
+    Returns:
+        A JSON-encodable Python scalar.
+
+    """
+    item = getattr(value, "item", None)
+    return item() if callable(item) else value
+
+
 def bbox_recorder(
     topic: str = f"{topics.ROOT}/{topics.BBOX}",
     *,
@@ -384,21 +575,14 @@ def bbox_recorder(
     """
 
     def _serialise_bbox(msg: Any, frame_index: int) -> dict[str, Any]:  # noqa: ANN401
-        return {
-            "frame": frame_index,
-            "bboxes": [
-                {
-                    "target_name": b.target_name,
-                    "in_frame": b.in_frame,
-                    "is_visible": b.is_visible,
-                    "x1": b.x1,
-                    "y1": b.y1,
-                    "x2": b.x2,
-                    "y2": b.y2,
-                }
-                for b in msg.bboxes
-            ],
-        }
+        # FrameBboxes carries parallel arrays rather than a Bbox[], so a detection is a slice
+        # across every array. Recorded back as one dict per detection, which is what a reader
+        # actually wants, and re-zips them here rather than making every consumer do it.
+        count = len(msg.target_name)
+        detections = [
+            {name: _scalar(getattr(msg, name)[index]) for name in _BBOX_ARRAY_FIELDS} for index in range(count)
+        ]
+        return {"frame": frame_index, "bboxes": detections}
 
     return TopicRecorder(
         topic=topic,
@@ -436,7 +620,7 @@ def _lazy_range_type() -> Any:  # noqa: ANN401
 
 def _lazy_framebboxes_type() -> Any:  # noqa: ANN401
     """Import and return the FrameBboxes message type."""
-    from isaac_ros2_messages.msg import FrameBboxes  # noqa: PLC0415
+    from isaac_core_ros2_msgs.msg import FrameBboxes  # noqa: PLC0415
 
     return FrameBboxes
 
@@ -444,7 +628,9 @@ def _lazy_framebboxes_type() -> Any:  # noqa: ANN401
 __all__ = [
     "TopicRecorder",
     "bbox_recorder",
+    "measured_fps",
     "pose_recorder",
+    "presentation_times_s",
     "range_recorder",
     "video_recorder",
 ]

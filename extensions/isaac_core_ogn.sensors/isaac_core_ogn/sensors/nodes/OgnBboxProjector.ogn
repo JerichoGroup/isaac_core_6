@@ -1,0 +1,169 @@
+{
+    "BboxProjector": {
+        "version": 1,
+        "description": [
+            "Report a 2D bounding box for every semantically-labelled child of the targets root, as",
+            "parallel arrays shaped for isaac_core_ros2_msgs/FrameBboxes.",
+            "",
+            "Boxes come from Isaac's own synthetic-data annotators rather than a hand-rolled projection,",
+            "so they are measured from the rendered image and cannot disagree with it. The tight and loose",
+            "annotators together give real occlusion: `loose` bounds an object's full extent even when",
+            "hidden, `tight` bounds only its visible part and omits it entirely when fully occluded. So",
+            "in_frame comes from loose and is_visible from tight.",
+            "",
+            "Targets must carry a SemanticsAPI label; the stage compositor applies one to every child of",
+            "the targets root automatically."
+        ],
+        "language": "Python",
+        "metadata": {
+            "uiName": "Bbox Projector"
+        },
+        "inputs": {
+            "execIn": {
+                "type": "execution",
+                "description": "Tick input. The projection runs once per tick",
+                "default": 0,
+                "metadata": {
+                    "uiName": "Exec In"
+                }
+            },
+            "cameraPath": {
+                "type": "token",
+                "description": "Absolute prim path of the camera to project into, e.g. '/World/Environment/drone_0/Xform/main_camera_01'. A plain path rather than a USD relationship on purpose: changing a live OmniGraph node's relationship after the graph has resolved its topology aborts Kit, and a relationship to a prim in another layer cannot be authored in the GUI at all. The stage compositor writes this path from config.",
+                "default": "",
+                "metadata": {
+                    "uiName": "Camera Path"
+                }
+            },
+            "targetsRootPath": {
+                "type": "token",
+                "description": "Absolute prim path of the scope whose children are projected, e.g. '/World/bboxes'. Every child is projected, so objects can be added and removed without touching this layer.",
+                "default": "",
+                "metadata": {
+                    "uiName": "Targets Root Path"
+                }
+            }
+        },
+        "outputs": {
+            "target_name": {
+                "type": "token[]",
+                "description": "Prim name of each detection. Its length is the detection count.",
+                "metadata": {
+                    "uiName": "Target Name"
+                }
+            },
+            "in_frame": {
+                "type": "bool[]",
+                "description": "Whether each detection's full extent falls in the image: present in the loose annotator, which reports an object even when it is entirely hidden behind something else.",
+                "metadata": {
+                    "uiName": "In Frame"
+                }
+            },
+            "is_visible": {
+                "type": "bool[]",
+                "description": "Whether each detection is actually visible: present in the tight annotator, which omits fully occluded objects and bounds only the unoccluded part of partly hidden ones.",
+                "metadata": {
+                    "uiName": "Is Visible"
+                }
+            },
+            "x1": {
+                "type": "int[]",
+                "description": "Left pixel edge of each box.",
+                "metadata": {
+                    "uiName": "X1"
+                }
+            },
+            "y1": {
+                "type": "int[]",
+                "description": "Top pixel edge of each box.",
+                "metadata": {
+                    "uiName": "Y1"
+                }
+            },
+            "x2": {
+                "type": "int[]",
+                "description": "Right pixel edge of each box.",
+                "metadata": {
+                    "uiName": "X2"
+                }
+            },
+            "y2": {
+                "type": "int[]",
+                "description": "Bottom pixel edge of each box.",
+                "metadata": {
+                    "uiName": "Y2"
+                }
+            },
+            "lat": {
+                "type": "float[]",
+                "description": "Geodetic latitude in degrees, NaN when the target has no globe anchor.",
+                "metadata": {
+                    "uiName": "Latitude"
+                }
+            },
+            "lon": {
+                "type": "float[]",
+                "description": "Geodetic longitude in degrees, NaN when the target has no globe anchor.",
+                "metadata": {
+                    "uiName": "Longitude"
+                }
+            },
+            "alt": {
+                "type": "float[]",
+                "description": "Altitude in metres above sea level, NaN when the target has no globe anchor.",
+                "metadata": {
+                    "uiName": "Altitude"
+                }
+            },
+            "roll": {
+                "type": "float[]",
+                "description": "Target's local roll in radians, euler XYZ.",
+                "metadata": {
+                    "uiName": "Roll"
+                }
+            },
+            "pitch": {
+                "type": "float[]",
+                "description": "Target's local pitch in radians, euler XYZ.",
+                "metadata": {
+                    "uiName": "Pitch"
+                }
+            },
+            "yaw": {
+                "type": "float[]",
+                "description": "Target's local yaw in radians, euler XYZ.",
+                "metadata": {
+                    "uiName": "Yaw"
+                }
+            },
+            "distance_x": {
+                "type": "float[]",
+                "description": "Target minus camera position on world X, in metres.",
+                "metadata": {
+                    "uiName": "Distance X"
+                }
+            },
+            "distance_y": {
+                "type": "float[]",
+                "description": "Target minus camera position on world Y, in metres.",
+                "metadata": {
+                    "uiName": "Distance Y"
+                }
+            },
+            "distance_z": {
+                "type": "float[]",
+                "description": "Target minus camera position on world Z, in metres.",
+                "metadata": {
+                    "uiName": "Distance Z"
+                }
+            },
+            "count": {
+                "type": "int",
+                "description": "Number of detections. Convenience for inspection; the arrays are authoritative.",
+                "metadata": {
+                    "uiName": "Count"
+                }
+            }
+        }
+    }
+}

@@ -19,6 +19,9 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -117,9 +120,7 @@ def main(argv: list[str] | None = None) -> None:
     logging.getLogger("isaac_core").setLevel(logging.INFO)
 
     from isaac_core.config import load
-    from isaac_core.sim.capabilities import probe
     from isaac_core.sim.discovery import discover_layers
-    from isaac_core.sim.planner import plan_features
 
     cli_overrides: dict[str, object] = {}
     if args.headless:
@@ -133,22 +134,13 @@ def main(argv: list[str] | None = None) -> None:
     layer_paths = _resolve_layer_search_paths(config)
     manifests = discover_layers(layer_paths)
 
-    from isaac_core.sim.capabilities import FakeStageInspector
-
     # Pre-plan with an empty inspector; real capabilities are checked after
     # the stage opens. This gives us the layer list for mounting.
-    pre_plan = plan_features(
-        # Derived, not just the explicit list: each vehicle's pose_source implies the
-        # camera layer that reads it, so a minimal config composes and flies.
-        requested_ids=list(config.required_feature_ids()),
-        # Mount under the vehicle's own id, so prim paths match the manifests'
-        # {instance} templates. Without this the planner's "default" placeholder
-        # produced /Environment/default, which no binding refers to.
-        instance=next(iter(config.vehicles)),
-        manifests=manifests,
-        capabilities=probe(FakeStageInspector(prims=frozenset())),
-        strict=config.sim.strict_features,
-    )
+    #
+    # Planned once per vehicle, not once overall: each vehicle mounts its own copy of the camera
+    # layer under its own id, and each copy must resolve its own UDP port and topic names. A
+    # single plan would give every vehicle the first vehicle's values.
+    pre_plan = _plan_all_vehicles(config, manifests)
 
     scene_path = _resolve_scene_path(config)
 
@@ -156,8 +148,63 @@ def main(argv: list[str] | None = None) -> None:
 
     with SimulationRuntime(config, pre_plan) as runtime:
         runtime.start()
-        runtime.open_stage(scene_path, layer_paths)
+        try:
+            runtime.open_stage(scene_path, layer_paths)
+        except Exception:
+            # Kit suppresses stdout and our logging filter drops third-party handlers, so an
+            # exception raised while composing the stage reaches nobody: the process exits 0
+            # having printed nothing about why. That has already cost real debugging time twice
+            # (a ConfigKeyError from an unresolvable binding, and a georeference mismatch), so
+            # every startup failure is logged through our own logger -- which is visible -- and
+            # then re-raised so the exit status is still non-zero.
+            logger.exception("failed to open the stage; the simulator cannot start")
+            raise
         runtime.run()
+
+
+def _plan_all_vehicles(
+    config: "IsaacCoreConfig",  # type: ignore[name-defined]  # noqa: F821
+    manifests: "Mapping[str, LayerManifest]",  # type: ignore[name-defined]  # noqa: F821
+) -> "FeaturePlan":  # type: ignore[name-defined]  # noqa: F821
+    """
+    Plan the feature layers for every configured vehicle and merge the result.
+
+    Each vehicle gets its own pass so every planned layer records the instance and camera it
+    belongs to, which is what lets the configurator resolve per-vehicle ports and topics. Skipped
+    layers are reported once per vehicle that could not have them, since the reason can differ.
+
+    Args:
+        config: The resolved configuration.
+        manifests: All discovered layer manifests.
+
+    Returns:
+        One plan containing every vehicle's layers.
+
+    """
+    from isaac_core.sim.capabilities import FakeStageInspector, probe  # noqa: PLC0415
+    from isaac_core.sim.planner import FeaturePlan, plan_features  # noqa: PLC0415
+
+    enabled: list[Any] = []
+    skipped: list[Any] = []
+    for vehicle_id, vehicle in config.vehicles.items():
+        plan = plan_features(
+            # Derived, not just the explicit list: each vehicle's pose_source implies the
+            # camera layer that reads it, so a minimal config composes and flies.
+            requested_ids=list(config.required_feature_ids()),
+            # Mount under the vehicle's own id, so prim paths match the manifests'
+            # {instance} templates. Without this the planner's "default" placeholder
+            # produced /Environment/default, which no binding refers to.
+            instance=vehicle_id,
+            # Resolve {camera} to the vehicle's first camera, so a camera can be renamed
+            # without editing the layer.
+            camera=next(iter(vehicle.cameras)),
+            manifests=manifests,
+            capabilities=probe(FakeStageInspector(prims=frozenset())),
+            strict=config.sim.strict_features,
+        )
+        enabled.extend(plan.enabled)
+        skipped.extend(plan.skipped)
+    return FeaturePlan(enabled=tuple(enabled), skipped=tuple(skipped))
 
 
 def _resolve_layer_search_paths(config: "IsaacCoreConfig") -> tuple[Path, ...]:  # type: ignore[name-defined]  # noqa: F821

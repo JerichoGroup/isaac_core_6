@@ -84,23 +84,54 @@ echo "Isaac Sim:  $ISAAC_PATH ($(cat "$ISAAC_PATH/VERSION"))"
 echo
 
 # --- 1. Install into user's Python ---
-echo "[1/4] Installing requirements into user site-packages..."
+echo "[1/5] Installing requirements into user site-packages..."
 pip install --user -r "$REPO_ROOT/requirements.txt"
 echo
 
 # --- 2. Install the package in editable mode ---
-echo "[2/4] Installing isaac-core in editable mode..."
+echo "[2/5] Installing isaac-core in editable mode..."
 pip install --user -e "$REPO_ROOT"
 echo
 
 # --- 3. Install into Isaac's bundled Python ---
-echo "[3/4] Installing isaac-core into Isaac's Python..."
+echo "[3/5] Installing isaac-core into Isaac's Python..."
 "$ISAAC_PATH/python.sh" -m pip install -e "$REPO_ROOT"
 echo
 
 # --- 4. Link extensions ---
-echo "[4/4] Linking extensions..."
+echo "[4/5] Linking extensions..."
 "$SCRIPT_DIR/link_extensions.sh" --isaac-path "$ISAAC_PATH"
+echo
+
+# --- 5. Build the custom ROS 2 message package ---
+# Only Bbox and FrameBboxes live here. The package is deliberately NOT named
+# isaac_ros2_messages: that name is NVIDIA's and also carries the .srv files Isaac's own ROS
+# tooling needs, so a second package with that name would collide.
+#
+# Skipped rather than failed when the workspace or ROS 2 is absent: the messages are only
+# needed for bbox consumers, and everything else in this repo works without them.
+echo "[5/5] Building ROS 2 message package..."
+ROS_WS="${ROS_WS:-$HOME/IsaacSim-ros_workspaces/humble_ws}"
+MSG_PKG="$REPO_ROOT/ros2/isaac_core_ros2_msgs"
+
+if [ ! -d "$ROS_WS/src" ]; then
+    echo "  Skipping: no ROS 2 workspace at $ROS_WS/src"
+    echo "  Set ROS_WS=/path/to/humble_ws to build the messages elsewhere."
+elif ! command -v colcon >/dev/null 2>&1; then
+    echo "  Skipping: colcon not found. Source ROS 2 first:"
+    echo "    source /opt/ros/humble/setup.bash"
+else
+    echo "  Copying isaac_core_ros2_msgs -> $ROS_WS/src/"
+    rm -rf "$ROS_WS/src/isaac_core_ros2_msgs"
+    cp -r "$MSG_PKG" "$ROS_WS/src/"
+    # --packages-select keeps this from rebuilding every other package in the workspace.
+    if (cd "$ROS_WS" && colcon build --packages-select isaac_core_ros2_msgs); then
+        echo "  Built. Source it before using the bbox recorder:"
+        echo "    source $ROS_WS/install/setup.bash"
+    else
+        echo "  Build FAILED. The bbox recorder will not work until this succeeds." >&2
+    fi
+fi
 echo
 
 # --- Run doctor ---

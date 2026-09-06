@@ -774,6 +774,10 @@ scripting and replay · deterministic seeded scenarios for regression tests.
 | D17 | `header.frame_id` is a **coordinate frame name**, not a sequence counter | ROS 2's `std_msgs/Header` has only `stamp` and `frame_id` — ROS 1's `seq` was deliberately removed. `frame_id` is documented as "Transform frame with which this data is associated". The old repo used it as a frame counter, which required a custom rclpy republisher; that is the real reason its image path went `raw_rgb` → `image_rgb`. Correlate frames with `header.stamp` instead. |
 | D18 | ENU reference is **derived from the scene's Cesium georeference**, not kept in sync by hand | `geo.enu_reference` and `cesium:georeferenceOrigin` describe the same fact; disagreement silently puts the aircraft over the wrong ground. Composition now reads the scene. Explicit config still wins (needed for non-Cesium stages), and a lat/lon disagreement is reported rather than left silent. |
 | D19 | **Rejected**: writing lat/lon/alt directly to a Cesium Globe Anchor instead of computing local ENU | Ofer's idea, investigated properly. Cesium's plugin listens to `UsdNotice::ObjectsChanged` (verified: it has a `UsdNotificationHandler`) while OmniGraph writers target Fabric — `usdWriteBack` is false by default, so the write is invisible. This is almost certainly the 2023 failure Ofer remembered. Making it work needs per-frame USD authoring, the exact thing Fabric exists to avoid. Cesium also ships **zero** OmniGraph nodes, so there is no supported wiring. And it would couple the pose pipeline to Cesium, breaking non-Cesium stages (2023 shipped `full_warehouse.usda`), while moving tested kernel logic into an untestable C++ plugin. The precision argument does not hold either: our ENU is exact geodesy in doubles, and float32 render resolution is 8 mm at 100 km. D18 captures the real benefit without any of the cost. |
+| D20 | **ROS 2 is the data plane; the JSON-RPC control plane is the command plane** | Restated and confirmed by Ofer 2026-09-02, clarifying D4. Data *flowing* in or out of the simulation (pose in, image/pose/range/bbox out) belongs on ROS 2 topics. *Commanding* the simulation (take a picture, set gimbal angles, reset, load a scene) belongs on the control plane. Consequence: 2023's `--sat` ROS topic becomes a `capture_frame` control method, and gimbal angles become a control method rather than only a ROS subscriber. |
+| D21 | Use Isaac Sim 6's **native RTSP**, not our own RTP sidecar | Ofer 2026-09-02. Wire it into the image-publisher action graph in both camera layers so it is **always on** — no flag, no sidecar process. Anyone who wants the stream consumes it; anyone who does not simply ignores it. Supersedes the `sidecar.rtp` approach. |
+| D22 | **No ROS 2 rate manipulation anywhere** | Ofer 2026-09-02. No publisher or subscriber throttles or boosts its rate; that is a path to untimed-message chaos. `publish_rate_hz` / 2023's `MAX_OUTPUTS_ROS_HRZ` are therefore deliberately absent, not merely unimplemented. The one legitimately related problem is video recording: the recorder must derive the **live** frame rate from message timestamps rather than making the user guess a constant fps (Isaac runs ~30-50 fps, variable, which is why 2023's videos played at the wrong speed). |
+| D23 | **Reach for what Isaac Sim already offers before building our own; carry no dead code** | Ofer 2026-09-02. Two halves of one habit. First: the instinct must be "how do I achieve this with what Isaac Sim provides" before writing a bespoke subsystem — the RTP sidecar is the cautionary example, ~340 lines superseded by a native feature. Second: unused code is deleted, not parked "just in case". Applied during development, not only at cleanup time. Concrete consequences: `sidecar/rtp.py` goes when native RTSP lands (M4); `SATOutput.msg` and `Gimbal.msg` are **not** vendored because capture and gimbal are control-plane commands (D20), so nothing would consume them; the ROS `/isaac_core/gimbal` subscriber is removed from both camera layers — anything external that wants to command the gimbal uses `Sim.attach()` and the control plane. A dead-code sweep is an explicit v2 exit criterion. |
 
 ### Working constraints
 
@@ -1942,6 +1946,852 @@ commands and reading the diff establishes fact.
   **Verdict:** every declared feature is now verified-working, fixed, honestly roadmapped, or
   removed-with-approval. Nothing found claims to work while broken. 1274 pass, all hooks +
   import-linter green.
+
+- **2026-08-30** — Three inspector bugs Ofer found by exercising every flag.
+
+  - **`--count N` alone was silently ignored** and printed the one-shot report instead of N
+    samples, because `--count` only took effect alongside `--poll` -- and `--help` never said
+    so. `--count` now implies polling (interval defaults to 0.5s), and the help says it.
+    This is the same "flag that quietly does nothing" class as the dead config keys.
+  - **`--help` advertised `isaac-core-inspector`**, which is not an installed command (the
+    console script is `isaac-core-inspect`). Fixed the argparse `prog`.
+  - **`--port 33333` gave a bare "connection refused"**. 33333 is the UDP *pose input* port
+    and appears right next to the control-plane port in config, so this is an easy mistake;
+    the error now names the confusion and points at 8760.
+
+  Five regression tests added. Live-verified: `--count 5` against an orbiting sim polled 5
+  samples with changing values (x 226->294, y 444->403, z constant 483.28 = alt 1000 - 516.7),
+  which also re-confirms the `--pitch-deg` orbit fix.
+
+  Everything else in Ofer's transcript was correct behaviour: the all-zero pose with the
+  "no pose received yet" hint (no sender running), and the raw `None`s in the Config section
+  are the derive-if-unset fields, with the Live values section showing what they resolve to.
+
+  **Verified:** 1279 pass, all hooks + import-linter green.
+
+- **2026-09-02 — VERSION 1 SHIPPED.** Ofer declared v1 done: the kernel and its features
+  work, are tested, and both UDP and ROS position pipelines are validated. Eyes-on
+  non-headless flight confirmed correct; README images deferred as non-blocking.
+
+  Built the Version 2 plan. Re-inventoried the 2023 repo from its **README's own feature
+  list** (flags, `consts.py` config constants, ROS input/output topic tables) cross-checked
+  against its source tree, rather than trusting the existing parity table. That surfaced gaps
+  the earlier table had missed:
+
+  - **We ship no custom ROS 2 message definitions.** `devkit.recording` imports
+    `isaac_ros2_messages.msg.FrameBboxes`, and bbox/SAT/gimbal all need `Gimbal`, `Bbox`,
+    `FrameBboxes`, `SATOutput` — but this repo contains none. It only resolves because the
+    2023 workspace is built on Ofer's machine. That is a real portability gap, so it became
+    **M1**, the foundation milestone that unblocks M2-M4.
+  - **`--sat` was an *input* topic**, not just a capture flag: `/isaac_core/sat` carries an
+    output path and the sim writes a PNG there. That reframes it as a ROS-triggered capture
+    sharing the `capture_frame` / `output_root` implementation.
+  - **2023 had a second, Cesium-free scene** (`full_warehouse.usda`). High value we had not
+    noted: it lets the sim run with no network or tile server, useful for CI and offline work.
+  - **`MAX_OUTPUTS_ROS_HRZ`** is 2023's publish-rate cap, which maps to the `publish_rate_hz`
+    key we removed as dead -- to be re-added with a real implementation.
+  - Recorded the **migration note**: 2023 abused the quaternion (x=roll, y=pitch, z=yaw); we
+    publish a real one (D16), so 2023 consumers need updating.
+
+  Restructured `docs/roadmap.md`: v1 marked shipped with its closeout, the parity table made
+  README-authoritative, and the flat "after v1" list replaced by **seven ordered v2 milestones**
+  (M1 messages -> M2 sensor layers -> M3 gimbal -> M4 streaming -> M5 runtime control ->
+  M6 swarm -> M7 production readiness), each with goal, work items, dependencies, size, owner
+  and acceptance criteria. Added a v3 section for genuinely new capability (missions, dynamics,
+  tracking). Rewrote "Needs Ofer" as a v2 table tied to milestones. Updated the README's
+  "what does not work yet" to point at the milestones instead of listing bare gaps.
+
+  v2's definition of done keeps the v1 bar: every feature verified against a running sim, no
+  dead config keys, no untrue README claim, and it must work on a machine that has never seen
+  the 2023 repo.
+
+- **2026-09-02 (b)** — Version 2 plan revised on Ofer's direction. Three new decisions
+  recorded (D20-D22) because these are architectural, not task-level:
+
+  - **D20: ROS 2 is the data plane, the control plane is the command plane.** Ofer restated a
+    decision from the start of the project, clarifying D4. Data flowing in/out (pose, image,
+    range, bbox) goes on ROS topics; *commanding* the sim (take a picture, set gimbal angles,
+    reset, load a scene) goes over JSON-RPC. Consequences: 2023's `--sat` ROS topic becomes
+    `capture_frame(path, width, height)` in M5 -- with a requested resolution, which 2023 could
+    not do -- and gimbal gains a `set_gimbal` control method. Left an open question for Ofer:
+    whether the existing ROS gimbal subscriber still earns its keep.
+  - **D21: use Isaac Sim 6's native RTSP, not our RTP sidecar.** Wire it into the
+    image-publisher graph in *both* camera layers, always on -- no flag, no sidecar process.
+    This supersedes `sidecar.rtp` and makes it dead code; flagged for Ofer whether to delete
+    the sidecar entirely or keep the supervisor framework for future services.
+  - **D22: no ROS 2 rate manipulation anywhere.** No throttling or boosting, on any pub/sub --
+    it invites untimed-message chaos. So `publish_rate_hz` / 2023's `MAX_OUTPUTS_ROS_HRZ` are
+    deliberately *absent*, not merely unimplemented, and the parity table now says so. The one
+    legitimately related problem is **video recording**: 2023 made the user guess a constant
+    fps while Isaac runs a variable ~30-50 fps, so recordings played at the wrong speed.
+    M7 now requires deriving real timing from `header.stamp` -- possible only because we
+    publish real advancing timestamps, which 2023 did not.
+
+  Also per Ofer: the Cesium-free second scene is **not planned** (feature development first,
+  not scene work), and M1 vendors the 2023 `simulation/ros2_interfaces/` wholesale keeping the
+  `isaac_ros2_messages` name so existing consumers keep working.
+
+  Validated that package rather than assuming: `isaac_ros2_messages` v0.2.0, ament_cmake +
+  rosidl, deps std_msgs/geometry_msgs/builtin_interfaces, four definitions. **Found a real
+  gap:** `Bbox.msg` carries 16 fields (pixel box **plus** lat/lon/alt, roll/pitch/yaw and
+  distance_x/y/z) while our `bbox_recorder` serialiser reads only 7 -- it would silently drop
+  the geodetic and distance data. Recorded as M2 work so recordings do not lose what the
+  publisher sends. Also noted `SATOutput` will have no consumer once capture is control-plane,
+  but is vendored anyway for wire compatibility.
+
+- **2026-09-02 (c)** — Plan finalised. Ofer's two open questions answered and a new decision
+  recorded (**D23**: reach for what Isaac Sim already offers before building our own, and carry
+  no dead code — applied while developing, not only at cleanup).
+
+  - **Gimbal ROS subscriber: dropped.** Anything external that wants to move the gimbal uses
+    `Sim.attach()` and the control plane. Removing it also unblocks the config problem: those
+    node inputs are *connected* to the subscriber today, and a connected USD attribute ignores
+    authored values, which is exactly why `start_*_deg` was dead.
+  - **Sidecar: keep the framework, drop the implementation.** `sidecar/service.py` (supervisor
+    + registry, 15 tests) stays as genuinely reusable; `sidecar/rtp.py` (~340 lines, 16 tests),
+    the `RtpVideoService` export, its registration import and possibly `DEFAULT_RTP_*` ports all
+    go when native RTSP lands.
+  - **Messages trimmed to what has a consumer:** vendor `Bbox` + `FrameBboxes` only. `Gimbal`
+    and `SATOutput` are *not* vendored, because both became control-plane commands (D20) and
+    nothing would consume them. Vendoring them "for compatibility" would have been dead code on
+    arrival — my earlier plan said to vendor all four, which contradicted the very habit Ofer is
+    asking for.
+
+  Added **M8, a dead-code/dead-config sweep as the explicit v2 exit gate** (empty known-dead
+  list; no module/class/function/message without a consumer; no `Method` enum member without a
+  handler *and* a caller; no `NotImplementedError` the README implies works), and made "no dead
+  or unused code" the fifth item in v2's definition of done.
+
+  Rewrote the Ofer section as **"Ofer's task list for Version 2"** — 12 numbered items grouped
+  into USD authoring (4), eyes-on validation (5) and environment/decisions (3), each tagged with
+  the milestone it blocks so nothing surfaces late.
+
+  Plan is implementation-ready. M1 is the unblocker.
+
+- **2026-09-02 (d)** — Version 2 development started. 1279 -> **1337 tests**.
+
+  **M1 blocked on a decision, and the reason is a real finding.** Validating the 2023
+  `ros2_interfaces/` package showed it is **not standalone**: its `CMakeLists.txt` also
+  generates five `.srv` files (`IsaacPose`, `GetPrims`, `GetPrimAttribute(s)`,
+  `SetPrimAttribute`) that do **not exist in that folder** — they are NVIDIA's. The installed
+  package at `~/IsaacSim-ros_workspaces/humble_ws/install/isaac_ros2_messages/` carries both
+  NVIDIA's srvs *and* the four 2023 msgs, so what Ofer actually has is NVIDIA's package with
+  the custom messages **merged in**. The 2023 folder is an overlay, not a package. Therefore
+  "keep the name" cannot mean shipping our own `isaac_ros2_messages`: two packages with one
+  name collide, and if ours won it would remove the srvs Isaac's own ROS tooling uses.
+  Escalated to Ofer with the recommendation to use a distinct package name.
+
+  **M2 distance sensor: node built and verified live.** Isaac 6 *does* ship a `RaycastSensor`,
+  but it is a Python runtime class, not an OGN node or USD schema, so it cannot go in an action
+  graph — so per D23 the right "use what Isaac offers" is the **PhysX scene-query interface**
+  (`raycast_closest`), which is what Isaac exposes for this.
+  - New extension `isaac_core_ogn.sensors` with `DistanceSensor`.
+  - All *interpretation* lives in `isaac_core.contracts.rangefinder` (17 tests, no Isaac):
+    `sensor_msgs/Range` conventions, +inf for no detection, -inf for too close, deliberately
+    **not** clamped — clamping would make "nothing there" indistinguishable from "something at
+    exactly max range".
+  - `DistanceSensorConfig` (min/max band, topic) with a validator rejecting an inverted band.
+  - `distance_topic` resolver honours an explicit config topic (same bug class `image_topic`
+    had).
+  - Manifest `assets/layers/distance_sensor/layer.toml` written to match the build sheet.
+  - **Live-verified**: node registers as `isaac_core_ogn.sensors.DistanceSensor`, computed
+    60/60 frames, and with the sensor 10 m above a surface at 0.1 m reported
+    `range_m = 9.899`, `hit = true`, correct min/max pass-through. The guard tests earned their
+    keep again — they caught the missing extension icon and the stale node inventory.
+
+  **M7 video recording at the true frame rate (Ofer's D22 exception).** `save_video` now derives
+  the rate from `header.stamp` and never asks for an fps. Only OpenCV is importable (no PyAV /
+  imageio-ffmpeg), and `cv2.VideoWriter` is constant-rate, so: fps comes from the **median**
+  inter-frame interval (robust to dropouts, unlike a mean), and exact per-frame presentation
+  times are additionally written to a `.timestamps.txt` sidecar so a true VFR remux is possible
+  later without re-recording. Verified numerically: 200 frames of U(30,50) jitter -> 38.94 fps,
+  38.81 with a 2 s dropout injected, safe on single and duplicate stamps.
+
+  **M6 groundwork: `{camera}` placeholder** in manifest bindings, so camera keys are no longer
+  hardcoded. Verified end to end: renaming the camera to `rgb` now resolves
+  `vehicles.drone_0.cameras.rgb.width` and composes with no `ConfigKeyError`.
+
+  **Also fixed:** `bbox_recorder` was dropping 9 of `Bbox.msg`'s 16 fields (the geodetic
+  position, orientation and per-axis distances) — now serialises all 16.
+
+  Rewrote `docs/usd_build_sheet.md` for v2: Task A (remove the gimbal ROS subscriber, ready
+  now), Task B (distance sensor layer, ready now — node exists and is verified), Task C (bbox,
+  blocked on a node I have yet to build), Task D (RTSP, blocked on my investigation).
+
+- **2026-09-02 (e)** — Validated Ofer's USD tasks; RTSP and the message package landed. **1352 tests**.
+
+  **D24: our ROS 2 messages ship as `isaac_core_ros2_msgs`, built into the user's humble_ws.**
+  Ofer's decision after the naming finding. `ros2/isaac_core_ros2_msgs/` holds
+  `CMakeLists.txt` + `package.xml` + `msg/`, carrying **only** `Bbox` + `FrameBboxes`.
+  `scripts/setup.sh` step 5 copies it to `$ROS_WS/src` (default
+  `~/IsaacSim-ros_workspaces/humble_ws`, overridable) and runs
+  `colcon build --packages-select isaac_core_ros2_msgs` — `--packages-select` so setup cannot
+  rebuild the user's whole workspace. Skips with an explanation when ROS or the workspace is
+  absent, since nothing else in the repo needs these messages.
+  - Built clean in 3.56 s. `Bbox` has all **16 fields with names identical to 2023**, so a
+    consumer changes only the package in its import. NVIDIA's `IsaacPose`/`GetPrims`/
+    `SetPrimAttribute` srvs verified **still importable** — the collision we avoided is real.
+  - Did **not** copy 2023's `package.xml`: it declares an NVIDIA **proprietary** license and an
+    NVIDIA maintainer, which cannot go into an Apache-2.0 repo. Ours is Apache-2.0.
+  - `devkit.recording` now imports `isaac_core_ros2_msgs`; a test asserts `isaac_ros2_messages`
+    never reappears, and another asserts CMakeLists lists exactly the `.msg` files present —
+    the defect 2023 actually had.
+  - Added a `check-xml` pre-commit hook, since the repo now ships XML.
+
+  **Validated Ofer's USD tasks A and B. Task A clean; task B had a silent-failure bug.**
+  - Task A (gimbal subscriber removed from both camera layers): correct. No `Gimbal` reference
+    remains and the `offset_*_deg` inputs are now **unconnected**, which is what makes the
+    gimbal config reachable at all.
+  - Task B: all six node types correct and wired, but `RangeSensing` was declared at **layer
+    root, a sibling of the `defaultPrim`** rather than under it. A layer is composed by
+    reference, which brings in only the defaultPrim's subtree — so the entire graph would have
+    been dropped with no error and the sensor would have published nothing. Caught by a new
+    guard rather than by eye, and the guard also revealed the cause of the blind spot:
+    `test_usd_layers.py` only globbed `camera_*`, so a new layer was never checked. Now
+    `ALL_LAYERS`.
+  - Manifest realigned to Ofer's actual node name (`distance_sensor`, not
+    `distance_sensor_node`).
+
+  **M4 is done, natively, and Ofer's "naive" attempt was right.** He enabled
+  `isaacsim.streaming.rtsp` and wired `RTSPCameraHelper` into both camera image graphs:
+  `execIn` from the playback tick, `renderProductPath` from the viewport render product, other
+  inputs left unauthored to take `.ogn` defaults. The **one** missing piece was that
+  `isaac-core run` never enabled the extension — a GUI-only enable does not carry over, and the
+  node would have logged "Could not find node type interface" and done nothing. Added
+  `isaacsim.streaming.rtsp` to the default `sim.extensions`, plus per-camera `rtsp_port` /
+  `rtsp_mount_path` config with a derived-mount resolver and manifest bindings in both layers.
+  - **Live-verified**: port 8554 listening; RTSP `OPTIONS` → `200 OK`; `DESCRIBE
+    rtsp://127.0.0.1:8554/stream` → `200 OK` with SDP `m=video 0 RTP/AVP 96` /
+    `a=rtpmap:96 H264/90000`. A real H.264 stream, no sidecar involved.
+  - **Consequence: `isaac_core.sidecar` (RTP/GStreamer) is now dead code** and should be
+    removed under D23. Needs Ofer's sign-off before deletion.
+
+- **2026-09-02 (f)** — Five components in parallel; bbox pipeline unblocked. **1352 -> 1435 tests**.
+
+  Ofer's `RangeSensing` fix validated (now nested under `/Root`). Ran two rounds of parallel
+  sub-agents with strict single-writer file ownership to avoid concurrent edits to shared
+  modules; **every component was then re-verified independently from first principles**, not by
+  reading the agents' own tests. Worth noting: both rounds produced sub-agent reports claiming
+  full-suite failures that were actually artifacts of *another agent mid-edit* — the reports
+  contradicted each other, and only an independent run settled it. Concurrent agents cannot be
+  trusted to report suite state.
+
+  **`contracts/projection.py`** — pure pinhole projection kernel (30 tests). Independently
+  verified against hand-computed optics: with focal 20 / aperture 40 the derived hFOV is exactly
+  90.000 deg, the centre maps to (960, 540) exactly, the 45-deg edge ray lands exactly on x=1920,
+  +Y maps *above* centre, and a behind-camera or on-lens-plane point returns `None` rather than a
+  plausible mirrored pixel — the classic negate-z bug, now a guarded test.
+  Aperture convention confirmed to be the exact inverse of `configurator._resolve_horizontal_aperture`
+  (`aperture = 2*focal*tan(fov/2)`), so kernel and camera prim cannot disagree.
+
+  **`geo/gimbal.py`** — gimbal angle state + rate limiting (22 tests). Independently verified:
+  179 deg -> -179 deg is a **2 deg** move (shortest path across the seam), no overshoot, per-axis
+  independence, `dt <= 0` returns unchanged, and `max_rate <= 0` means *unlimited* to match the
+  config default of 0 meaning "no limit" (surprising, so documented).
+
+  **Cesium multi-tileset URLs (M7)** — `apply_tileset_server_url` now swaps only scheme+host+port
+  and **preserves each tileset's own path**, over N tilesets, using `urllib.parse` rather than
+  hand-rolled `://` splitting. Verified: two tilesets keep distinct paths, query strings survive,
+  IPv6 authorities work, no-scheme and trailing-slash overrides normalise, and a hostless
+  override leaves every url untouched with a warning rather than blanking the terrain.
+
+  **`OgnBboxProjector`** — OGN node projecting targets to pixel boxes, all maths delegated to the
+  kernel. **Live-verified in Isaac**: registered, computed 60/60, and with three targets (centre,
+  far right, behind camera) returned `count=3` with the centre box `909..1011` — which matches
+  hand calculation exactly, since the cube's near face at z=-95 subtends `5/95*960 = 50.5` px
+  about the centre 960. The off-screen target clipped with `inFrame=false`; the behind-camera
+  target **kept its array slot** with a zeroed box, so a consumer matching arrays by index cannot
+  misalign. `isVisible` currently mirrors `inFrame`: **occlusion is not tested**, documented in
+  the node and the build sheet rather than faked.
+  - Found Isaac ships a native `ROS2PublishBbox2D`. Not used, and the reason is recorded in the
+    build sheet: it is replicator-driven and publishes `vision_msgs/Detection2DArray`, which has
+    no geodetic fields, while our `Bbox` carries lat/lon/alt, orientation and per-axis distance.
+    D23 was considered and consciously overridden, not ignored.
+
+  **CLI tab-completion (M7)** — dependency-free kubectl-style `isaac-core completion bash|zsh`,
+  where the emitted script calls back into `completion --list-keys` at runtime so the candidate
+  list can never drift from the schema. Independently verified: **all 55 emitted keys resolve**
+  via `config explain` (not a sample — every one), the emitted bash passes `bash -n`, an unknown
+  shell exits non-zero, and keys added to the schema *minutes earlier* (`rtsp_port`,
+  `distance_sensor.max_range_m`) appear automatically.
+
+  Wrote the **Task C bbox build sheet** and the `bbox` layer manifest, binding the projector's
+  intrinsics from the same camera config that drives the camera prim so the projection cannot
+  drift from the image being rendered. Flagged the real risk honestly: `FrameBboxes` holds a
+  nested `Bbox[]`, which is the case most likely to defeat the generic `ROS2Publisher`; if it
+  does, a dedicated publisher node is the fallback rather than Ofer fighting the GUI.
+
+- **2026-09-02 (g)** — Validated Ofer's bbox layer; found two real bugs of my own. **1451 tests**.
+
+  **D25: a layer's `requires` may be satisfied by another layer, and planning is dependency-ordered.**
+  Requirements were only tested against capabilities probed from the *base scene*, so a
+  capability provided by a **layer** could never satisfy another layer. `bbox` requires `CAMERA`,
+  which `camera_udp` provides, and was therefore skipped on every launch with
+  `unmet stage requirement(s): CAMERA` — which reads like a stage problem, not a planner bug.
+  This is exactly what Ofer hit ("the bbox feature was not there").
+  Planning is now a fixed point: admit every layer whose requirements are met, add what it
+  provides, repeat until a pass changes nothing; whatever remains is skipped (which also covers a
+  dependency cycle). The resulting order **is** the composition order, and that matters
+  independently — alphabetically `bbox` sorted before `camera_udp`, so the camera prim would not
+  have existed when bbox referenced it. Also added `DISTANCE_SENSOR`/`BBOX` to `StageCapability`
+  and a guard that every shipped manifest uses only known names, because an unknown name silently
+  skipped a layer forever.
+
+  **Ofer's three criticisms of the build sheet were all correct**, and two were defects in my
+  writing:
+  - Paths were ambiguous: I mixed *in-layer* paths (rooted at the `defaultPrim`) with
+    *composed-stage* paths (`/World/bboxes`, the camera). He can only author the former.
+  - **Relationships could not be set at all** — the GUI picker only offers prims present in the
+    file being edited, and neither target exists in `bbox.usda`. The design was impossible to
+    execute; asking him to do it was my error.
+  - **`/Root/Xform` in the bbox layer does nothing** — right. The camera layers need it because
+    it is the prim the pose graph moves; a read-only layer has no use for it.
+
+  **Relationship bindings: built, then abandoned on evidence.** Added a `[[relationships]]`
+  manifest section resolved at compose time (the composer is the first moment the whole stage
+  exists). Verified resolving correctly to `/World/.../main_camera_01` and `/World/bboxes`. Then
+  the live run died. **Writing a relationship onto a live OmniGraph node aborts Kit**: exit 0
+  before `run()` is reached, no traceback, no faulthandler output, and the base scene's stage is
+  closed immediately after composition — which the healthy baseline never does. `og.Controller`
+  instead of raw USD `CreateRelationship` made no difference. Node inputs are now plain
+  **token paths** (`cameraPath`, `targetsRootPath`) written as ordinary attribute bindings, which
+  also removes the GUI-authoring problem entirely. A guard asserts no shipped layer uses a
+  relationship binding.
+
+  **Still open, and it is mine.** With the projector given a real camera and targets root the
+  simulator still exits before the loop. Bisect is clean and reproducible: identical layer with
+  those two inputs unwired exits **124** (healthy, "simulation running" logged); with them
+  populated it exits **0** having never reached `run()`. So it is the populated projector path,
+  not Ofer's USD. Ruled out: a Python exception (no traceback), a Python-visible segfault (no
+  faulthandler output), and an unresolvable `FrameBboxes` (sourcing the built workspace changes
+  nothing). Next suspicion is the node's `UsdGeom.BBoxCache`/`ComputeWorldBound` path being
+  evaluated eagerly on a Cesium-tileset stage — my standalone probe that passed used a trivial
+  three-cube stage, which is exactly the difference.
+
+  **Process note.** My earlier A/B "relationships are the cause" was **confounded** — I had
+  renamed the node's inputs in the same step, so two variables moved at once. Re-testing showed
+  relationships were not the trigger. Recording it because the lesson generalises: one variable
+  per run, and a bisect that changes two things proves nothing.
+
+  Ofer also flagged that he had Isaac Sim open during earlier live tests. Re-verified RTSP with
+  ownership proof — 8554 closed with nothing running, LISTENING once my process was up, `DESCRIBE`
+  `200 OK` with `H264/90000`, closed again after killing mine. The port's lifetime tracks my
+  process exactly, so the earlier result stands. The distance-sensor and bbox-projector probes
+  were unaffected (own processes, own stages, exact deterministic geometry).
+
+- **2026-09-02 (h)** — Root-caused the bbox failure. It was mine, and it was one line of wrong path.
+
+  **The bug: `_resolve_camera_prim` looked for a prim that has never existed.** It guessed
+  `{mount}/Camera_{camera_id}`; the real camera is `{mount}/Xform/main_camera_01`. So it always
+  returned `None`, and any layer binding `resolve = "camera_prim"` made `compute_writes` raise
+  `ConfigKeyError: resolve 'camera_prim' requested but no camera path is available`. No shipped
+  layer had ever used that resolver, so the dead code sat there until bbox became its first
+  caller. Now resolves from **`sim.viewport_camera`** — already the single place naming the
+  vehicle's camera, so a layer binding and the viewport cannot disagree — with a fallback that
+  searches the mount for the first `Camera`-typed prim.
+
+  **Why it was so hard to see, and the lesson.** The launcher swallowed the exception: exit 0, no
+  traceback, a graceful "Simulation App Shutting Down". Three rounds of live A/B against the
+  *symptom* produced two wrong conclusions (a Kit abort on relationship writes; a `BBoxCache`
+  crash on Cesium geometry). Both were disproved by direct probes -- `ComputeWorldBound` on the
+  Cesium-anchored cube returns correct bounds and survives play. What actually worked was
+  reproducing composition **in-process**, where the real traceback appeared immediately. Lesson:
+  when a launcher hides the error, stop bisecting the symptom and re-run the failing call in a
+  process that cannot hide it.
+
+  **Ofer's design catch, adopted.** He asked whether the camera's own values should override the
+  projector's intrinsics inputs. They should, and now they do: the node reads focal length and
+  both apertures **off the camera prim** rather than taking them as inputs, so the projection
+  cannot disagree with the picture being rendered. A wrong-but-plausible box in the wrong place is
+  worse than an obvious failure. Image size stays an input because resolution belongs to the
+  render product, not the camera. Bindings went 8 -> 5, and `focalLength` is now an *output* for
+  verification.
+
+  **Verified live, end to end** (real launcher, exit 124 = healthy): both layers compose, the
+  projector computes 90/90 and reports `count = 2` over `['Cube', 'Cube_01']` with
+  `inFrame = [true, false]`. `/isaac_core/bbox` publishes as
+  `isaac_core_ros2_msgs/msg/FrameBboxes`, publisher count 1, `header.stamp` advancing.
+
+  **Confirmed limitation, needs Ofer's decision.** `bboxes` is always `[]`. Enumerated the
+  publisher's live inputs: Isaac's generic `ROS2Publisher` exposes the nested `Bbox[]` field as
+  **`inputs:bboxes` of type `token[]`** -- a flat token array that cannot carry 16 typed fields
+  per element. Nested message arrays are unsupported, exactly the risk flagged when the layer was
+  specified. Options put to him: flatten `FrameBboxes` to parallel arrays (works today, matches
+  the node's outputs, but changes the wire format) or build a C++ publisher node (preserves the
+  2023 shape, much more work). Recommended flattening.
+
+  **Also found:** the message package must be on the library path or the publisher fails with
+  `libisaac_core_ros2_msgs__rosidl_generator_c.so: cannot open shared object file` and the topic
+  silently never appears. Sourcing `humble_ws/install/setup.bash` before launch is mandatory for
+  the bbox layer; documented in the build sheet's run instructions.
+
+  Rewrote `docs/usd_build_sheet.md` per Ofer's request: tasks only, no rationale, with explicit
+  DONE/TODO/BLOCKED status per task and a "do not author these" table. Explanations belong here.
+
+- **2026-09-03** — Answered Ofer's two design questions with live evidence. Both change the plan.
+
+  Verified his USD edits: `/Root/Xform` gone, stale `custom rel` declarations replaced with the
+  `cameraPath`/`targetsRootPath` token declarations. Task C is complete on his side.
+
+  **His proposed fix for the empty array is impossible in Isaac Sim 6, and the reason matters.**
+  He suggested the OGN build a `Bbox` per detection and append them to an array. That requires
+  constructing a ROS message object, which needs the rosidl Python runtime, which needs `rclpy` —
+  built for Python 3.10 against Isaac 6's 3.12. Verified inside Isaac:
+  `ModuleNotFoundError: No module named 'rclpy._rclpy_pybind11'`.
+  **The 2023 `bbox_node.py` did exactly what he described** (`import rclpy`,
+  `from isaac_ros2_messages.msg import FrameBboxes, Bbox`, build `List[Bbox]`, publish) — which is
+  precisely why it cannot be ported. So "flatten" does not mean the node assembles messages; it
+  means changing the `.msg` so `FrameBboxes` carries **parallel arrays of primitives**, because
+  Isaac's C++ publisher can fill primitive arrays from OGN outputs but exposes a nested `Bbox[]`
+  as a useless `token[]`.
+
+  **His question "why does the bbox node need all those camera values?" was the better catch.**
+  It shouldn't. Reading 2023's `bbox_node.py` shows it did **no projection maths at all** — it
+  used `sd.sensors.get_bounding_box_2d_tight` / `_loose` against the viewport. Both helpers
+  **exist in Isaac Sim 6** (`omni.syntheticdata` 0.6.15, cp312, so importable), and the
+  replicator annotators `bounding_box_2d_tight`/`bounding_box_2d_loose_fast` are registered.
+  That approach is strictly better on three counts: pixel-exact against the actual render (cannot
+  drift from the image), **no camera intrinsics at all**, and **real occlusion** — `tight` vs
+  `loose` is exactly the `is_visible` vs `in_frame` distinction our node currently fakes.
+  D23 applies and I missed it: I hand-rolled projection when Isaac already had this.
+  The catch, found by probing: the annotators returned **0 rows** on our scene because they key
+  off **semantics**, and our cubes have none. 2023's `earth.usda` labelled every target with
+  `SemanticsAPI` (`semanticType = "class"`, `semanticData = "Cube"`; five duplicate APIs on one
+  cube, a GUI artifact). So switching costs one USD task: label the targets.
+  Recommended switching; it would make `contracts/projection.py` dead code, which is the honest
+  price and cheaper than shipping a projection that silently disagrees with the picture.
+
+  Rewrote the build sheet to Ofer's spec: completed tasks **deleted rather than marked done**,
+  decisions first because nothing else can proceed without them, then tactical tasks only.
+
+- **2026-09-03 (b)** — **Correction: Ofer was right and I was wrong.** ROS message objects *can* be
+  built inside Isaac Sim 6.
+
+  He added `from isaac_core_ros2_msgs.msg import Bbox` plus `message_to_yaml` to the projector node
+  and it ran, printing the structure. My contrary claim came from a probe that **never sourced the
+  ROS workspace**, so `ModuleNotFoundError` proved nothing about the real environment. Sloppy: I
+  drew an architectural conclusion from a broken test setup.
+
+  Re-tested properly inside Isaac's 3.12 with the workspace sourced:
+  - `Bbox()` constructs, `message_to_yaml` works, and **`FrameBboxes.bboxes = [b1, b2]` assembles
+    the nested array**. The generated message modules are pure Python (they live under
+    `.../python3.10/dist-packages/` yet import fine on 3.12).
+  - `import rclpy` still fails: `No module named 'rclpy._rclpy_pybind11'`.
+  - The message's Python C typesupport `_bbox_s` was never built. So a Python-assembled message
+    has no route to DDS from inside Isaac.
+  - Publishing from **host** Python 3.10 works completely: verified a real `FrameBboxes` on the
+    wire carrying two nested `Bbox` with all 16 fields populated.
+
+  So the corrected boundary is **construction, not publication**: building the message in-process
+  is possible; publishing it is not. 2023 got away with it because Isaac 2023 bundled Python 3.10,
+  where rclpy imported.
+
+  This adds a third option and changes my recommendation. Previously I pushed flattening on the
+  false premise that messages could not be built in-process. Now: **A** host-side rclpy publisher
+  (keeps the exact 2023 `Bbox[]` shape, proven working, costs a process — and is precisely what
+  `src/isaac_core/sidecar/` is for, so the proposal to delete it is withdrawn pending this
+  decision); **B** flatten to parallel arrays (fewest moving parts, changes the wire format);
+  **C** a C++ OGN publisher.
+
+  **Guard strengthened, and it earned its keep.** `test_no_python_ros2.py` already caught
+  `rosidl_runtime_py` but missed `isaac_core_ros2_msgs`, and its stated rationale was wrong for
+  message packages — it claimed the import *cannot* succeed, when in fact it succeeds *only with a
+  workspace sourced*. That is the more insidious failure: at module level it makes node
+  registration depend on the launcher's environment, so the node type silently never registers on
+  a machine without the overlay. Added our package to the list and rewrote the message to name
+  both hazards. The suite is intentionally **red on one test** until the diagnostic snippet is
+  removed from `OgnBboxProjector.py` — left in place rather than deleted, since it is Ofer's code.
+
+- **2026-09-03 (c)** — Settled the nested-array question by measurement. Ofer's approach is blocked,
+  but not for the reason I first gave.
+
+  He pushed back twice, correctly, so I stopped asserting and tested Isaac's generic
+  `ROS2Publisher` directly in a live graph:
+  - `inputs:bboxes` for a nested `Bbox[]` resolves to **`token[]`**, extended type
+    `EXTENDED_ATTR_TYPE_REGULAR` — a *fixed* type, so it can never resolve to anything richer.
+  - Writing even legal tokens to it **segfaults Isaac** (core dumped, minidump written). The
+    attribute is not merely useless, it is unsafe.
+  - The same publisher handles a **primitive** array correctly: `std_msgs/Int32MultiArray`
+    exposes `inputs:data` as `int[]`, accepts `[11, 22, 33, 44]`, survives 90 frames, no crash.
+  - It also handles nested **single** messages fine, flattening them to `:` paths — visible as
+    `inputs:layout:dim` on that same node, the same mechanism as `header:stamp:sec`.
+
+  Conclusion: Isaac's generic publisher implements nested single messages and primitive arrays,
+  but **not arrays of messages** — it creates a placeholder `token[]` that crashes on write.
+  So the blocker is not building the messages (Ofer was right that we can) but that **there is no
+  channel from an OGN node to the publisher for an array of structs**: OGN attributes carry typed
+  graph data, and `list[Bbox]` of Python objects is not an OGN type at all.
+
+  Both remaining routes are now *proven* rather than assumed: **A** host-side rclpy publisher
+  (nested `Bbox[]` verified on the wire with all 16 fields) and **B** flatten to primitive arrays
+  (that publisher path verified crash-free). A C++ OGN node remains untested.
+
+  Worth recording as a pattern: three of my claims this week were overturned by Ofer asking
+  "are you sure?" — the relationship-write cause, the message-import limit, and now the shape of
+  the real constraint. Each time the correction came from running the thing rather than reasoning
+  about it. Assert less, probe earlier.
+
+- **2026-09-03 (d)** — **D26: `FrameBboxes` carries parallel arrays, not `Bbox[]`.** Ofer chose
+  flattening. Implemented and verified end to end apart from his USD wiring.
+
+  **Message.** `FrameBboxes` is now `header` + 16 parallel arrays. Field *names* are unchanged
+  from 2023, so only the index moves: `msg.bboxes[i].x1` becomes `msg.x1[i]`. No `count` field —
+  it would duplicate `len(target_name)` and could disagree with it. **`Bbox.msg` deleted**: with
+  nothing referencing it, shipping it would be exactly the dead weight D23 forbids.
+
+  **The risk I flagged is cleared.** Before touching the node I verified the one thing I had not:
+  `string[]` maps to `token[]`, the same OGN type that segfaulted on the nested-array test. It is
+  safe here — the crash was specific to an unimplemented *message-array* field, not tokens as
+  such. Wrote all 16 arrays for 2 detections and the publisher survived, then confirmed on the
+  wire: `target_name: [tank, truck]`, `is_visible: [true, false]`, correct ints and floats
+  throughout. Had that failed, 16 GUI connections would have been wasted work.
+
+  **Node.** Extended from 7 to all 16 per-detection outputs, named **identically to the message
+  fields** so wiring is 1:1 with nothing to translate. Added: `lat`/`lon`/`alt` from each target's
+  `cesium:anchor:*` attributes; `roll`/`pitch`/`yaw` from the authored `xformOp:orient` via the
+  already-tested `geo.rotations.quaternion_to_euler` (confirmed importable inside Isaac —
+  transforms3d 0.4.2 is present); `distance_x/y/z` as world-axis deltas between target and camera
+  translation, which is what 2023 actually computed despite its comment saying "local".
+  Missing geodetic data yields **NaN, not 0.0** — zero is a real place off Africa, so a consumer
+  could not otherwise tell "unknown" from "there". A single `_ARRAY_FIELDS` tuple drives both the
+  empty and populated writers so they cannot drift apart.
+
+  **Live-verified** on the composed stage: `target_name = ['Cube', 'Cube_01']`,
+  `in_frame = [True, False]`, `lat/lon/alt = [32.224777, 35.256363, 517.16]` matching
+  `earth.usda`'s anchor exactly, real world-axis distances, `focalLength = 22.79` read off the
+  camera prim.
+
+  **Consumer side updated.** `bbox_recorder` re-zips the arrays into one dict per detection, since
+  that is what a reader wants; a `_scalar` helper converts numpy elements, because ROS array
+  fields deserialise to numpy and json would otherwise fail only at write time, long after
+  capture. Tests rewritten for the flat shape, including a json-encodability guard.
+
+  Ofer's diagnostic snippet removed now that it has served its purpose (it settled the design
+  question), which returns the ROS-import guard to green. Added build-sheet task **T3**: 16
+  identical-name connections, with the note that the publisher's inputs only appear once the
+  message package is built and sourced — otherwise it looks like the inputs do not exist.
+
+- **2026-09-03 (e)** — **Bounding boxes work end to end.** M2 complete.
+
+  Validated Ofer's wiring after he recreated the publisher node. All correct: `execIn` connected
+  on `seconds_to_ros_stamp`, `bbox_projector` **and** `ros2_publisher` (the recreated publisher was
+  the risk -- an unwired `execIn` there is exactly the defect that silently broke both camera
+  layers earlier); `ros2_context` and `read_sim_time` correctly have none; all 16 field
+  connections present with matching types; `messageName`/`messagePackage`/`topicName` right.
+
+  **His "duplicate GUI fields" were real, not a GUI bug.** `bbox.usda` still declared
+  `outputs:inFrame`, `outputs:isVisible` and `outputs:targetNames` -- leftovers from before the
+  node's outputs were renamed to match the ROS field names. The node type no longer has them, so
+  they were inert USD cruft, but the GUI lists every *authored* attribute, hence each appearing
+  twice alongside its snake_case replacement. Removed the three lines at his explicit request
+  (noted as a deliberate exception to "Ofer authors all USD"), leaving exactly 16 array outputs.
+  Worth remembering: renaming an OGN attribute leaves stale authored attributes behind in any USD
+  that referenced the old name, and nothing warns about it.
+
+  **Live end-to-end proof** on `/isaac_core/bbox`, type `isaac_core_ros2_msgs/msg/FrameBboxes`,
+  publisher count 1, **~59.7 Hz** (min 0.012s, max 0.020s, std dev 0.0018s):
+  `target_name: [Cube, Cube_01]`, `in_frame`/`is_visible: [true, false]`,
+  boxes `x1/y1/x2/y2 = [799,305,869,363]` for the visible one and zeros for the other,
+  `lat/lon/alt = [32.2247772, 35.2563629, 517.163]` matching `earth.usda`'s anchor,
+  roll/pitch/yaw ~0 (identity orientation, float noise only), and real world-axis distances
+  `[14.373, -3.514, 0.463]`. `header.stamp` advancing.
+
+  Every value matches what the node produced in isolation, so the whole chain -- projector to
+  publisher to wire -- is consistent.
+
+- **2026-09-03 (f)** — **D27 (Ofer's decision): the sidecar mechanism stays; only its RTP service goes.**
+  His reasoning, recorded because this is the first answer on the sidecar's future: deleting the
+  supervision machinery now only to rebuild it for a future feature is wasted work. If the repo
+  reaches DONE after Version 3 without ever needing it, remove it then.
+  Acted on it: deleted `sidecar/rtp.py` and its tests, kept `service.py` (registry, supervisor,
+  restart policy) and the `[sidecar]` config section, and rewrote that section's comment to say
+  what the mechanism is *for* now -- work that cannot run inside Isaac's interpreter, `rclpy`
+  being the obvious case. 1449 -> 1433 tests, the drop being the RTP suite.
+
+- **2026-09-03 (g)** — Distance sensor: **three real bugs, and the FPS complaint was not the sensor.**
+
+  **Bug 1 — double vs float.** `sensor_msgs/Range` declares `range`/`min_range`/`max_range` as
+  float32, but our node published `double`. OmniGraph refuses that connection and leaves the
+  publisher's input at **uninitialised memory**, which is exactly why Ofer saw
+  `min_range: 0.0` and `max_range: -1.5881868392106856e-23`. Changed the node's outputs and range
+  inputs to `float`, which then surfaced a second, clearer error --
+  `requires output attribute "outputs:range_m" to be of type "float" instead of type "double"` --
+  because the USD still declared them `double`. Aligned those too. Same lesson as the bbox
+  duplicates: changing an OGN attribute's *type* leaves the old declaration behind in USD, and the
+  node silently fails to instantiate.
+
+  **Bug 2 — min and max were crossed.** `inputs:max_range` was fed `min_range_out` and vice versa.
+
+  **Bug 3 — wrong raycast, and 2023 had it right.** I used `omni.physx.raycast_closest`, which only
+  hits **collision** geometry. Cesium 3D Tiles terrain has none, so the sensor could never see the
+  ground: it reported "no detection" forever while looking perfectly healthy. 2023 used
+  `omni.kit.raycast.query` -- the **render** raycast, against rendered geometry -- and that
+  extension exists in Isaac Sim 6 (1.2.0, cp312). Reimplemented on it using the *raycast sequence*
+  API (`add_raycast_sequence` / `submit_ray_to_raycast_sequence` /
+  `get_latest_result_from_raycast_sequence`), which is built for per-frame use and holds the last
+  valid value rather than flickering while a query is in flight -- no async/await needed inside a
+  synchronous compute. This is the third time now that 2023 had already solved something the way
+  Isaac intends and I reached for a different API first.
+
+  **Also wrong: the default range.** `max_range_m` defaulted to 100 m, a ground-rangefinder number.
+  This sensor points down from an aircraft 500-2000 m above terrain, so the ray never arrived.
+  Default is now **5000 m**, with the reasoning in the schema comment.
+
+  **Verified live**, driven over UDP so the pose graph owns the transform (setting the prim
+  directly is pointless -- `write_prim_attribute` overwrites it every frame, which is why an
+  earlier attempt showed a frozen range):
+
+  | altitude MSL | range_m | implied terrain |
+  |---|---|---|
+  | 2500 | 1982.58 | 517.4 |
+  | 2000 | 1482.25 | 517.8 |
+  | 1500 | 982.25 | 517.8 |
+  | 1200 | 682.25 | 517.8 |
+  | 1000 | 482.17 | 517.8 |
+  | 800 | 281.75 | 518.3 |
+
+  Every reading is altitude minus a consistent ~517.8 m terrain elevation, which matches the
+  scene's ENU reference of 516.7 m. Self-consistent to within a metre across a 1700 m span.
+
+  **The FPS dips are Cesium tile streaming, not the sensor** -- and proving it required a retest,
+  because Ofer had a second Isaac Sim running during the first measurement. Clean baseline
+  comparison afterwards: *without* the sensor, median 59.9 fps but **9 of 300 frames below 10 fps**
+  (min 0.92); *with* the sensor at a 5 km ray, median 59.9 fps and **0 of 300 below 10 fps**
+  (min 14.9). The baseline was worse, so the raycast is not the cause. Consistent with the
+  viewport-hitch issue already roadmapped in M7. Range values reproduced identically across both
+  the contaminated and clean runs, confirming GPU contention never touched the geometry.
+
+  **No distance-sensor GUI is claimed anywhere** in the repo -- checked -- so nothing is broken
+  there. 2023 had one; ours deliberately does not, and the honest place to read the value is
+  `ros2 topic echo` or the inspector.
+
+- **2026-09-03 (h)** — **D28: bounding boxes come from Isaac's synthetic-data annotators, and target
+  semantics are applied automatically.** Ofer's call, and he was right to push: my hand-rolled
+  projection was the wrong instinct and D23 already said so.
+
+  **Answering the question he actually asked** (is there a COTS bbox OGN node?): no, and he was
+  right not to find one. Isaac ships `ROS2PublishBbox2D`/`Bbox3D`, but they are *publishers* whose
+  only data input is `data: uchar[]` -- an opaque annotator buffer -- and they emit
+  `vision_msgs/Detection2DArray` with no geodetic fields. There are **no** synthetic-data OGN nodes
+  exposing bbox arrays in a consumable form (checked all of `exts` and `extscache`). The annotators
+  are a **Python API**, so switching changed only our node's internals: same node, same 17 outputs,
+  same wiring, nothing for Ofer to rewire.
+
+  **Implementation.** `compute` now calls `sd.sensors.get_bounding_box_2d_tight/loose(viewport)`
+  and matches rows to targets by the `name` field, which is the **full prim path** -- not the
+  semantic label, which is not unique. `in_frame` = present in loose; `is_visible` = present in
+  tight. Sensors are enabled once per node, not per frame, since enabling allocates render
+  resources. Viewport is resolved by matching `camera_path` against each viewport's camera, falling
+  back to the active viewport (which is already correct for one vehicle because
+  `sim.viewport_camera` points it at the drone camera). Dropped `imageWidth`/`imageHeight` inputs
+  and the `focalLength` output -- with no projection there are no intrinsics -- and removed the
+  three now-stale attribute declarations from `bbox.usda` so they cannot reappear as duplicate
+  GUI fields.
+
+  **`composer.apply_target_semantics`** labels every child of `BBOXES_ROOT` at composition time
+  with `semanticType = "class"` and the prim's own name as data, using the top-level `Semantics`
+  module (`pxr.Semantics` is deprecated in Isaac 6 and warns). Annotators key entirely off
+  semantics, so an unlabelled prim is invisible to them however solid it looks -- that is why my
+  first annotator probe returned zero rows. 2023 labelled by hand in USD; doing it in the composer
+  means adding an object to the scene is the whole workflow.
+
+  **Live-verified, and occlusion is the payoff:**
+  - Composer labelled both targets by itself (`applied=True data=Cube` / `data=Cube_01`).
+  - Boxes `Cube (747,452)-(754,459)`, `Cube_01 (529,464)-(567,515)`. Note these differ markedly
+    from what the projection produced (`799..869`) because the annotator measures the *actual*
+    viewport render while the projection used configured width/height -- precisely the silent
+    drift that motivated the switch.
+  - Inserted a blocker cube in front of `Cube`: `in_frame = [True, True, True]` but
+    `is_visible = [False, True, True]`. **Real occlusion**, which the projection could never do.
+  - Cost is small: median 59.9 fps with annotators (min 47.5, p05 58.5, 0/150 frames under 10 fps)
+    against a 59.9 median baseline (min 59.8). Measurable, no dropped frames.
+
+  **`contracts/projection.py` deleted** along with its 30 tests -- 1433 -> 1403 tests. That is the
+  honest price of the switch and much cheaper than shipping a projection that can silently
+  disagree with the picture. Third time this week that 2023 had already chosen the API Isaac
+  intends: RTSP, the render raycast, and now the bbox annotators.
+
+- **2026-09-06** — Relationship machinery deleted; **M3 (gimbal) complete**. 1403 -> 1408 tests.
+
+  **Relationship-binding machinery removed** on Ofer's decision, ~427 lines across
+  `manifest.py`/`planner.py`/`configurator.py`/`composer.py` plus its 188-line test file. The
+  argument that settled it: unlike the sidecar -- a generic mechanism with a plausible future use,
+  so kept (D27) -- this solved one problem for which token path attributes are now the better
+  answer, and its most natural use (a graph node) *aborts Kit*. Keeping it would have been leaving
+  a trap, not insurance.
+  Note for next time: my automated block-cutter mishandled multi-line `def` signatures whose
+  closing `) -> T:` sits at column 0, silently leaving orphaned function bodies that only ruff's
+  syntax check caught. Repaired by explicit text matching. Cut blocks by parsing, or verify with a
+  syntax check immediately.
+
+  **M3 — gimbal over the control plane, done and live-verified.**
+  - `Method.SET_GIMBAL` + `_handle_set_gimbal` + `SimSession.set_gimbal`.
+  - **Design point worth keeping:** the handler only *records* the target; the simulation loop does
+    the prim writes via a new `_step_gimbal` called each frame. That sidesteps the USD
+    thread-safety problem entirely -- no main-thread task queue needed -- and means the caller is
+    never blocked behind a frame. `set_gimbal` returns on acceptance, not arrival, because a
+    rate-limited move takes real simulated time.
+  - Slew uses the already-tested `geo.gimbal.slew_towards`, integrated at `sim.physics_dt` rather
+    than wall time, so a commanded move takes the same simulated duration regardless of machine
+    speed.
+  - Config `start_*_deg` now bound in **both** camera layers to the pose node's `offset_*_deg`
+    inputs. These were dead for all of v1 for a reason that is easy to miss: the inputs were
+    *connected* to the (now removed) ROS subscriber, and a connected USD attribute ignores
+    authored values.
+  - Removed the dead `gimbal_topic` resolver, the `GIMBAL` topic usage and the `gimbal.topic`
+    config field -- with the subscriber gone nothing published or consumed them (D23).
+  - **Live proof:** start angles read back off the stage as exactly `(5.0, -12.0, 30.0)`; a
+    commanded yaw 30 -> 90 deg at `max_rate_deg_s = 20` ramped through 41.3, 53.0, 64.7, 76.3, 88.0
+    and settled at 90.0 in ~3.1 s. Measured ~19.4 deg/s against 20 configured, and unmistakably a
+    ramp rather than 2023's unconditional snap.
+  - **Dead-key list is down to two**: `stage_units_in_meters` and `ros2.use_sim_time`. Four of the
+    six were the gimbal keys.
+
+- **2026-09-06 (b)** — Two M7 items landed via parallel agents, plus a defect that had already cost
+  me hours twice. **1408 -> 1431 tests.**
+
+  **Georeference unified (M7).** `geo.enu_reference` and the scene's `/CesiumGeoreference` can no
+  longer silently disagree. Authority rule: an explicitly-set config value is authoritative *but
+  must agree with the scene*; otherwise the scene wins; otherwise the schema default. Beyond a
+  **1 m** horizontal tolerance it now raises rather than warning, and the message reports the gap
+  **in metres** (degrees are not intuitive) plus the three ways to fix it. Tolerance justified in
+  code: Cesium's origin round-trips through USD and its own ellipsoid maths, so sub-metre noise is
+  expected, and 1 m is far below anything that matters for a camera hundreds of metres up. Altitude
+  is deliberately excluded from the trigger -- a reference above ground is routine. Separation uses
+  a local haversine so `sim` still does not import `geo` (23/23 contracts kept).
+  Verified our own repo agrees exactly (32.22481 / 35.25621 / 516.7 on both sides), so nothing
+  breaks, and verified the guard fires: an 8360.8 m mismatch refused to start.
+
+  **A "loud" failure that printed nothing.** Testing that guard exposed something worse than the
+  bug it was fixing: the exception reached **nobody**. Kit suppresses stdout and our logging filter
+  drops third-party handlers, so composition failures exited with no explanation. This is the exact
+  mechanism that hid the bbox `ConfigKeyError` for three rounds of misdirected bisecting. Fixed at
+  the source: `sim/__main__.py` now wraps `open_stage` and logs through our own logger — which *is*
+  visible — before re-raising. Every startup failure is now explained, not just this one.
+  Remaining wart: the process still exits 0 because Kit's `SimulationApp` owns shutdown, so exit
+  status is not usable for scripting. Noted, not chased.
+
+  **Camera intrinsics first-class (M7).** `focus_distance`, `f_stop`, `horizontal_aperture_mm`,
+  `vertical_aperture_mm` on `CameraConfig`, bound in both camera layers. Precedence: an explicit
+  aperture wins and `fov_deg` is ignored for that axis; absent it, the historical
+  `2*focal*tan(fov/2)` derivation is unchanged. Setting both an explicit aperture *and* a
+  non-default `fov_deg` warns and names the winner, reusing the existing override-collision
+  pattern. `f_stop` defaults to 0, which in USD means depth of field **off** — documented, because
+  someone setting it expecting a photographic effect needs to know that.
+  Live-verified on the prim: `focusDistance = 1250.0`, `fStop = 2.8`, `horizontalAperture = 36.0`
+  with the explicit override beating `fov_deg`.
+
+- **2026-09-06 (c)** — Two more M7 items, and **M5's headline feature: `capture_frame` works**.
+  1431 -> 1458 tests. **The dead-config-key list is now EMPTY.**
+
+  **`stage_units_in_meters` wired up**; warns loudly when set to anything but 1.0, because the
+  whole pipeline treats one unit as one metre and a different value silently rescales the world
+  relative to poses. Live-verified: `set stage metersPerUnit to 1.0`, silent at the metric default.
+
+  **`ros2.use_sim_time` removed after proving it inapplicable.** `ROS2Context` has only
+  `domain_id` and `useDomainIDEnvVar`; `use_sim_time` exists solely as an *rclpy node parameter*,
+  and we run no rclpy nodes inside Isaac. Our publishers already stamp real simulation time via
+  `IsaacReadSimulationTime` -> `SecondsToRosStamp`, so the flag was redundant by construction.
+  Deleted rather than faked. **Migration note:** the config models are `extra="forbid"`, so an old
+  user TOML containing `ros2.use_sim_time` will now fail validation with a clear error.
+
+  **MAVLink pose source, as a host-side bridge.** The measurement that shaped the design:
+  `pymavlink` 2.4.47 is importable on host Python 3.10 but **not** inside Isaac's 3.12. So MAVLink
+  is decoded on the host and re-emitted as our existing 51-byte UDP packet -- the simulator needs
+  no MAVLink knowledge and no new dependency, and `pymavlink` stays optional and lazily imported.
+  Handles the unit traps explicitly (`GLOBAL_POSITION_INT` is degrees x 1e7 and millimetres;
+  `ATTITUDE` is already NED radians) and refuses to emit until both a position *and* an attitude
+  have arrived -- otherwise the first packet would place the aircraft at lat 0 lon 0, a real spot
+  in the Atlantic.
+
+  **`capture_frame` (M5).** Two genuine bugs found in my own first attempt, both by live testing:
+  1. I pumped frames inside a main-thread task that the loop was already draining -- re-entrant
+     `update_app()`, which simply hung. Restructured as a **loop-driven state machine** (start ->
+     settle -> await_file -> finish), one transition per frame, reusing the pattern that worked for
+     the gimbal. No re-entrancy possible by construction.
+  2. Capturing the *active* viewport fails headless: Kit reports "Capture of LdrColor was
+     requested, but no valid resource!". The camera layer's **render product** is the thing
+     actually rendering (it feeds the image topic), so the capture now targets that, read off the
+     graph rather than guessed.
+  Two smaller ones: Kit names captures after the render variable, so `shot.png` landed as
+  `shot_LdrColorSD.png` -- now renamed into place, since a caller that asked for `shot.png` should
+  be able to open `shot.png`. And resizing the *viewport widget* did nothing to the captured size;
+  the **render product's** resolution is what matters, which is why a 4K request first produced a
+  720p file.
+  **Live proof:** requests for viewport-size, 3840x2160 and 640x480 produced files measuring
+  exactly 1280x720, 3840x2160 and 640x480, with the viewport correctly restored afterwards.
+  Capture at an arbitrary resolution is a capability 2023 did not have.
+
+- **2026-09-06 (d)** — **M5 substantially done**: `set_pose`, `reset` and `config.patch` join
+  `capture_frame` and `set_gimbal`. 1458 -> 1469 tests.
+
+  **`set_pose` sends a UDP packet to our own port rather than writing the prim.** Writing the prim
+  is the obvious implementation and does not work: the pose graph rewrites that transform every
+  frame from whatever the receiver last held, so a direct write is gone within one frame. (I hit
+  exactly this while testing the distance sensor -- a manually-set transform appeared frozen because
+  the graph kept overwriting it.) Feeding the receiver means the pose persists precisely as if it
+  had arrived over the wire, and the usual last-packet-wins rule applies, which is documented.
+  Encodes via `contracts.packet` (spec + checksum), so `sim` still does not import `protocol` and
+  the layout cannot drift from the receiver's.
+  **Live proof:** alt 1000/1500/2000 produced translate z of 483.3/983.3/1483.3 — each exactly
+  `alt - 516.7`, the ENU reference altitude.
+
+  **`reset` has a deliberately narrow, stated scope**: restart the timeline (so simulation time,
+  and therefore every published `header.stamp`, returns to zero) and drop any commanded gimbal
+  target. It does **not** reload the stage, for the same reason `load_scene` is deferred.
+
+  **`config.patch` is an explicit allowlist, not a deep merge, and that is the design.** Almost all
+  config is applied *once* at composition -- a binding writes it to a prim and the value is never
+  read again -- so "patching" it would update the config object while the stage kept the old value:
+  a silent lie, worse than refusing. Only fields something re-reads while running are accepted,
+  which today is exactly `gimbal.max_rate_deg_s`. Anything else is refused with a message that
+  explains why and names the restart. Frozen models are respected by keeping patches in a
+  `_config_overrides` dict consulted ahead of the model.
+  **Live proof:** patching 20 -> 90 deg/s was accepted (reporting previous and new) and the next
+  commanded slew covered 90 deg in ~1.1 s, against the ~4.5 s the old rate would have taken;
+  `sim.headless` was refused with the explanation.
+
+  **`load_scene` now registered with an honest error** instead of no handler at all -- an
+  unregistered method reads as a client/server version mismatch. The reason is concrete rather than
+  hand-waved: swapping the stage means closing one that Cesium, the ROS bridge and the action graphs
+  all reference, and every stage-lifecycle shortcut in this project so far has produced a silent
+  abort rather than an error (the startup warm-up frames exist because of that).
+
+  README corrected: the deferred list is now exactly `features.enable/disable` and `load_scene`.
+
+- **2026-09-06 (e)** — **M6 (swarm) works**, plus renderer validation. 1469 -> 1499 tests.
+
+  **Two vehicles fly independently, verified live.** The architecture was built for this but had
+  never been run, and the gap was 27 hardcoded `next(iter(config.vehicles))` assumptions across
+  four modules. The config layer was already multi-vehicle ready (`resolved_udp_port(vehicle_id)`
+  etc.); everything above it silently used the first vehicle.
+  - **Configurator resolvers are now vehicle- and camera-scoped**, threaded explicitly with no
+    module-level "current vehicle" state.
+  - **`PlannedLayer` carries the identity it was planned for** (`instance`, `camera`). This is the
+    key change: `compute_writes` reads it *per layer*, so each vehicle's camera layer resolves its
+    own port and topics. Taking one identity for the whole call would have given every vehicle the
+    first vehicle's values -- the same class of bug as the single-vehicle assumption, just moved.
+  - **The launcher plans once per vehicle** and merges, so each aircraft mounts its own layer copy.
+  - **Control methods take an optional `vehicle`**, defaulting to the first, and reject an unknown
+    id by listing the real ones rather than silently acting on the wrong aircraft.
+  - **Single-vehicle output is byte-identical**, verified explicitly: `/isaac_core/image_rgb`,
+    `/isaac_core/global_pose`, `/stream`, port 33333. That was the compatibility constraint that
+    mattered most, since every existing consumer depends on it.
+
+  **Live proof** with `lead` + `wing`: both camera layers composed; `set_pose` to 1500 m and 900 m
+  gave translate z of **983.3** and **383.3** (each `alt - 516.7`) on separate mounts
+  `/World/Environment/lead/Xform` and `/World/Environment/wing/Xform`; ROS advertised
+  `/isaac_core/lead/global_pose`, `/isaac_core/lead/image_rgb`, `/isaac_core/wing/global_pose`,
+  `/isaac_core/wing/image_rgb`; an unknown vehicle was rejected with the configured list.
+  Also fixed the startup report, which printed `camera_udp` twice with no way to tell the copies
+  apart -- it now names the vehicle when a layer id appears more than once.
+
+  **`sim.renderer` validated (M7).** An unknown value is rejected at config load with the valid
+  options listed, instead of being passed to Isaac to fail later. `MinimalRendering` validates but
+  **warns**, because it draws no Cesium terrain and the symptom -- an empty but otherwise healthy
+  scene -- is indistinguishable from a broken tileset URL or a missing extension. Warn rather than
+  raise: profiling without terrain is legitimate. Matching is case-insensitive with a `Minimal`
+  alias, and a README troubleshooting entry covers it.
 
 ### Known remaining issues
 

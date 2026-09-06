@@ -14,6 +14,7 @@ import numpy as np
 from numpy.typing import NDArray
 from transforms3d.euler import euler2mat, euler2quat, mat2euler, quat2euler
 
+from isaac_core.contracts.angles import normalize_angle
 from isaac_core.contracts.frames import EULER_AXES, Frame, RotationFrame
 from isaac_core.contracts.pose import Rpy
 
@@ -26,20 +27,6 @@ SLERP_DOT_THRESHOLD: float = 0.9995
 # aerospace yaw-pitch-roll order. Yaw is applied first, about world up, so heading
 # stays independent of pitch and roll.
 _WORLD_EULER_AXES: str = "rzyx"
-
-
-def normalize_angle(radians: float) -> float:
-    """
-    Normalise an angle in radians to the range ``[-pi, pi]``.
-
-    Args:
-        radians: Angle in radians, unbounded.
-
-    Returns:
-        The equivalent angle in ``[-pi, pi]``.
-
-    """
-    return (radians + math.pi) % (2.0 * math.pi) - math.pi
 
 
 def ned_to_enu(attitude: Rpy) -> Rpy:

@@ -43,6 +43,7 @@ class Method(str, Enum):
     RESUME = "resume"
     STEP = "step"
     CAPTURE_FRAME = "capture_frame"
+    SET_GIMBAL = "set_gimbal"
     SET_POSE = "set_pose"
     GET_POSE = "get_pose"
     PING = "ping"

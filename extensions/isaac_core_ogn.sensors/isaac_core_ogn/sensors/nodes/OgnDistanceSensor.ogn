@@ -1,0 +1,96 @@
+{
+    "DistanceSensor": {
+        "version": 1,
+        "description": [
+            "Raycast from a prim and report the distance to the first hit.",
+            "",
+            "Feeds Isaac's generic isaacsim.ros2.bridge.ROS2Publisher configured for",
+            "sensor_msgs/Range: wire `range`, `min_range` and `max_range` straight to the",
+            "publisher's matching inputs.",
+            "",
+            "The ray starts at the sensor prim's world position and travels along its local -Z,",
+            "matching the USD camera convention so a sensor can be parented to the camera and",
+            "point where it looks.",
+            "",
+            "Isaac Sim 6 does ship a RaycastSensor, but it is a Python runtime class rather than",
+            "an OmniGraph node or a USD schema, so it cannot be placed in an action graph. This",
+            "node uses the PhysX scene-query interface that Isaac exposes for exactly this, which",
+            "keeps the whole pipeline inside the graph like every other layer.",
+            "",
+            "Out-of-band readings follow sensor_msgs/Range convention rather than being clamped:",
+            "+inf for no detection, -inf for closer than the rated minimum. Clamping would make",
+            "'nothing there' indistinguishable from 'something at exactly max range'."
+        ],
+        "language": "Python",
+        "metadata": {
+            "uiName": "Distance Sensor"
+        },
+        "inputs": {
+            "execIn": {
+                "type": "execution",
+                "description": "Tick input. The raycast runs once per tick",
+                "default": 0,
+                "metadata": {
+                    "uiName": "Exec In"
+                }
+            },
+            "sensorPrim": {
+                "type": "target",
+                "description": "Prim the ray originates from, travelling along its local -Z. Target by relationship, never a path string, so the layer survives being mounted anywhere",
+                "metadata": {
+                    "uiName": "Sensor Prim"
+                }
+            },
+            "min_range_m": {
+                "type": "float",
+                "description": "Rated minimum measurable distance in metres. A closer hit reports -inf",
+                "default": 0.2,
+                "metadata": {
+                    "uiName": "Min Range (m)"
+                }
+            },
+            "max_range_m": {
+                "type": "float",
+                "description": "Rated maximum measurable distance in metres. A farther hit, or no hit, reports +inf",
+                "default": 100.0,
+                "metadata": {
+                    "uiName": "Max Range (m)"
+                }
+            }
+        },
+        "outputs": {
+            "range_m": {
+                "type": "float",
+                "description": "Distance to the first hit in metres, or +inf / -inf per sensor_msgs/Range convention. Wire to the publisher's range input Float, not double, to match sensor_msgs/Range's float32 fields.",
+                "default": 0.0,
+                "metadata": {
+                    "uiName": "Range (m)"
+                }
+            },
+            "min_range_out": {
+                "type": "float",
+                "description": "Pass-through of min_range_m, so the publisher's min_range comes from the same source of truth Float, not double, to match sensor_msgs/Range's float32 fields.",
+                "default": 0.2,
+                "metadata": {
+                    "uiName": "Min Range Out"
+                }
+            },
+            "max_range_out": {
+                "type": "float",
+                "description": "Pass-through of max_range_m, so the publisher's max_range comes from the same source of truth Float, not double, to match sensor_msgs/Range's float32 fields.",
+                "default": 100.0,
+                "metadata": {
+                    "uiName": "Max Range Out"
+                }
+            },
+            "hit": {
+                "type": "bool",
+                "description": "Whether the ray struck anything within max_range_m. Useful for debugging without interpreting the infinities",
+                "default": false,
+                "metadata": {
+                    "uiName": "Hit"
+                }
+            }
+        }
+    }
+}

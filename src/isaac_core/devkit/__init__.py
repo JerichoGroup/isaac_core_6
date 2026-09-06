@@ -20,11 +20,13 @@ The ``recording`` module additionally needs ``rclpy``/``cv_bridge``/``cv2`` at
 always succeeds.
 """
 
+from isaac_core.devkit.mavlink import MavlinkPoseBridge
 from isaac_core.devkit.session import Sim, SimSession
 from isaac_core.devkit.transport import FakePoseTransport, PoseTransport, UdpPoseTransport, pace
 
 __all__ = [
     "FakePoseTransport",
+    "MavlinkPoseBridge",
     "PoseTransport",
     "Sim",
     "SimSession",
