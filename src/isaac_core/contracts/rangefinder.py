@@ -1,31 +1,31 @@
 """
-Range-sensor value handling, independent of any physics engine.
+Interpretation of a raw raycast hit as a ``sensor_msgs/Range`` reading.
 
-The OmniGraph node owns the raycast call; everything about *interpreting* the result lives
-here so it can be tested without Isaac Sim. That split matters because the interesting cases
-are the boundary ones -- nothing hit, a hit beyond the sensor's rated range, a hit closer than
-its minimum -- and `sensor_msgs/Range` has explicit conventions for each.
+Pure logic with no Isaac Sim dependency, so the boundary rules -- nothing detected, closer than
+the sensor can measure, beyond its reach -- are testable in isolation and live in exactly one
+place. The OmniGraph node performs the raycast and delegates every judgement here.
 
-`sensor_msgs/Range` semantics, which this module implements:
+**Out-of-band readings saturate at the rated limits rather than reporting infinity.** ROS's own
+convention for ``sensor_msgs/Range`` is +inf for "nothing detected" and -inf for "too close", and
+that was the original implementation. It was changed deliberately: ``float("inf")`` cannot be cast
+to ``int`` without raising, so a perfectly reasonable consumer doing ``int(msg.range)`` crashes
+exactly when the sensor sees nothing -- which is the common case for a downward rangefinder in
+level flight. Saturating keeps every published reading a finite number, and a value parked at the
+limit is itself the signal that the target is out of range.
 
-- A reading outside ``[min_range, max_range]`` should be reported as an out-of-range value
-  rather than silently clamped, so a consumer can tell "nothing there" from "something at
-  exactly max range".
-- ROS convention for "no detection" on a rangefinder is ``+inf``; for "too close to measure"
-  it is ``-inf``.
+The cost, stated plainly: "exactly at the limit" and "beyond the limit" are no longer
+distinguishable. For a rangefinder whose rated limit is approximate anyway, that is a good trade.
+Use :func:`is_saturated` when a consumer needs to know it is looking at a clamped value.
 """
-
-from __future__ import annotations
 
 import math
 
-# Reported when the ray hits nothing within its rated maximum. ROS convention for a
-# rangefinder that detected no obstacle.
-NO_DETECTION: float = math.inf
-
-# Reported when a hit is closer than the sensor's rated minimum, which real hardware cannot
-# measure. ROS convention is negative infinity for this case.
-TOO_CLOSE: float = -math.inf
+__all__ = [
+    "clamp_to_band",
+    "is_saturated",
+    "is_valid_reading",
+    "resolve_range",
+]
 
 
 def resolve_range(
@@ -35,22 +35,21 @@ def resolve_range(
     max_range_m: float,
 ) -> float:
     """
-    Turn a raw raycast result into a ``sensor_msgs/Range`` value.
+    Turn a raw raycast result into a publishable range in metres.
 
     Args:
-        hit: Whether the ray struck anything at all.
-        distance_m: Distance to the hit, in metres. Ignored when ``hit`` is false.
-        min_range_m: Sensor's rated minimum measurable distance.
-        max_range_m: Sensor's rated maximum measurable distance.
+        hit: Whether the ray struck anything.
+        distance_m: Distance to the hit in metres; ignored when ``hit`` is ``False``.
+        min_range_m: Closest distance the sensor can report.
+        max_range_m: Furthest distance the sensor can report.
 
     Returns:
-        The distance in metres when it lies inside the rated band, :data:`NO_DETECTION` when
-        nothing was hit or the hit is beyond ``max_range_m``, or :data:`TOO_CLOSE` when the
-        hit is nearer than ``min_range_m``.
+        A finite distance in metres, clamped into ``[min_range_m, max_range_m]``. Nothing detected
+        reports ``max_range_m``; a hit nearer than the rated minimum reports ``min_range_m``.
 
     Raises:
-        ValueError: If the rated band is not a positive interval, since every reading would
-            otherwise be meaningless.
+        ValueError: If the rated band is not a positive, finite interval, since every reading
+            would then be meaningless.
 
     """
     if not math.isfinite(min_range_m) or not math.isfinite(max_range_m):
@@ -63,29 +62,59 @@ def resolve_range(
         message = f"max_range must exceed min_range, got [{min_range_m}, {max_range_m}]"
         raise ValueError(message)
 
-    if not hit:
-        return NO_DETECTION
-    if not math.isfinite(distance_m):
-        return NO_DETECTION
-    if distance_m < min_range_m:
-        return TOO_CLOSE
-    if distance_m > max_range_m:
-        return NO_DETECTION
-    return float(distance_m)
+    # No hit, and a non-finite distance from a misbehaving query, both mean "saw nothing".
+    if not hit or not math.isfinite(distance_m):
+        return float(max_range_m)
+    return clamp_to_band(distance_m, min_range_m, max_range_m)
 
 
-def is_valid_reading(range_m: float) -> bool:
+def clamp_to_band(distance_m: float, min_range_m: float, max_range_m: float) -> float:
     """
-    Report whether a range value is an actual measurement.
-
-    Convenience for consumers, so they do not each re-derive that both infinities mean
-    "no usable measurement".
+    Clamp a measured distance into the sensor's rated band.
 
     Args:
-        range_m: A value produced by :func:`resolve_range`.
+        distance_m: Measured distance in metres.
+        min_range_m: Closest reportable distance.
+        max_range_m: Furthest reportable distance.
 
     Returns:
-        ``True`` when the value is a real distance rather than a sentinel.
+        The distance, or the nearer band edge when it falls outside.
 
     """
-    return math.isfinite(range_m)
+    return float(min(max(distance_m, min_range_m), max_range_m))
+
+
+def is_saturated(range_m: float, min_range_m: float, max_range_m: float) -> bool:
+    """
+    Report whether a reading is sitting on a band edge.
+
+    A reading at an edge is either a genuine measurement at that exact distance or a clamped
+    out-of-band one; they are indistinguishable by design. Consumers that must not act on a
+    clamped value should treat both the same way.
+
+    Args:
+        range_m: The published range.
+        min_range_m: Closest reportable distance.
+        max_range_m: Furthest reportable distance.
+
+    Returns:
+        ``True`` when the reading equals either band edge.
+
+    """
+    return range_m <= min_range_m or range_m >= max_range_m
+
+
+def is_valid_reading(range_m: float, min_range_m: float, max_range_m: float) -> bool:
+    """
+    Report whether a reading is strictly inside the rated band.
+
+    Args:
+        range_m: The published range.
+        min_range_m: Closest reportable distance.
+        max_range_m: Furthest reportable distance.
+
+    Returns:
+        ``True`` when the value is a measurement not sitting on either limit.
+
+    """
+    return math.isfinite(range_m) and not is_saturated(range_m, min_range_m, max_range_m)

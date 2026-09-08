@@ -107,3 +107,42 @@ def test_published_messages_carry_a_timestamp(layer: Path) -> None:
         f"{layer.name}: these timestamp inputs are unconnected, so the message publishes "
         f"with a zero stamp:\n  " + "\n  ".join(missing)
     )
+
+
+def _unconnected_render_product_inputs(text: str) -> list[str]:
+    """
+    Return graph nodes that declare `inputs:renderProductPath` without connecting it.
+
+    Args:
+        text: The USD layer text.
+
+    Returns:
+        Node names with an unconnected render product input.
+
+    """
+    offenders: list[str] = []
+    for block in re.split(r"\n(?=\s*def OmniGraphNode )", text):
+        name_match = re.search(r'def OmniGraphNode "([^"]+)"', block)
+        if name_match is None:
+            continue
+        if "inputs:renderProductPath" not in block:
+            continue
+        if "inputs:renderProductPath.connect" not in block:
+            offenders.append(name_match.group(1))
+    return offenders
+
+
+@pytest.mark.parametrize("layer", LAYERS, ids=lambda p: p.stem)
+def test_render_product_inputs_are_connected(layer: Path) -> None:
+    # A declared-but-unconnected `renderProductPath` does not error: the node silently falls back
+    # to the ACTIVE viewport. With two vehicles that meant both wrote their camera to the same
+    # viewport every frame -- the view flipped between aircraft -- while neither named viewport
+    # ever received its camera at all. Same failure shape as the unwired `execIn` this file already
+    # guards: an input that goes quiet instead of complaining.
+    offenders = _unconnected_render_product_inputs(layer.read_text(encoding="utf-8"))
+
+    assert not offenders, (
+        f"{layer.name}: {offenders} declare inputs:renderProductPath without connecting it. "
+        f"Connect it to isaac_get_viewport_render_product.outputs:renderProductPath, or the node "
+        f"silently acts on the active viewport instead of this vehicle's render product."
+    )

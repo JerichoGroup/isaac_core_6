@@ -174,108 +174,6 @@ def Xform "Root"
             uniform float2 ui:nodegraph:node:pos = (-189.78589, 38.19693)
         }
 
-        def OmniGraphNode "isaac_create_viewport" (
-            prepend apiSchemas = ["NodeGraphNodeAPI"]
-        )
-        {
-            custom uint inputs:execIn (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
-            custom token inputs:name
-            custom uint inputs:viewportId
-            token node:type = "isaacsim.core.nodes.IsaacCreateViewport"
-            int node:typeVersion = 2
-            custom uint outputs:execOut (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            custom token outputs:viewport
-            uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (103.12232, 190.49422)
-        }
-
-        def OmniGraphNode "isaac_set_viewport_resolution" (
-            prepend apiSchemas = ["NodeGraphNodeAPI"]
-        )
-        {
-            custom uint inputs:execIn (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
-            custom uint inputs:height
-            custom token inputs:viewport
-            custom uint inputs:width
-            token node:type = "isaacsim.core.nodes.IsaacSetViewportResolution"
-            int node:typeVersion = 1
-            custom uint outputs:execOut (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (352.29684, -21.597162)
-        }
-
-        def OmniGraphNode "isaac_get_viewport_render_product" (
-            prepend apiSchemas = ["NodeGraphNodeAPI"]
-        )
-        {
-            custom uint inputs:execIn (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
-            custom token inputs:viewport
-            token node:type = "isaacsim.core.nodes.IsaacGetViewportRenderProduct"
-            int node:typeVersion = 1
-            custom uint outputs:execOut (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            custom token outputs:renderProductPath
-            uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (515.58844, 254.10864)
-        }
-
-        def OmniGraphNode "isaac_set_camera" (
-            prepend apiSchemas = ["NodeGraphNodeAPI"]
-        )
-        {
-            custom rel inputs:cameraPrim = </Root/Xform/main_camera_01> (
-                customData = {
-                    dictionary omni = {
-                        dictionary graph = {
-                            string relType = "target"
-                        }
-                    }
-                }
-            )
-            custom uint inputs:execIn (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
-            custom token inputs:renderProductPath
-            token node:type = "isaacsim.core.nodes.IsaacSetCameraOnRenderProduct"
-            int node:typeVersion = 1
-            custom uint outputs:execOut (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (874.6749, 185.88716)
-        }
-
         def OmniGraphNode "ros2_camera_helper" (
             prepend apiSchemas = ["NodeGraphNodeAPI"]
         )
@@ -297,7 +195,7 @@ def Xform "Root"
             custom string inputs:qosProfile
             custom uint64 inputs:queueSize
             custom token inputs:renderProductPath
-            prepend token inputs:renderProductPath.connect = </Root/CameraImageExport/isaac_get_viewport_render_product.outputs:renderProductPath>
+            prepend token inputs:renderProductPath.connect = </Root/CameraImageExport/isaac_create_render_product.outputs:renderProductPath>
             custom bool inputs:resetSimulationTimeOnStop
             custom string inputs:semanticLabelsTopicName
             custom string inputs:srtxCompressionType
@@ -310,7 +208,7 @@ def Xform "Root"
             token node:type = "isaacsim.ros2.bridge.ROS2CameraHelper"
             int node:typeVersion = 3
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (1312.5596, 109.56273)
+            uniform float2 ui:nodegraph:node:pos = (1023.32153, 163.96288)
         }
 
         def OmniGraphNode "counter" (
@@ -338,7 +236,7 @@ def Xform "Root"
             )
             custom int state:count
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (442.8347, 472.26895)
+            uniform float2 ui:nodegraph:node:pos = (165.72194, 439.46066)
         }
 
         def OmniGraphNode "to_string" (
@@ -351,7 +249,7 @@ def Xform "Root"
             int node:typeVersion = 1
             custom string outputs:converted
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (833.5587, 471.31476)
+            uniform float2 ui:nodegraph:node:pos = (606.5168, 482.52667)
         }
 
         def OmniGraphNode "ros2_context" (
@@ -364,7 +262,7 @@ def Xform "Root"
             int node:typeVersion = 2
             custom uint64 outputs:context
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (1008.84045, 630.5458)
+            uniform float2 ui:nodegraph:node:pos = (-188.21318, 254.9512)
         }
 
         def OmniGraphNode "rtsp_camera_helper" (
@@ -381,12 +279,55 @@ def Xform "Root"
             custom string inputs:mountPath
             custom int inputs:port
             custom token inputs:renderProductPath
-            prepend token inputs:renderProductPath.connect = </Root/CameraImageExport/isaac_get_viewport_render_product.outputs:renderProductPath>
+            prepend token inputs:renderProductPath.connect = </Root/CameraImageExport/isaac_create_render_product.outputs:renderProductPath>
             custom bool inputs:useRawEncoding
             token node:type = "isaacsim.streaming.rtsp.RTSPCameraHelper"
             int node:typeVersion = 1
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (1316.029, -95.7572)
+            uniform float2 ui:nodegraph:node:pos = (1042.8982, -80.23138)
+        }
+
+        def OmniGraphNode "isaac_create_render_product" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom rel inputs:cameraPrim = </Root/Xform/main_camera_01> (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            string relType = "target"
+                        }
+                    }
+                }
+            )
+            custom bool inputs:enabled
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/CameraImageExport/on_playback_tick.outputs:tick>
+            custom uint inputs:height
+            custom rel inputs:renderProductPrim (
+                customData = {
+                    dictionary omni = {
+                        dictionary graph = {
+                            string relType = "target"
+                        }
+                    }
+                }
+            )
+            custom uint inputs:width
+            token node:type = "isaacsim.core.nodes.IsaacCreateRenderProduct"
+            int node:typeVersion = 3
+            custom uint outputs:execOut (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            custom token outputs:renderProductPath
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (374.12018, 178.80605)
         }
     }
 

@@ -198,6 +198,8 @@ def compose_stage(
     writes = compute_writes(config, plan, resolved_enu, camera_prim=camera_prim)
     _apply_stage_writes(stage, writes)
 
+    apply_tile_tuning(stage, config.cesium, config.cesium.tilesets_root)
+
     apply_target_semantics(stage, BBOXES_ROOT)
 
     apply_hdri(stage, config.assets.hdri)
@@ -560,6 +562,61 @@ def _resolve_camera_prim(config: IsaacCoreConfig, stage: Any) -> str | None:  # 
             logger.debug("resolved camera prim by type search: %s", found)
             return found
     return None
+
+
+# Cesium tileset attributes, mapped from config field name to (USD attribute, USD type name).
+# Only written when the config value is not None, so an unset field leaves Cesium's own default.
+_TILE_TUNING: Final = (
+    ("max_simultaneous_tile_loads", "cesium:maximumSimultaneousTileLoads", "UInt"),
+    ("max_screen_space_error", "cesium:maximumScreenSpaceError", "Float"),
+    ("max_cached_bytes", "cesium:maximumCachedBytes", "UInt64"),
+    ("preload_ancestors", "cesium:preloadAncestors", "Bool"),
+    ("preload_siblings", "cesium:preloadSiblings", "Bool"),
+)
+
+
+def apply_tile_tuning(stage: Any, cesium: Any, tilesets_root: str) -> int:  # noqa: ANN401
+    """
+    Write the configured Cesium tile-loading settings onto every tileset.
+
+    Each setting is applied only when explicitly configured, so an untouched config leaves
+    Cesium's own defaults in place rather than pinning them to values that would silently become
+    stale if Cesium changed them.
+
+    Args:
+        stage: The open stage.
+        cesium: The resolved Cesium config section.
+        tilesets_root: Absolute path of the scope holding tileset prims.
+
+    Returns:
+        Number of attributes written.
+
+    """
+    requested = [(attr, type_name, getattr(cesium, field)) for field, attr, type_name in _TILE_TUNING]
+    requested = [item for item in requested if item[2] is not None]
+    if not requested:
+        return 0
+
+    sdf = _sdf()
+    root = stage.GetPrimAtPath(sdf.Path(tilesets_root))
+    if not root.IsValid():
+        logger.warning("tilesets root %s absent; tile tuning not applied", tilesets_root)
+        return 0
+
+    usd = importlib.import_module("pxr.Usd")
+    written = 0
+    for prim in usd.PrimRange(root):
+        if not prim.GetAttribute(_CESIUM_URL_ATTR).IsValid():
+            continue
+        for attribute, type_name, value in requested:
+            existing = prim.GetAttribute(attribute)
+            if not existing.IsValid():
+                existing = prim.CreateAttribute(attribute, getattr(sdf.ValueTypeNames, type_name))
+            existing.Set(value)
+            written += 1
+    if written:
+        logger.info("applied %d Cesium tile-tuning attribute(s) under %s", written, tilesets_root)
+    return written
 
 
 def apply_target_semantics(stage: Any, targets_root: str) -> int:  # noqa: ANN401

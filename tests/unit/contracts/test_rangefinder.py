@@ -1,80 +1,95 @@
-"""
-Tests for range-sensor value semantics.
-
-The boundary cases are the whole point: `sensor_msgs/Range` distinguishes "nothing detected"
-from "something at max range", and a rangefinder that silently clamps loses that distinction.
-"""
-
-from __future__ import annotations
+"""Tests for the rangefinder boundary semantics."""
 
 import math
 
 import pytest
 
 from isaac_core.contracts.rangefinder import (
-    NO_DETECTION,
-    TOO_CLOSE,
+    clamp_to_band,
+    is_saturated,
     is_valid_reading,
     resolve_range,
 )
 
-# A typical rated band, matching the kind of values the 2023 config used.
-_MIN = 0.2
-_MAX = 100.0
+MIN_M = 0.2
+MAX_M = 5000.0
 
 
-@pytest.mark.parametrize("distance", [0.2, 1.0, 50.0, 99.999, 100.0])
-def test_a_hit_inside_the_rated_band_is_reported_as_is(distance: float) -> None:
-    assert resolve_range(True, distance, _MIN, _MAX) == pytest.approx(distance)
+def test_a_hit_inside_the_band_is_reported_verbatim() -> None:
+    """Return the measured distance unchanged when it lies inside the rated band."""
+    assert resolve_range(hit=True, distance_m=482.5, min_range_m=MIN_M, max_range_m=MAX_M) == 482.5
 
 
-def test_no_hit_reports_no_detection() -> None:
-    # ROS convention: +inf means "the beam went out and found nothing".
-    assert resolve_range(False, 0.0, _MIN, _MAX) == NO_DETECTION
-    assert math.isinf(resolve_range(False, 0.0, _MIN, _MAX))
+def test_no_hit_reports_the_rated_maximum_not_infinity() -> None:
+    # Deliberately NOT +inf, which is the ROS convention. float("inf") cannot be cast to int, so a
+    # consumer doing int(msg.range) crashed exactly when the sensor saw nothing -- the common case
+    # for a downward rangefinder in level flight.
+    result = resolve_range(hit=False, distance_m=0.0, min_range_m=MIN_M, max_range_m=MAX_M)
+
+    assert result == MAX_M
+    assert math.isfinite(result)
+    assert int(result) == 5000
 
 
-def test_a_hit_beyond_max_range_reports_no_detection() -> None:
-    # Not clamped to max: clamping would make "nothing there" indistinguishable from
-    # "something exactly at max range", which is the distinction Range exists to preserve.
-    assert resolve_range(True, 150.0, _MIN, _MAX) == NO_DETECTION
+def test_a_hit_beyond_the_maximum_saturates_at_the_maximum() -> None:
+    """Clamp a too-distant hit to the rated maximum."""
+    assert resolve_range(hit=True, distance_m=9001.0, min_range_m=MIN_M, max_range_m=MAX_M) == MAX_M
 
 
-def test_a_hit_closer_than_min_range_reports_too_close() -> None:
-    # Real hardware cannot measure inside its minimum; ROS convention is -inf.
-    assert resolve_range(True, 0.05, _MIN, _MAX) == TOO_CLOSE
-    assert resolve_range(True, 0.05, _MIN, _MAX) < 0
+def test_a_hit_nearer_than_the_minimum_saturates_at_the_minimum() -> None:
+    """Clamp a too-close hit to the rated minimum rather than reporting -inf."""
+    result = resolve_range(hit=True, distance_m=0.05, min_range_m=MIN_M, max_range_m=MAX_M)
+
+    assert result == MIN_M
+    assert math.isfinite(result)
 
 
-def test_the_band_edges_are_inclusive() -> None:
-    assert resolve_range(True, _MIN, _MIN, _MAX) == pytest.approx(_MIN)
-    assert resolve_range(True, _MAX, _MIN, _MAX) == pytest.approx(_MAX)
-
-
-def test_a_non_finite_distance_is_treated_as_no_detection() -> None:
-    # A physics query can hand back inf/nan; that must not propagate as a measurement.
-    assert resolve_range(True, math.inf, _MIN, _MAX) == NO_DETECTION
-    assert resolve_range(True, math.nan, _MIN, _MAX) == NO_DETECTION
+def test_a_non_finite_distance_is_treated_as_nothing_seen() -> None:
+    # A misbehaving query returning inf or nan must not propagate that to the wire, which is the
+    # whole point of clamping.
+    for bad in (math.inf, -math.inf, math.nan):
+        assert resolve_range(hit=True, distance_m=bad, min_range_m=MIN_M, max_range_m=MAX_M) == MAX_M
 
 
 @pytest.mark.parametrize(
-    ("low", "high"),
-    [(0.0, 0.0), (5.0, 5.0), (10.0, 1.0), (-1.0, 10.0)],
+    ("min_m", "max_m"),
+    [(0.2, 0.2), (5.0, 1.0), (-1.0, 10.0), (0.0, math.inf), (math.nan, 10.0)],
 )
-def test_a_nonsensical_rated_band_is_rejected(low: float, high: float) -> None:
-    # Every reading would be meaningless, so fail loudly at the source rather than emitting
-    # garbage ranges all run.
-    with pytest.raises(ValueError, match="range|negative"):
-        resolve_range(True, 1.0, low, high)
+def test_an_impossible_band_is_rejected(min_m: float, max_m: float) -> None:
+    """Reject a band in which no reading could be meaningful."""
+    with pytest.raises(ValueError, match="range|min_range|max_range"):
+        resolve_range(hit=True, distance_m=1.0, min_range_m=min_m, max_range_m=max_m)
 
 
-@pytest.mark.parametrize("bound", [math.inf, math.nan])
-def test_non_finite_bounds_are_rejected(bound: float) -> None:
-    with pytest.raises(ValueError, match="finite"):
-        resolve_range(True, 1.0, _MIN, bound)
+def test_every_result_is_finite_across_the_whole_input_space() -> None:
+    # The guarantee consumers depend on: whatever the sensor does, the published number can be
+    # cast to int without raising.
+    for hit in (True, False):
+        for distance in (-10.0, 0.0, 0.1, MIN_M, 1.0, MAX_M, 9001.0, math.inf, math.nan):
+            result = resolve_range(hit=hit, distance_m=distance, min_range_m=MIN_M, max_range_m=MAX_M)
+            assert math.isfinite(result)
+            assert MIN_M <= result <= MAX_M
+            int(result)
 
 
-def test_is_valid_reading_separates_measurements_from_sentinels() -> None:
-    assert is_valid_reading(12.5)
-    assert not is_valid_reading(NO_DETECTION)
-    assert not is_valid_reading(TOO_CLOSE)
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(MIN_M, True), (MAX_M, True), (0.1, True), (9001.0, True), (100.0, False), (MIN_M + 0.01, False)],
+)
+def test_saturation_is_detectable(value: float, expected: bool) -> None:
+    """Report a reading sitting on either band edge as saturated."""
+    assert is_saturated(value, MIN_M, MAX_M) is expected
+
+
+def test_a_mid_band_reading_is_valid_and_an_edge_reading_is_not() -> None:
+    """Treat only strictly-inside readings as measurements."""
+    assert is_valid_reading(1000.0, MIN_M, MAX_M)
+    assert not is_valid_reading(MAX_M, MIN_M, MAX_M)
+    assert not is_valid_reading(MIN_M, MIN_M, MAX_M)
+
+
+def test_clamp_is_independent_of_hit_handling() -> None:
+    """Clamp a value into the band without reference to whether a ray hit."""
+    assert clamp_to_band(-5.0, MIN_M, MAX_M) == MIN_M
+    assert clamp_to_band(6000.0, MIN_M, MAX_M) == MAX_M
+    assert clamp_to_band(12.5, MIN_M, MAX_M) == 12.5

@@ -228,14 +228,6 @@ def Xform "Root"
         double3 xformOp:scale = (1, 1, 1)
         double3 xformOp:translate = (0, 0, 0)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-
-        def Xform "distance_sensor"
-        {
-            quatd xformOp:orient = (1, 0, 0, 0)
-            double3 xformOp:scale = (1, 1, 1)
-            double3 xformOp:translate = (0, 0, 0)
-            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-        }
     }
 
     def OmniGraph "RangeSensing"
@@ -262,37 +254,6 @@ def Xform "Root"
             custom double outputs:time
             uniform token ui:nodegraph:node:expansionState = "open"
             uniform float2 ui:nodegraph:node:pos = (564.5318, -56.06149)
-        }
-
-        def OmniGraphNode "distance_sensor" (
-            prepend apiSchemas = ["NodeGraphNodeAPI"]
-        )
-        {
-            custom uint inputs:execIn (
-                customData = {
-                    bool isExecution = 1
-                }
-            )
-            prepend uint inputs:execIn.connect = </Root/RangeSensing/on_playback_tick.outputs:tick>
-            custom float inputs:max_range_m
-            custom float inputs:min_range_m
-            custom rel inputs:sensorPrim = </Root/Xform/distance_sensor> (
-                customData = {
-                    dictionary omni = {
-                        dictionary graph = {
-                            string relType = "target"
-                        }
-                    }
-                }
-            )
-            token node:type = "isaac_core_ogn.sensors.DistanceSensor"
-            int node:typeVersion = 1
-            custom bool outputs:hit
-            custom float outputs:max_range_out
-            custom float outputs:min_range_out
-            custom float outputs:range_m
-            uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (906.42914, -55.07062)
         }
 
         def OmniGraphNode "ros2_context" (
@@ -348,7 +309,7 @@ def Xform "Root"
                 }
             )
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (1315.5372, -127.00477)
+            uniform float2 ui:nodegraph:node:pos = (1311.6917, -114.1854)
         }
 
         def OmniGraphNode "isaac_read_simulation_time" (
@@ -382,7 +343,30 @@ def Xform "Root"
             custom uint outputs:nanosec
             custom int outputs:sec
             uniform token ui:nodegraph:node:expansionState = "open"
-            uniform float2 ui:nodegraph:node:pos = (905.7516, 174.25026)
+            uniform float2 ui:nodegraph:node:pos = (901.9058, 179.378)
+        }
+
+        def OmniGraphNode "distance_sensor" (
+            prepend apiSchemas = ["NodeGraphNodeAPI"]
+        )
+        {
+            custom token inputs:cameraPath
+            custom uint inputs:execIn (
+                customData = {
+                    bool isExecution = 1
+                }
+            )
+            prepend uint inputs:execIn.connect = </Root/RangeSensing/on_playback_tick.outputs:tick>
+            custom float inputs:max_range_m
+            custom float inputs:min_range_m
+            token node:type = "isaac_core_ogn.sensors.DistanceSensor"
+            int node:typeVersion = 1
+            custom bool outputs:hit
+            custom float outputs:max_range_out
+            custom float outputs:min_range_out
+            custom float outputs:range_m
+            uniform token ui:nodegraph:node:expansionState = "open"
+            uniform float2 ui:nodegraph:node:pos = (888.3455, -94.113335)
         }
     }
 }

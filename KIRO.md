@@ -2793,6 +2793,524 @@ commands and reading the diff establishes fact.
   raise: profiling without terrain is legitimate. Matching is case-insensitive with a `Minimal`
   alias, and a README troubleshooting entry covers it.
 
+- **2026-09-06 (f)** — Silent boot, and the **M8 audit found real dead code**. 1499 -> 1512 tests.
+
+  **Boot noise 77 -> 30 lines, zero Warp mentions.** Two levers, both gated behind
+  `logging.isaac_logs` so `isaac_logs = true` still shows everything: `warp.config.quiet = True`
+  set before `SimulationApp` is constructed, and a POSIX fd-1 redirect around **only** the
+  construction call. Deliberately leaves **fd 2 untouched**, so a crash or traceback still
+  surfaces -- a silent boot that also hides a failure would be much worse than a noisy one, and the
+  test that matters most asserts stdout is restored even when construction *raises*.
+
+  **The exit-gate audit did its job and found two genuinely dead things.** I had it write guards
+  and report rather than remove, and told it not to weaken a guard to go green -- it correctly left
+  two tests failing with real findings:
+  - `read_prim_attribute` was registered on the control plane with **no caller anywhere in the
+    shipped code**. My own KIRO note had claimed the inspector used it; it used only
+    `get_runtime_values`. I have been calling it constantly from throwaway verification scripts,
+    which is exactly how a capability ends up feeling used while shipping as dead surface. Rather
+    than delete something genuinely useful, wired it into `isaac-core-inspect --read PRIM:ATTRIBUTE`
+    (repeatable, and reports `<not found on the stage>` distinctly from an attribute that holds
+    nothing). Live-verified: `focalLength = 22.788`, `horizontalAperture = 36.973`, bogus prim
+    reported as not found.
+  - `require_prim`, `find_prim` and `StagePrimMissingError` in `sim/stage.py` were exported and
+    documented but never called -- the codebase uses inline `GetPrimAtPath(...).IsValid()` instead.
+    All three removed. `UsdStageInspector` in the same module is used and stays.
+
+  **One audit finding was wrong, and checking mattered:** it reported that README/KIRO claim the
+  `isaac_core_ogn.sensors` extension is deleted. The actual line says a stale *symlink* was removed
+  from `extsUser`. Had I acted on it I would have "reconciled" a doc that was already correct.
+
+  New guards that now hold the line: every `Method` enum member has a registered handler; every
+  registered handler is reachable from the devkit, CLI or a shipped tool; no `NotImplementedError`
+  the README implies works; no public symbol in `src/` without a consumer.
+
+- **2026-09-06 (g)** — **Tile-streaming hitch root-caused, and my first answer was wrong.**
+  1512 -> 1518 tests.
+
+  Ofer suggested the Cesium base-URL work might still be outstanding and pointed at 2023's
+  `sim_app`. It was already done -- but reading 2023 was still worth it, because **2023's approach
+  would break our scene**: it *constructed* `f"{base}/{prim.GetName()}/tileset.json"` rather than
+  preserving the authored path. Our tileset prim is named `Cesium_Tileset` while its path is
+  `/nablus/`, so that formula yields a 404. Their convention only worked because their prims were
+  named after their tile directories. Ours swaps scheme+host+port and keeps the rest, which is what
+  Ofer actually described.
+
+  **The hitch experiment, and the correction.** First run looked decisive: with defaults
+  (20 concurrent loads) the worst frame was **6.86 fps** with 3/320 under 20 fps; dropping to 4
+  concurrent loads gave a worst frame of 38.5 fps and 0/320 slow. A 5.6x improvement -- except the
+  phases ran sequentially, so I re-ran with the **order reversed**. That flipped the result
+  completely: 4 loads *first* gave 7.02 fps worst and 2/320 slow, while 20 loads *second* gave
+  59.83 fps worst and 0/320. **Whichever phase runs first is slow, regardless of its settings.**
+  The cause is cold-cache streaming, not load concurrency.
+
+  Recording this because the near-miss is the lesson: the first experiment produced a clean,
+  large, plausible effect and a tidy causal story, and it was an artefact of ordering. The only
+  reason it did not become a shipped "fix" plus a confident changelog entry is that the confound
+  was written into the plan before the result was seen.
+
+  **Deliverable, honestly scoped.** Exposed the Cesium tunables as config
+  (`max_simultaneous_tile_loads`, `max_screen_space_error`, `max_cached_bytes`,
+  `preload_ancestors`, `preload_siblings`), each defaulting to `None` = leave Cesium's own default
+  alone, so tuning no longer needs a `prim_override` and we do not freeze values Cesium may improve.
+  Applied to every tileset prim under the tilesets root, skipping non-tileset prims.
+  **Did not change any default**, because the measurement says concurrency is not the cause.
+  Documented in `config/default.toml` and a README troubleshooting entry that states plainly what
+  helps (keep the cache, raise `max_cached_bytes`, warm the route) and what does not (lowering
+  concurrency), including why the obvious-looking result is misleading.
+
+- **2026-09-06 (h)** — **M8 closed. Eyes-on harness built.** 1518 tests.
+
+  **M8 validated:** 9 guards pass, `_KNOWN_DEAD` is empty, no stale bytecode, and exactly three
+  `NotImplementedError`s remain -- `load_scene`, `enable_feature`, `disable_feature` -- each with a
+  concrete reason and each guarded against the README overclaiming. Also removed
+  `DEFAULT_RTP_VIDEO_PORT`/`DEFAULT_RTP_META_PORT`, dead since native RTSP replaced the sidecar:
+  their only reference was a test asserting their own values, which is a test of nothing.
+
+  **`Sim.launch` could not enable features or declare vehicles** -- it only accepted host, port,
+  scene and headless. Found while writing the eyes-on script, which is exactly the kind of gap Ofer
+  hoped that exercise would expose. Added an `overrides` parameter taking dotted config keys, with
+  the explicit arguments applied *last* so `headless=True` cannot be silently contradicted by an
+  override.
+
+  **`scripts/eyes_on_check.py`**: eight scenarios, each launching the GUI **through the devkit**
+  rather than the control plane, so running one also exercises the public API a user would write.
+  Each prints what to look for before it starts, so the checking criteria are on screen while the
+  thing is happening rather than in a document.
+
+  **Process note, corrected by Ofer twice and worth stating loudly.** Two separate incidents:
+  a verification run was SIGKILLed, and a later one **hung overnight without the `timeout` ever
+  firing**, so Ofer had to kill it by hand.
+  Root cause of the hang: we pass `--/app/installSignalHandlers=0` to Kit, so **Isaac ignores
+  SIGTERM** -- which is exactly what plain `timeout N` sends. `timeout` therefore cannot kill an
+  Isaac process at all. Every Isaac invocation must use **`timeout -k 5 N`** (or `-s KILL`) so a
+  SIGKILL follows the ignored SIGTERM. The standing "prefix every command with `timeout N`" rule was
+  necessary but not sufficient, and the gap cost Ofer a night of a pinned machine.
+  Second cause, for the SIGKILL: an **orphaned Isaac process** from an earlier run was still holding
+  memory, so kill strays *before* launching, not only after.
+  Third, and the cheapest lesson: the injected `launcher` parameter lets the whole config-building
+  path be verified with **no Isaac spawn at all**, which is how the overrides were confirmed to land
+  in the written TOML. Prefer that; reserve live runs for what genuinely needs a GPU.
+
+  **Superseded note.** A verification run was SIGKILLed and Ofer flagged that I was
+  stuck. Cause: an **orphaned Isaac process** from an earlier run was still holding memory. Two
+  lessons: kill strays *before* launching, not only after; and the injected `launcher` parameter
+  makes it possible to verify the whole config-building path with **no Isaac spawn at all**, which
+  is what I used to confirm the overrides land in the written TOML. Cheap verification first, live
+  runs only for what genuinely needs a GPU.
+
+- **2026-09-07** — **Ofer's eyes-on pass found six real bugs; three shared one root cause.**
+  1518 -> 1520 tests. The harness paid for itself immediately.
+
+  **Root cause A: a connectable port is not readiness.** `start()` opens the control plane, and
+  `open_stage()` composes the stage ~8 seconds later. `Sim.launch` treated the open port as ready,
+  so every command issued in that window was accepted and silently dropped -- the graphs that would
+  act on it did not exist. This explains three separate symptoms Ofer reported: the gimbal scenario
+  where "the camera did not move at all" (its `set_pose` was lost), the swarm scenario where neither
+  vehicle appeared to move, and the lifecycle scenario running before the sim was usable. Ofer
+  pointed straight at it -- 2023 waited for the first pose before trusting anything.
+  Fix: `get_state` now reports `ready` (running **and** stage composed) and `wait_until_ready`
+  waits on it, tolerating an older server that cannot answer so a newer client cannot hang.
+
+  **Root cause B: the client socket timeout was 5 s.** `capture_frame` spans several frames
+  (resize, settle, async file write) and `step(count=30)` runs 30 -- both legitimately exceed 5 s,
+  so they raised `TimeoutError` while the work was still succeeding. Ofer's log shows it plainly:
+  the scenario reported failure, and the capture completed *afterwards*. Default is now 60 s.
+
+  **Root cause C: the simulator survived a finished script.** Two facts combined, and the second
+  is one I had already documented for my own tooling without connecting it here:
+  `python.sh` does not `exec`, so the process we hold is a wrapper and Isaac is its child; and Isaac
+  runs with `installSignalHandlers=0`, so it **ignores SIGTERM**. Signalling the wrapper achieved
+  nothing. Now spawned with `start_new_session=True` and the whole process **group** is signalled,
+  SIGKILL following an ignored SIGTERM. Ctrl-C appeared to work only because the terminal sends
+  SIGINT to the whole foreground group already.
+
+  **Root cause D: swarm RTSP port collision.** Both vehicles bound 8554 --
+  `Error binding to address 0.0.0.0:8554: Address already in use` -- so the second aircraft had no
+  stream. Added `resolved_rtsp_port`, offsetting by vehicle index exactly as pose ports do.
+  Verified: single vehicle still 8554, two vehicles get 8554/8555, an explicitly pinned port is
+  honoured verbatim.
+
+  **D28 (Ofer's call): out-of-band range readings saturate at the rated limits instead of
+  reporting infinity.** ROS convention for `sensor_msgs/Range` is +/-inf, which is what I had
+  implemented, and his objection is better: `float("inf")` cannot be cast to `int`, so a consumer
+  doing `int(msg.range)` crashes exactly when the sensor sees nothing -- the common case for a
+  downward rangefinder in level flight. Every reading is now finite and inside
+  `[min_range, max_range]`; a value parked at a limit is itself the out-of-range signal. Cost,
+  documented: "exactly at the limit" and "beyond it" are no longer distinguishable, so
+  `is_saturated()` exists for consumers that need to know. A test now asserts finiteness across the
+  entire input space including inf and nan.
+
+  **Still open: the distance sensor's ray geometry.** Ofer's numbers do not match a
+  straight-down ray -- pitch -25 returns a value while pitch -55 returns nothing despite being
+  higher above ground, and lowering altitude at -55 restores a reading. That pattern suggests the
+  ray direction or its max_t is not what I think. Not yet diagnosed; needs a live geometry probe
+  rather than a guess.
+
+  **Harness improvements from the same feedback:** every scenario now calls `_place_and_confirm`,
+  which re-sends the pose until `get_pose` shows the expected height -- because UDP is
+  fire-and-forget and a lost pose previously masqueraded as a broken gimbal. Scenario 8 prints the
+  exact `ffplay` command rather than expecting the reader to find it in the README.
+
+- **2026-09-07 (b)** — **I shipped a regression that broke every scenario, and the suite did not
+  catch it.** 1520 -> 1535 tests.
+
+  The `rtsp_port` fix went in as two edits: point the manifests at a `resolve = "rtsp_port"` and
+  register that resolver. The second edit was a `str.replace` anchored on `resolved_vehicle_id`
+  when the variable is `vehicle_id`, so it **silently matched nothing**. The manifests then asked
+  for a resolver that did not exist, and every launch died with
+  `ConfigKeyError: unknown resolve name 'rtsp_port'`.
+
+  **Why the suite passed anyway, which is the real lesson.** A manifest's `resolve` name is only
+  looked up during `compute_writes`, i.e. at compose time inside a running Isaac Sim. Nothing in the
+  unit suite ever resolved the shipped manifests' resolver names, so a dangling reference was
+  invisible to 1520 tests and surfaced only on Ofer's machine. Added
+  `tests/unit/sim/test_manifest_resolvers.py`: it scans every shipped `layer.toml` for
+  `resolve = "..."` and asserts each name resolves, parametrised so a failure names the offender.
+  Includes a not-vacuous check so an empty scan cannot pass silently. 14 resolvers covered.
+
+  Two process notes. First: a `str.replace` that does not match is a **silent no-op**, and I used
+  one for a change whose failure mode was invisible to tests -- an `assert old in s` before the
+  replace would have caught it at authoring time, and I now use one. Second: I claimed the port fix
+  was verified because `resolved_rtsp_port` returned 8554/8555 in isolation; that tested the config
+  method, not the wiring that consumes it. Verifying the unit I just wrote, rather than the path the
+  user takes, is how this reached him.
+
+  Re-verified end to end after the fix: `compute_writes` succeeds for single vehicle (17 writes),
+  single + bbox + distance (23), and two vehicles (34, RTSP ports 8554 and 8555); live launches
+  reach `simulation running` for both single and swarm configs with **zero** resolve errors and
+  **zero** `Address already in use`.
+
+- **2026-09-07 (c)** — **Gimbal pitch/roll swap root-caused and fixed.** 1535 -> 1546 tests.
+
+  Ofer reported commanded pitch coming out as roll, and confirmed it twice: the gimbal scenario
+  showed a `start_pitch_deg = -15` appearing as roll 15, and the capture scenario logged
+  `pitch 0.0 / roll -40` for a commanded `pitch_deg=-40`.
+
+  **Two compounding causes, neither visible in the existing tests.**
+  1. The offset was composed in the *vehicle's* rotation frame, which defaults to **WORLD**, i.e.
+     about fixed world axes. A level, north-heading aircraft already carries **ENU yaw = +90 deg**
+     (`yaw_enu = -yaw_ned + pi/2`, turning a compass heading into a bearing), and that 90 degrees
+     rotates the offset's axes so "pitch" lands on the roll axis. Measured through the full
+     transform chain: commanded pitch changed the camera's elevation by **0.00 deg** while
+     commanded roll changed it by the full amount. A gimbal is bolted to the airframe, so the
+     offset must be **body**-relative regardless of how the airframe's own angles compose.
+  2. The offset never received the airframe's NED->ENU sign conventions, so pitch and yaw were
+     inverted relative to any pose arriving on the wire -- the same command meant opposite things
+     depending on which path set it.
+
+  Fix: compose the offset in `RotationFrame.BODY` with pitch and yaw negated. Verified through the
+  full chain (node quaternion -> camera's authored local orient -> world look vector):
+  pitch -15 gives elevation **-15.00**, pitch +15 gives **+15.00**, roll +25 leaves elevation at
+  **0.00** while tilting image-up by **25.00**, and yaw +60 increases bearing by **60.00**.
+
+  **Why the old tests missed it, which is the transferable lesson.** `compose_rotation` and
+  `euler_to_matrix` both had passing unit tests, and the composition *formula* read correctly. The
+  bug only existed in the *interaction* between the offset frame and the airframe's built-in 90
+  degree yaw -- invisible to any test that checks a matrix multiplication or an Euler round-trip.
+  The new `tests/unit/geo/test_gimbal_axes.py` asserts on the **camera's world look direction**
+  instead: elevation, bearing and image tilt. It also pins a level aircraft looking *north*,
+  because my own first probe assumed nose = body +X, had level flight pointing **south**, and
+  produced a confidently wrong conclusion I nearly acted on. Assert on observable outcomes, not on
+  the formula that produces them.
+
+  **`Sim.launch` leaked a simulator on Ctrl-C.** Interrupting while "Launching..." was on screen
+  left a fully-booted Isaac running, because the session that owns the process was only constructed
+  *after* the readiness wait returned. Now built before the wait and closed on `BaseException`
+  (deliberately, since `KeyboardInterrupt` is the common case).
+
+  **Still open from Ofer's pass, with what is known:**
+  - **Distance sensor ray direction.** His repro is clean: pitch -90, descend N metres, expect the
+    range to fall by N. He also observes it "looking forward". Not yet diagnosed.
+  - **Swarm viewport fights.** Both vehicles' cameras are named `main_camera_01` and each layer's
+    `isaac_set_camera` retargets the *same* viewport, so the view flips between aircraft every
+    frame. Needs a per-vehicle viewport.
+  - **`resume`/`reset` touch the timeline from the control-server thread**, producing
+    `RuntimeError: There is no current event loop in thread 'isaac-core-control-server'`. They must
+    go through the main-thread queue as `set_gimbal` and `capture_frame` do.
+  - **Leftover `viewport_size_LdrColorSD.png`.** The rename claims the newest match; a stale file
+    from a prior run survives.
+  - Scenario ergonomics: a linear path reads better than a circle for judging nose alignment, and
+    the lifecycle scenario needs louder narration.
+  - Ofer's roll-then-pitch-180 observation is the documented Euler coupling limit, not a new bug:
+    only the outermost angle is frame-stable, so roll's effect necessarily changes at large pitch.
+    Worth restating in the README rather than treating as a defect.
+
+- **2026-09-07 (d)** — **The distance sensor was never broken.** 1546 -> 1561 tests.
+
+  Ofer's odd readings (a value around 900 when looking up, nothing at pitch -55, a reading returning
+  when he descended) were **all downstream of the gimbal pitch/roll swap**. His "pitch" commands were
+  rolling the aircraft, which swings a body-mounted downward ray sideways. At 55 degrees off vertical
+  from 483 m above terrain the ray reaches ground at `483 / cos(55) = 842 m` -- his "around 900".
+  Verified the geometry is right: level flight casts the ray at exactly -90 degrees elevation
+  (straight down), and pitching nose-down 30 degrees tilts it to -60, which is correct for a rigidly
+  mounted sensor.
+
+  **Live proof over the ROS topic**, gimbal at zero, altitude the only variable:
+  2000 -> 1482.25, 1600 -> 1082.25, 1200 -> 682.25, 1000 -> 482.17. Every reading is altitude minus a
+  consistent ~517.75 m terrain, and a -400 m altitude change produces exactly -400 m of range.
+  Lesson: two of Ofer's three reported "distance sensor bugs" were one gimbal bug wearing a disguise.
+  Chasing the symptom would have wasted a lot of effort; fixing the upstream cause resolved them.
+
+  **Found while investigating, and it is a real design issue: the gimbal offset rotates the whole
+  `/Root/Xform`**, which carries the camera *and* the distance sensor. So aiming the camera also
+  swings a fuselage-mounted rangefinder, which is physically wrong. Needs a USD change -- the offset
+  should apply to a child Xform holding only the camera -- so it is Ofer's call, flagged not fixed.
+
+  **Swarm viewport fight fixed, the way Ofer suggested.** Root cause read from Isaac's source:
+  `IsaacCreateViewport` with an empty `name` and `viewportId == 0` **reuses the active viewport**. So
+  every vehicle's layer grabbed the same one and retargeted it to its own camera, flipping the view
+  every frame. New `viewport_name` resolver returns `""` for a single vehicle -- byte-identical to
+  today, no extra window -- and the vehicle id when there are several. Answering his question
+  directly: with two or more vehicles you *do* get one viewport window per vehicle, and that is
+  necessary rather than cosmetic, because each vehicle needs its own render product to have its own
+  image topic and RTSP stream. `sim.viewport_camera` still aims the main viewport at one chosen camera.
+
+  **Latent bug found by a sub-agent:** `_handle_step` **ignored `count` entirely** and always advanced
+  one frame, despite `session.step(count=...)` and the README both documenting it. Now honoured and
+  validated. Also fixed: `_handle_pause` and `_handle_resume` called the timeline directly from the
+  control-server thread, which is what produced
+  `RuntimeError: There is no current event loop in thread 'isaac-core-control-server'` inside Isaac's
+  throttling extension. Both now dispatch through the main-thread queue, as `reset` already did.
+
+  Scenario 1 now flies two straight legs (north, then east) with commanded yaw equal to the track, so
+  nose alignment is unambiguous -- a circle made it impossible to judge. Scenario 7 announces each
+  lifecycle phase and prints the pose before and after, so a frozen viewport is corroborated by
+  identical numbers rather than resting on the eye alone; `--dwell` sets the pace.
+
+  Resolved without action: the leftover `_LdrColorSD.png` files were stale from before the rename fix
+  and did not reappear, and Ofer confirmed the pitch-180 horizon behaves correctly, so the Euler
+  coupling concern was unfounded.
+
+- **2026-09-07 (e)** — **D29: the distance sensor is boresighted with the camera, by construction.**
+  Ofer's requirement, stated plainly: the ray should always point at the centre of the camera's view
+  and report the distance to whatever is there.
+
+  **The bug this exposed was bigger than the gimbal coupling I had flagged.** The sensor was not
+  merely *also* moved by the gimbal -- it was **permanently 90 degrees off the camera**. Measured:
+  in level flight the camera looks north while the sensor cast straight down; with the gimbal at
+  pitch -30 or yaw +90 the separation stayed exactly 90 degrees. Cause: the camera prim carries its
+  own local orientation `(0.5, 0.5, -0.5, -0.5)` -- that is what makes a USD camera look along the
+  nose -- while the sensor Xform was identity. Both inherited the same mount, so they moved
+  together, but 90 degrees apart. My earlier framing ("the gimbal shouldn't move the sensor") had
+  the relationship backwards: the sensor was never aimed where I assumed.
+
+  **Fix: cast along the camera prim's own local -Z.** The node takes a `cameraPath` token input,
+  written by the compositor from the `camera_prim` resolver -- the same pattern the bbox projector
+  uses, and for the same reason: the camera lives in another layer, so a USD relationship cannot be
+  authored in the GUI. Boresighting is now structural rather than a value someone has to keep in
+  sync; if the camera's orientation ever changes the ray follows automatically. The separate
+  `sensorPrim` input and the `/Root/Xform/distance_sensor` prim are gone.
+
+  **Live proof** with the camera aimed straight down (gimbal pitch -90): range 982.25 / 682.25 /
+  482.17 at altitudes 1500 / 1200 / 1000 -- ground clearance to within a metre in every case.
+  Camera level at the horizon: 5000.0, the saturated maximum, correct since nothing is within 5 km
+  along a horizontal ray, and finite as D28 requires. Camera 45 degrees down from 1200 m: 801.4 m,
+  shorter than the 966 m a flat-terrain slant would give, which is consistent with the ray meeting
+  rising ground (566 m out, terrain ~634 m against 518 m at the origin -- an 11.5 degree slope, very
+  plausible for this scene). I have not independently profiled the terrain to confirm that last one.
+
+  Also settled: no separate gimbal Xform is needed, and the option-B restructure that would have
+  moved the camera prim -- breaking `sim.viewport_camera`, the `camera_prim` resolver, the bbox
+  `cameraPath` and the capture path -- is avoided entirely.
+
+- **2026-09-07 (f)** — **Swarm fixed properly; three symptoms, one cause.** 1561 -> 1569 tests.
+
+  My previous swarm fix named the *created* viewport per vehicle but missed that two other nodes
+  look a viewport up **by name and default to the active one when unset**:
+  `IsaacGetViewportRenderProduct` and `IsaacSetViewportResolution`. So the second vehicle's getter
+  still asked for the active viewport, came back with an empty render product
+  (`Render product '' not valid`), and with no product of its own both RTSP servers fell back to the
+  same one and fought over port 8554. Naming only half the chain was worse than not naming it.
+
+  Binding `inputs:viewport` on both, from the same `viewport_name` resolver, fixed all three
+  symptoms at once -- and one I had not connected to it: **`lead`'s translate read 168.3 instead of
+  983.3**. That was not a pose bug at all; it was downstream of the shared-render-product confusion,
+  and it disappeared with the viewport fix. Worth recording, because I had it queued as a separate
+  "HIGH" investigation and it would have been wasted effort.
+
+  Live: **0** RTSP bind collisions, `lead` 983.3 and `wing` 383.3 (both exact), and -- the real
+  proof each vehicle owns its own render product -- `/isaac_core/lead/image_rgb` at 25.8 Hz
+  *and* `/isaac_core/wing/image_rgb` at 24.2 Hz simultaneously. One transient empty-render-product
+  warning remains during startup ordering, before the named viewport exists; harmless given both
+  topics then publish steadily, but not chased.
+
+  **Two lifecycle bugs from Ofer's pass, both real:**
+  - `step(count=N)` **did nothing while paused**, which is exactly when stepping is useful.
+    `update_app` renders a frame but does not advance a paused timeline. Now calls
+    `timeline.forward_one_frame()` per step when not playing, then renders.
+  - `reset` left the simulation **stopped**. Kit ignores `play()` issued in the same frame as
+    `stop()`, so the play was silently dropped. Deferred to the next loop iteration via a
+    `_pending_play` flag the loop honours -- the same deferral pattern the capture state machine
+    uses, and for the same underlying reason.
+
+  Confirmed not a bug: no motion while running is correct -- `set_pose` sends one packet and the
+  receiver holds the last good pose by design, so nothing moves unless something keeps sending.
+
+  Unreproduced: one gimbal run in four where the offsets appeared to arrive only at the end and
+  pitch never moved. Not diagnosed and not guessed at; if it recurs the thing to capture is whether
+  `gimbal target set to ...` appears in the log at the moment each command is issued.
+
+- **2026-09-07 (g)** — **Naming viewports was the wrong fix; offscreen render products are the right
+  one.** Scenario 7 confirmed working by Ofer.
+
+  The viewport bindings are provably correct -- `compute_writes` for two vehicles puts `'lead'` on
+  lead's three nodes and `'wing'` on wing's, on the right prims -- yet at runtime Ofer still saw a
+  **single** viewport named `wing` serving both cameras, and once a black unresponsive window. So
+  Isaac is not honouring the name reliably. Viewport windows are a GUI concept and creating them
+  from a graph during startup is fragile; I was fixing the wrong layer of the problem, twice.
+
+  `isaacsim.core.nodes.IsaacCreateRenderProduct` is the intended mechanism -- its own description
+  says "for use with **offscreen rendering**". It takes `cameraPrim`, `width` and `height` directly
+  and emits `renderProductPath`, so it replaces **four** nodes (`isaac_create_viewport`,
+  `isaac_get_viewport_render_product`, `isaac_set_viewport_resolution`, `isaac_set_camera`) with one,
+  needs no window, and gives each vehicle its own product by construction. Written up as build-sheet
+  T1 for Ofer, explicitly gated on me switching the manifest first so there is no broken
+  intermediate state -- the manifest and the USD have to move together and only he can author USD.
+
+  Note this also simplifies the single-vehicle path: fewer nodes, no viewport dependency for the
+  image topic, and the GUI's own view stays under `sim.viewport_camera` as before.
+
+  **Scenario 7 now passes.** `step` advances while paused, `reset` leaves the simulation running,
+  pause and resume work. Ofer verified each phase against a ROS topic rather than the viewport, which
+  is the more reliable check and is worth keeping in the scenario notes.
+
+- **2026-09-08** — **Swarm root cause found: one unconnected input. My previous two diagnoses were
+  both wrong, and Ofer's push-back is what corrected them.**
+
+  He asked why the image-export graph needed rewriting at all, and added the detail that **two
+  correctly-named viewports do open** -- both merely showing the same fight. That contradicted my
+  "Isaac does not honour viewport names" theory, so I measured instead of theorising again.
+
+  Measured at runtime with two vehicles:
+  - `isaac_create_viewport.inputs:name` = `'lead'` / `'wing'` -- correct.
+  - `isaac_get_viewport_render_product.inputs:viewport` = `'lead'` / `'wing'` -- correct.
+  - resolved `outputs:renderProductPath` = **two distinct products** (`ViewportTexture_1` and
+    `ViewportTexture_2`). So the whole viewport chain works.
+  - **`isaac_set_camera.inputs:renderProductPath` = `''` for both vehicles.**
+  - Both render products' `camera` relationship still pointed at `/OmniverseKit_Persp`.
+
+  So: `IsaacSetCameraOnRenderProduct` had `inputs:renderProductPath` **declared but never
+  connected**, fell back to the **active viewport**, and both vehicles wrote their camera there every
+  frame -- the flicker. Neither named viewport ever received its camera at all. The two helpers
+  beside it (`ros2_camera_helper`, `rtsp_camera_helper`) *are* connected to the same getter output;
+  only this one was missed.
+
+  **The fix is one connection per camera layer.** The render-product rewrite I had written up as a
+  build-sheet task -- replacing four nodes, gated on a manifest change -- was unnecessary and has
+  been retracted. Ofer would have done a substantial USD restructure for nothing had he not asked.
+
+  **Guard added** to `test_usd_graph_wiring.py`: any node declaring `inputs:renderProductPath`
+  without connecting it now fails, naming the node. Same failure shape as the unwired `execIn` that
+  file already guards -- an input that goes quiet instead of complaining -- and the third time this
+  repo has been bitten by exactly that shape (`ros2_publisher.execIn`, `header:stamp`, now this).
+  Currently failing on both camera layers by design, until the connection is authored.
+
+  **Process note.** Twice I proposed a fix from a plausible mechanism rather than from measurement,
+  and both times the measurement said something different. The pattern to keep: when a symptom
+  survives a fix, re-measure the assumption the fix rested on instead of escalating the size of the
+  change. Escalating is what produced a four-node rewrite proposal for a one-line bug.
+
+- **2026-09-08 (b)** — **The swarm blocker is a bug in NVIDIA's own node.** Ofer's Isaac error
+  supplied the missing evidence.
+
+    'OgnIsaacGetViewportRenderProductInternalState' object has no attribute 'viewport'
+
+  In unmodified Isaac source, `OgnIsaacGetViewportRenderProduct.py`:
+
+      class OgnIsaacGetViewportRenderProductInternalState:
+          def __init__(self) -> None:
+              viewport = None          # local variable, should be self.viewport
+
+  The state object never gets the attribute. `compute` creates it only when
+  `get_viewport_from_window_name` succeeds, then reads it unconditionally -- so a window that is not
+  registered yet turns a benign "not found" warning into a hard `AttributeError` that kills the node.
+  `lead` wins the creation race, `wing` does not. Everything else follows: `wing`'s render product is
+  empty, hence `Render product '' not valid`, RTSP `skipping setup`, and both streams falling back to
+  port 8554 with `Address already in use`.
+
+  We may not patch Isaac's files, so the fix is to stop using that node.
+  `IsaacCreateRenderProduct` takes the camera and resolution directly, creates an **offscreen**
+  product, does no name lookup (no race), initialises its state correctly (`self.render_product_path`),
+  and reuses an existing product for the same camera+resolution.
+
+  **Honest accounting of my three diagnoses.** (1) "viewport names are not applied" -- wrong, they
+  are, measured. (2) "`isaac_set_camera.renderProductPath` is unconnected" -- true and worth fixing,
+  but not the cause; the getter was already dead upstream of it. (3) This one, which is grounded in
+  NVIDIA's source and Ofer's traceback rather than in inference. My original instinct to replace the
+  viewport chain was right, for entirely the wrong reason -- and I only reached the real reason
+  because Ofer pushed back twice and supplied an error I had not seen. The pattern worth keeping:
+  a symptom that survives two fixes usually means the failing component is upstream of where I am
+  looking, and an unread stack trace beats any amount of reasoning about mechanism.
+
+  The `renderProductPath` guard added yesterday stays useful: after the swap the two helpers still
+  declare that input and must be connected to the new node, and the guard will catch it if not.
+
+- **2026-09-08 (c)** — Ofer authored the render-product swap; manifest switched. **Single-vehicle
+  path verified unregressed. Swarm image topics remain open.**
+
+  His USD edits verified: `IsaacCreateRenderProduct` present in both camera layers with `execIn`
+  wired and `cameraPrim` -> `/Root/Xform/main_camera_01`; all four viewport-era nodes deleted
+  (`isaac_create_viewport`, `isaac_get_viewport_render_product`, `isaac_set_viewport_resolution`,
+  `isaac_set_camera`); both helpers reconnected to the new node's output. 42 USD guards pass.
+
+  My side: dropped the five now-dead viewport bindings per layer, moved `width`/`height` onto the new
+  node, deleted the `viewport_name` resolver (no consumer), 20/21 -> 17/18 bindings. A guard I had
+  forgotten -- `binding_prim_exists_in_usd` -- caught the stale bindings before I did, which is
+  exactly what it is for.
+
+  **What the swap fixed.** All four failure classes are now **zero** in a two-vehicle run:
+  `'...' object has no attribute 'viewport'`, `Render product '' not valid`,
+  `renderProductPath is empty`, and `Address already in use`. The NVIDIA node bug is out of the path.
+
+  **What is still broken.** In a swarm neither `/isaac_core/lead/image_rgb` nor
+  `/isaac_core/wing/image_rgb` appears, even after 40 s. Single vehicle **does** publish
+  `/isaac_core/image_rgb`, so the main path is unregressed and this is specific to multi-instance.
+  One clue from Ofer's earlier log worth following: `SdRenderVarPtr missing valid input renderVar
+  rep_LdrColor_...`, which suggests an offscreen render product may need its colour render var
+  explicitly realised in a way a viewport-backed one got for free. Not investigated.
+
+  **Stopping here deliberately.** Ofer flagged that I was stuck, and he was right: I had made three
+  wrong diagnoses of this subsystem and was starting a fourth investigation while two orphaned Isaac
+  processes from a hung in-process probe were still holding GPU memory and making runs flaky. Also
+  learned: opening the scene in-process after a full app load hangs, so live verification of this
+  subsystem must go through `python.sh -m isaac_core.sim`, not an embedded probe.
+  Handing the remaining gap over with the clue above rather than guessing again.
+
+- **2026-09-08 (d)** — **Swarm works. My "image topics don't publish" call was wrong.**
+
+  Ofer verified the ROS topics via rqt and the pose sender: everything present and working. My
+  earlier conclusion came from `ros2 topic hz` checks run too early, while **two orphaned Isaac
+  processes** from a hung probe were still holding GPU memory. Two measurement errors compounding --
+  and I reported the result as a product defect. The startup `Render product '' not valid` /
+  `renderProductPath is empty` warnings are **transient**: they fire on the first tick before the
+  render product exists, and the helpers set up correctly a tick later. Noisy, not broken.
+
+  **Viewport**: confirmed deterministic. It follows the first vehicle *declared in config* --
+  `lead` in Ofer's file -- and TOML preserves declaration order, verified stable across repeated
+  loads. He is happy with a single viewport, so nothing to change; now documented in the README
+  rather than left as implicit behaviour.
+
+  **RTSP collision**: the bindings are correct (measured: `lead` 8554 `/lead/stream`, `wing` 8555
+  `/wing/stream`), `inputs:port` is declared, and no write warnings appear. NVIDIA's own
+  `rtsp_writer.py` docstring confirms the design -- "Each simultaneous stream needs a unique port" --
+  so per-vehicle ports are right. The `Address already in use` on 8554, together with
+  `no factory for path /lead/stream`, points at a **stale RTSP server from an earlier run** still
+  holding the port; 8554 was free when checked afterwards. Consistent with Isaac ignoring SIGTERM.
+  Added a README troubleshooting note with the `pgrep`/`kill -9` check rather than treating it as a
+  code defect, since the evidence does not support one.
+
+  **Isaac-side, not ours**: opening the action-graph editor for a *second* camera layer crashes the
+  GUI. Both layers reference the same source USD at different mounts, so this is likely Isaac's graph
+  editor mishandling two instances. Nothing in our code participates; recorded so it is not
+  re-investigated as a regression.
+
+  **Standing lesson from this stretch.** Three of my swarm diagnoses were wrong, and every one failed
+  the same way: I measured, drew a conclusion, and did not check whether the measurement itself was
+  sound. Orphaned processes, checks run before DDS discovery, and an in-process probe that hangs all
+  produced confident but false readings. Before reporting a defect from a live run: confirm no stray
+  processes, confirm the check waited long enough, and prefer the launcher over an embedded probe.
+
 ### Known remaining issues
 
 - **Sensor layers** are not built: distance sensor, bounding-box publishing, satellite

@@ -11,11 +11,15 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import logging
+import os
+import sys
+import types
 
 import pytest
 
 from isaac_core.config import IsaacCoreConfig
 from isaac_core.sim.__main__ import _configure_logging
+from isaac_core.sim.runtime import STDOUT_FILENO, SimulationRuntime
 
 
 @pytest.fixture(autouse=True)
@@ -91,3 +95,105 @@ def test_quiet_loggers_has_sensible_defaults() -> None:
     quiet = IsaacCoreConfig().logging.quiet_loggers
     assert "ogn_registration" in quiet
     assert "isaac_core" not in quiet, "we must never filter our own output"
+
+
+# --- pre-Kit banner suppression ---------------------------------------------- #
+#
+# The launcher and Warp banners print before our logging or Kit's settings can take effect.
+# Warp is silenced through its config flag; the launcher banner through a stdout redirect
+# around app construction. Both must yield to `isaac_logs = true`, and the redirect must be
+# restored no matter what -- a silent boot that also hides a crash is worse than a noisy one.
+
+
+class _BareRuntime(SimulationRuntime):
+    """A runtime with the Isaac-dependent constructor bypassed, for banner tests."""
+
+    def __init__(self, config: IsaacCoreConfig) -> None:
+        """Store only the config the banner helpers read."""
+        self._config = config
+
+
+def _runtime(isaac_logs: bool) -> _BareRuntime:
+    """Return a bare runtime whose config has the given ``isaac_logs`` value."""
+    return _BareRuntime(IsaacCoreConfig(logging={"isaac_logs": isaac_logs}))
+
+
+def test_warp_banner_is_silenced_when_isaac_logs_is_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Warp has no env var; the only lever is warp.config.quiet, set before Warp initialises.
+    fake_config = types.ModuleType("warp.config")
+    fake_config.quiet = False  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "isaac_core.sim.runtime.importlib.import_module",
+        lambda name: fake_config if name == "warp.config" else pytest.fail(f"unexpected import {name}"),
+    )
+    _runtime(isaac_logs=False)._silence_warp_banner()
+    assert fake_config.quiet is True
+
+
+def test_warp_banner_is_left_alone_when_isaac_logs_is_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    # isaac_logs = true means "show everything", so quiet must not be forced on.
+    fake_config = types.ModuleType("warp.config")
+    fake_config.quiet = False  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "isaac_core.sim.runtime.importlib.import_module",
+        lambda name: pytest.fail(f"warp must not even be imported, got {name}"),
+    )
+    _runtime(isaac_logs=True)._silence_warp_banner()
+    assert fake_config.quiet is False
+
+
+def test_missing_warp_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A build without Warp simply has no banner to quiet; this must not raise.
+    def _raise(name: str) -> None:
+        raise ImportError(name)
+
+    monkeypatch.setattr("isaac_core.sim.runtime.importlib.import_module", _raise)
+    _runtime(isaac_logs=False)._silence_warp_banner()
+
+
+def test_suppressed_stdout_restores_the_descriptor_on_success() -> None:
+    runtime = _runtime(isaac_logs=False)
+    before = os.dup(STDOUT_FILENO)
+    try:
+        with runtime._suppressed_startup_stdout():
+            pass
+    finally:
+        os.close(before)
+    # The descriptor still refers to a live stream: writing must not raise.
+    sys.stdout.write("")
+    sys.stdout.flush()
+
+
+def test_suppressed_stdout_restores_the_descriptor_when_the_block_raises() -> None:
+    # This is the test that matters most: construction failing must still leave stdout usable,
+    # or a silent boot would swallow the very crash it needs to report.
+    runtime = _runtime(isaac_logs=False)
+
+    class _BoomError(RuntimeError):
+        pass
+
+    with pytest.raises(_BoomError), runtime._suppressed_startup_stdout():
+        raise _BoomError
+    # stdout is restored: a following write reaches a real stream rather than the null device.
+    sys.stdout.write("")
+    sys.stdout.flush()
+
+
+def test_suppressed_stdout_is_a_passthrough_when_isaac_logs_is_true(capfd: pytest.CaptureFixture[str]) -> None:
+    # With isaac_logs on, the block must not redirect anything -- output flows normally.
+    runtime = _runtime(isaac_logs=True)
+    with runtime._suppressed_startup_stdout():
+        # Write at the fd level, matching how the C++ banner reaches stdout.
+        os.write(STDOUT_FILENO, b"visible-banner")
+    captured = capfd.readouterr()
+    assert "visible-banner" in captured.out
+
+
+def test_suppressed_stdout_hides_fd_level_output_when_isaac_logs_is_false(capfd: pytest.CaptureFixture[str]) -> None:
+    # The launcher banner is written at the fd level by Kit's C++ startup, so a fd-level write
+    # is what the suppression has to catch.
+    runtime = _runtime(isaac_logs=False)
+    with runtime._suppressed_startup_stdout():
+        os.write(STDOUT_FILENO, b"launcher-banner")
+    captured = capfd.readouterr()
+    assert "launcher-banner" not in captured.out

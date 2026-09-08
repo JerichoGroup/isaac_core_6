@@ -43,7 +43,10 @@ def _default_launcher(command: list[str]) -> Any:  # noqa: ANN401
     """
     import subprocess  # noqa: PLC0415
 
-    return subprocess.Popen(command)
+    # New session, so the simulator gets its own process group. `python.sh` does not `exec` --
+    # it runs the interpreter as a child -- so killing only the wrapper orphans Isaac Sim and
+    # leaves a GUI and a held GPU behind. Killing the group is what actually stops it.
+    return subprocess.Popen(command, start_new_session=True)
 
 
 class _FeatureManager:
@@ -361,6 +364,19 @@ class SimSession:
         """
         return self._client.call(Method.GET_CAPABILITIES.value)
 
+    def wait_until_ready(self, timeout_s: float = 120.0) -> None:
+        """
+        Block until the simulator is usable.
+
+        Args:
+            timeout_s: Maximum time to wait.
+
+        Raises:
+            TimeoutError: If the simulator does not become ready in time.
+
+        """
+        self._client.wait_until_ready(timeout_s=timeout_s)
+
     def close(self) -> None:
         """
         Disconnect from the control server, and stop the simulator if we started it.
@@ -375,12 +391,63 @@ class SimSession:
         if self._process.poll() is not None:
             return
         logger.info("terminating the simulator we launched")
-        self._process.terminate()
+        self._terminate_process_group()
+
+    def _terminate_process_group(self) -> None:
+        """
+        Stop the simulator and every process it spawned.
+
+        Two facts make the obvious ``terminate()`` insufficient, and together they are why a
+        finished script could leave a live Isaac Sim GUI behind:
+
+        * Isaac is started with ``installSignalHandlers=0``, so it **ignores SIGTERM**.
+        * ``python.sh`` does not ``exec`` the interpreter, so the process we hold is a wrapper and
+          Isaac is its child. Signalling only the wrapper orphans Isaac.
+
+        So the whole process group is signalled, and SIGKILL follows if SIGTERM is ignored.
+        """
+        import os  # noqa: PLC0415
+        import signal  # noqa: PLC0415
+
+        if self._process is None:
+            return
+        # An injected test double may have no pid; fall back to signalling the object itself.
+        pid = getattr(self._process, "pid", None)
+        group = None
+        if isinstance(pid, int):
+            try:
+                group = os.getpgid(pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                group = None
+
+        def _signal(sig: int) -> None:
+            if group is not None:
+                try:
+                    os.killpg(group, sig)
+                    return
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            send = getattr(self._process, "send_signal", None)
+            terminate = getattr(self._process, "terminate", None)
+            try:
+                if callable(send):
+                    send(sig)
+                elif callable(terminate):
+                    terminate()
+            except (ProcessLookupError, OSError):
+                pass
+
+        _signal(signal.SIGTERM)
+        try:
+            self._process.wait(timeout=_SHUTDOWN_TIMEOUT_S)
+            return
+        except Exception:  # noqa: BLE001 - subprocess raises its own TimeoutExpired
+            logger.warning("simulator ignored SIGTERM (expected); killing the process group")
+        _signal(signal.SIGKILL)
         try:
             self._process.wait(timeout=_SHUTDOWN_TIMEOUT_S)
         except Exception:  # noqa: BLE001
-            logger.warning("simulator did not exit in time; killing it")
-            self._process.kill()
+            logger.warning("simulator process group did not exit after SIGKILL")
 
     def __enter__(self) -> SimSession:
         """Enter context manager -- return self."""
@@ -451,6 +518,7 @@ class Sim:
         scene: str = "earth",
         headless: bool = False,
         timeout_s: float = 120.0,
+        overrides: dict[str, Any] | None = None,
         launcher: Any = None,  # noqa: ANN401
     ) -> SimSession:
         """
@@ -470,6 +538,9 @@ class Sim:
             scene: Scene to load by logical name.
             headless: Whether to launch headless.
             timeout_s: Maximum time to wait for readiness after spawning.
+            overrides: Extra dotted config keys, e.g. ``{"features.enabled": ["bbox"]}`` or
+                ``{"vehicles.wing.pose_source": "udp"}``. Anything the explicit arguments also
+                set wins over these, so ``headless`` cannot be silently contradicted.
             launcher: Optional injected launcher callable. When the runtime exists,
                 this will default to the standard process spawner.
 
@@ -491,13 +562,17 @@ class Sim:
 
         # The simulator reads one fully resolved TOML rather than a pile of flags, so
         # precedence is decided in exactly one place. Same mechanism the CLI uses.
-        config = load(
-            cli_overrides={
+        # Explicit arguments are applied last so they cannot be silently contradicted by an
+        # override, which would make `headless=True` mean nothing.
+        cli_overrides: dict[str, Any] = dict(overrides or {})
+        cli_overrides.update(
+            {
                 "sim.scene": scene,
                 "sim.headless": str(headless).lower(),
                 "sim.control_plane.port": str(port),
             }
         )
+        config = load(cli_overrides=cli_overrides)
         config_dir = Path(tempfile.mkdtemp(prefix="isaac-core-launch-"))
         config_path = config_dir / "resolved.toml"
         config_path.write_text(dump_toml(config), encoding="utf-8")
@@ -508,17 +583,20 @@ class Sim:
         process = spawn(command)
 
         client = ControlClient(host=host, port=port)
+        session = SimSession(client, process=process)
         try:
-            client.wait_until_ready(timeout_s=timeout_s)
-        except TimeoutError:
-            # A simulator that never opened its port is not useful, and leaving it running
-            # would block the port for the next attempt.
-            if process is not None and process.poll() is None:
-                process.terminate()
+            session.wait_until_ready(timeout_s=timeout_s)
+        except BaseException:
+            # BaseException on purpose: KeyboardInterrupt is the common case. Pressing Ctrl-C
+            # while "Launching..." was on screen used to leave a fully-booted Isaac Sim running
+            # with nothing holding a reference to it, because the session that owns the process
+            # was only constructed after the wait succeeded.
+            logger.info("startup interrupted or timed out; stopping the simulator we launched")
+            session.close()
             raise
 
         logger.info("launched simulation at %s:%d", host, port)
-        return SimSession(client, process=process)
+        return session
 
 
 __all__ = [

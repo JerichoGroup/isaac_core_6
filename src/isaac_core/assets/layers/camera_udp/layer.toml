@@ -33,16 +33,6 @@ resolve = "global_pose_topic"
 # --- CameraImageExport graph bindings ----------------------------------------
 
 [[bindings]]
-prim = "{mount}/CameraImageExport/isaac_set_viewport_resolution"
-attribute = "inputs:width"
-config = "vehicles.{instance}.cameras.{camera}.width"
-
-[[bindings]]
-prim = "{mount}/CameraImageExport/isaac_set_viewport_resolution"
-attribute = "inputs:height"
-config = "vehicles.{instance}.cameras.{camera}.height"
-
-[[bindings]]
 prim = "{mount}/CameraImageExport/ros2_camera_helper"
 attribute = "inputs:topicName"
 resolve = "image_topic"
@@ -80,7 +70,7 @@ config = "vehicles.{instance}.cameras.{camera}.f_stop"
 # Native RTSP stream (D21): always on, so these are the only knobs.
 prim = "{mount}/CameraImageExport/rtsp_camera_helper"
 attribute = "inputs:port"
-config = "vehicles.{instance}.cameras.{camera}.rtsp_port"
+resolve = "rtsp_port"
 
 [[bindings]]
 prim = "{mount}/CameraImageExport/rtsp_camera_helper"
@@ -103,3 +93,18 @@ config = "vehicles.{instance}.gimbal.start_pitch_deg"
 prim = "{mount}/PoseSync/global_position_to_local_position"
 attribute = "inputs:offset_yaw_deg"
 config = "vehicles.{instance}.gimbal.start_yaw_deg"
+
+# Viewport name. Empty for a single vehicle so the active viewport is reused exactly as before;
+# named per vehicle in a swarm, where sharing one viewport made the view flip between aircraft.
+
+# Resolution is a property of the render product, which is now created directly from the camera.
+# Offscreen, so no viewport window is involved and there is no name lookup to race.
+[[bindings]]
+prim = "{mount}/CameraImageExport/isaac_create_render_product"
+attribute = "inputs:width"
+config = "vehicles.{instance}.cameras.{camera}.width"
+
+[[bindings]]
+prim = "{mount}/CameraImageExport/isaac_create_render_product"
+attribute = "inputs:height"
+config = "vehicles.{instance}.cameras.{camera}.height"

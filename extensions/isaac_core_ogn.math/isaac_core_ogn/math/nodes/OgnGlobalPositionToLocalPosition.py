@@ -131,9 +131,29 @@ class OgnGlobalPositionToLocalPosition:
         offset_roll_r = math.radians(float(db.inputs.offset_roll_deg))
         offset_pitch_r = math.radians(float(db.inputs.offset_pitch_deg))
         offset_yaw_r = math.radians(float(db.inputs.offset_yaw_deg))
-        offset_matrix = euler_to_matrix(offset_roll_r, offset_pitch_r, offset_yaw_r, frame=rotation_frame)
+        # The gimbal offset is ALWAYS body-relative and always carries the airframe's own
+        # NED->ENU sign conventions. Both parts were wrong before, and together they made a
+        # commanded pitch come out as roll:
+        #
+        # * Composing in the vehicle's frame (WORLD by default) applies the offset about fixed
+        #   world axes. A level, north-heading aircraft already carries ENU yaw = +90 degrees
+        #   (because yaw_enu = -yaw_ned + pi/2 turns a compass heading into a bearing), and that
+        #   90 degrees rotates the offset's axes, so "pitch" landed on the roll axis. Measured:
+        #   commanded pitch changed the camera's elevation by 0.00 degrees while commanded roll
+        #   changed it by the full amount.
+        # * The offset also has to flip pitch and yaw exactly as `ned_to_enu` does for the
+        #   airframe, or the same command means opposite things depending on which path set it.
+        #
+        # With both applied: -pitch lowers the view, +roll drops the right side without moving
+        # where the camera points, and +yaw turns right -- the conventions the README documents.
+        offset_matrix = euler_to_matrix(
+            offset_roll_r,
+            -offset_pitch_r,
+            -offset_yaw_r,
+            frame=RotationFrame.BODY,
+        )
 
-        composed = compose_rotation(drone_matrix, offset_matrix, rotation_frame)
+        composed = compose_rotation(drone_matrix, offset_matrix, RotationFrame.BODY)
 
         # Read back with the same convention, or the angles would not round-trip.
         composed_roll, composed_pitch, composed_yaw = matrix_to_euler(composed, frame=rotation_frame)

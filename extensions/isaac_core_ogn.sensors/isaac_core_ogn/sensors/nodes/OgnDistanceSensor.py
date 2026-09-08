@@ -21,31 +21,31 @@ import importlib
 import carb
 from isaac_core_ogn.sensors.ogn.OgnDistanceSensorDatabase import OgnDistanceSensorDatabase
 
-from isaac_core.contracts.rangefinder import NO_DETECTION, resolve_range
+from isaac_core.contracts.rangefinder import resolve_range
 
 # Prefix for all log messages from this node.
 _LOG_PREFIX = "SIM | RANGE |"
 
 
-def _sensor_prim_path(db: OgnDistanceSensorDatabase) -> str | None:
+def _camera_prim_path(db: OgnDistanceSensorDatabase) -> str | None:
     """
-    Return the first target of the ``sensorPrim`` relationship, or ``None``.
+    Return the camera path this sensor ranges along, or ``None``.
+
+    A plain token rather than a USD relationship: the camera lives in a different layer, so the
+    GUI's relationship picker cannot see it, and the compositor writes this from config instead.
 
     Args:
         db: OmniGraph node database.
 
     Returns:
-        The prim path as a string, or ``None`` when nothing is wired.
+        The absolute prim path, or ``None`` when unset or not absolute.
 
     """
-    targets = db.inputs.sensorPrim
-    if targets is None:
+    value = db.inputs.cameraPath
+    if value is None:
         return None
-    try:
-        first = targets[0]
-    except (IndexError, TypeError):
-        return None
-    return str(first)
+    text = str(value).strip()
+    return text if text.startswith("/") else None
 
 
 # One raycast sequence per node instance, keyed by node path. A sequence is the render
@@ -154,10 +154,10 @@ class OgnDistanceSensor:
         db.outputs.min_range_out = min_range
         db.outputs.max_range_out = max_range
 
-        prim_path = _sensor_prim_path(db)
+        prim_path = _camera_prim_path(db)
         if prim_path is None:
-            carb.log_warn(f"{_LOG_PREFIX} No sensorPrim wired; reporting no detection")
-            db.outputs.range_m = NO_DETECTION
+            carb.log_warn(f"{_LOG_PREFIX} cameraPath is unset or not absolute; reporting no detection")
+            db.outputs.range_m = max_range
             db.outputs.hit = False
             return True
 
@@ -168,21 +168,23 @@ class OgnDistanceSensor:
         stage = omni_usd.get_context().get_stage()
         prim = stage.GetPrimAtPath(prim_path) if stage is not None else None
         if prim is None or not prim.IsValid():
-            carb.log_warn(f"{_LOG_PREFIX} sensorPrim {prim_path} is not valid")
-            db.outputs.range_m = NO_DETECTION
+            carb.log_warn(f"{_LOG_PREFIX} camera prim {prim_path} is not valid")
+            db.outputs.range_m = max_range
             db.outputs.hit = False
             return True
 
         transform = usd_geom.Xformable(prim).ComputeLocalToWorldTransform(usd_mod.TimeCode.Default())
         origin = transform.ExtractTranslation()
-        # Local -Z, matching the USD camera convention, so a sensor parented to the camera
-        # points where the camera looks.
+        # Local -Z of the CAMERA prim, which is where a USD camera looks. Casting along a separate
+        # sensor prim's -Z was permanently 90 degrees off the view, because the camera carries its
+        # own local orientation (0.5, 0.5, -0.5, -0.5) while a plain Xform is identity. Reading the
+        # axis off the camera makes the boresight structural: it cannot drift out of alignment.
         rotation = transform.ExtractRotationMatrix()
         direction = -rotation.GetRow(2)
 
         hit, distance = _cast(db, origin, direction, min_range, max_range)
         if hit is None:
-            db.outputs.range_m = NO_DETECTION
+            db.outputs.range_m = max_range
             db.outputs.hit = False
             return True
 
@@ -190,7 +192,7 @@ class OgnDistanceSensor:
             db.outputs.range_m = resolve_range(hit, distance, min_range, max_range)
         except ValueError as exc:
             carb.log_warn(f"{_LOG_PREFIX} {exc}")
-            db.outputs.range_m = NO_DETECTION
+            db.outputs.range_m = max_range
             db.outputs.hit = False
             return True
 

@@ -15,8 +15,6 @@ DEFAULT_POSE_UDP_PORT: Final = 33333
 # Port for the JSON-RPC control plane. Bound to localhost unless configured otherwise.
 DEFAULT_CONTROL_PLANE_PORT: Final = 8760
 
-DEFAULT_RTP_VIDEO_PORT: Final = 5004
-DEFAULT_RTP_META_PORT: Final = 5005
 
 # Lowest port we will allocate; below this requires privileges we should not need.
 MIN_PORT: Final = 1024
@@ -68,8 +66,6 @@ def pose_port_for_index(index: int, base: int = DEFAULT_POSE_UDP_PORT) -> int:
 __all__ = [
     "DEFAULT_CONTROL_PLANE_PORT",
     "DEFAULT_POSE_UDP_PORT",
-    "DEFAULT_RTP_META_PORT",
-    "DEFAULT_RTP_VIDEO_PORT",
     "MAX_PORT",
     "MIN_PORT",
     "pose_port_for_index",

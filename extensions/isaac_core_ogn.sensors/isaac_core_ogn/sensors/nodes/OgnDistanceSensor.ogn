@@ -2,24 +2,15 @@
     "DistanceSensor": {
         "version": 1,
         "description": [
-            "Raycast from a prim and report the distance to the first hit.",
+            "Report the distance from a camera to the first thing at the centre of its view.",
             "",
-            "Feeds Isaac's generic isaacsim.ros2.bridge.ROS2Publisher configured for",
-            "sensor_msgs/Range: wire `range`, `min_range` and `max_range` straight to the",
-            "publisher's matching inputs.",
+            "Boresighted by construction: the ray is cast along the camera prim's own local -Z, so it",
+            "follows the camera wherever the gimbal aims it and cannot drift out of alignment. Casting",
+            "along a separate sensor prim's axis was permanently 90 degrees off, because the camera",
+            "carries its own local orientation while a plain Xform does not.",
             "",
-            "The ray starts at the sensor prim's world position and travels along its local -Z,",
-            "matching the USD camera convention so a sensor can be parented to the camera and",
-            "point where it looks.",
-            "",
-            "Isaac Sim 6 does ship a RaycastSensor, but it is a Python runtime class rather than",
-            "an OmniGraph node or a USD schema, so it cannot be placed in an action graph. This",
-            "node uses the PhysX scene-query interface that Isaac exposes for exactly this, which",
-            "keeps the whole pipeline inside the graph like every other layer.",
-            "",
-            "Out-of-band readings follow sensor_msgs/Range convention rather than being clamped:",
-            "+inf for no detection, -inf for closer than the rated minimum. Clamping would make",
-            "'nothing there' indistinguishable from 'something at exactly max range'."
+            "Uses the RENDER raycast, not PhysX: Cesium 3D Tiles terrain has no collision geometry, so a",
+            "physics raycast never hits the ground."
         ],
         "language": "Python",
         "metadata": {
@@ -34,11 +25,12 @@
                     "uiName": "Exec In"
                 }
             },
-            "sensorPrim": {
-                "type": "target",
-                "description": "Prim the ray originates from, travelling along its local -Z. Target by relationship, never a path string, so the layer survives being mounted anywhere",
+            "cameraPath": {
+                "type": "token",
+                "default": "",
+                "description": "Absolute prim path of the camera to range along, e.g. '/World/Environment/drone_0/Xform/main_camera_01'. The ray is cast along this prim's local -Z, which is the USD camera convention, so it always points at the centre of the camera's view -- a boresighted rangefinder. A plain path rather than a USD relationship because the camera lives in a different layer and the GUI's relationship picker cannot see it; the stage compositor writes this from config.",
                 "metadata": {
-                    "uiName": "Sensor Prim"
+                    "uiName": "Camera Path"
                 }
             },
             "min_range_m": {

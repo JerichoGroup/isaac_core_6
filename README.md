@@ -279,6 +279,22 @@ with Sim.attach() as session:
 An unknown vehicle name is rejected with the list of configured ones rather than silently acting
 on the wrong aircraft.
 
+### The GUI viewport in a swarm
+
+There is one viewport, and it follows the **first vehicle declared in config** -- `lead` in the
+example above. Declaration order is preserved, so this is stable run to run. Every vehicle still
+gets its own render product, image topic and RTSP stream regardless of which one the window shows;
+the viewport is only what *you* look at. Point it elsewhere with `sim.viewport_camera`.
+
+Each simultaneous RTSP stream needs its own port (Isaac's requirement, not ours), so ports are
+allocated as `rtsp_port + index`: `lead` on 8554 and `wing` on 8555, at `/lead/stream` and
+`/wing/stream`. If a stream fails to bind with `Address already in use`, check for a simulator left
+running by an earlier session -- Isaac ignores SIGTERM, so a stale process keeps holding the port:
+
+```bash
+pgrep -af 'isaac_core.sim' && kill -9 <pid>
+```
+
 ---
 
 ## Coordinate conventions
@@ -671,6 +687,25 @@ rm -rf /tmp/carb.*
 ```
 
 Then relaunch. The segfault is inside Kit's `update_app()` and is not caused by our extensions -- it reproduces with both disabled.
+
+### Frame rate dips every few seconds while flying
+
+Terrain is streamed, so flying into ground you have not visited before means waiting on tile
+downloads. Measured on the reference scene: the first pass over fresh terrain produced a handful
+of frames as slow as 7 fps, while a second pass over the same ground held a steady 59.9 fps with
+none below 20.
+
+This is cold-cache streaming, not a simulation problem, and the pose pipeline is unaffected --
+it was sampled separately and showed no dropped or delayed updates. Practical mitigations:
+
+- Leave `cesium.delete_cache_on_launch = false` (the default). Turning it on guarantees every
+  launch starts cold.
+- Raise `cesium.max_cached_bytes` above Cesium's 512 MiB default if you have the disk, so terrain
+  stays resident between runs.
+- Fly the route once to warm the cache before a recording that matters.
+
+Reducing `cesium.max_simultaneous_tile_loads` looks like it helps and does not: an experiment
+that appeared to show a large gain reversed completely when the test order was reversed.
 
 ### Cesium cache growing to hundreds of GB
 

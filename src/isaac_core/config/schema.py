@@ -270,11 +270,33 @@ class GeoConfig(_Strict):
 
 
 class CesiumConfig(_Strict):
-    """3D Tiles terrain settings."""
+    """
+    3D Tiles terrain settings.
+
+    The tile-loading fields default to ``None``, meaning "leave Cesium's own default alone".
+    They exist because tuning them previously required a ``prim_override``, not because the
+    shipped defaults are wrong -- measurement showed the frame-rate hitch during flight is
+    **cold-cache streaming**, not load concurrency, so changing concurrency does not fix it.
+    """
 
     tileset_server_url: str | None = None
     tilesets_root: str = prims.TILESETS_ROOT
+    # Deleting the cache forces every launch to stream terrain from scratch, which is exactly the
+    # condition that produces the worst hitching. Off by default for that reason; turn it on only
+    # to reclaim disk.
     delete_cache_on_launch: bool = False
+
+    # Concurrent tile requests. Cesium's default is 20.
+    max_simultaneous_tile_loads: int | None = Field(None, gt=0)
+    # Pixel error allowed before a finer tile is fetched. Cesium's default is 16; larger values
+    # mean coarser terrain and fewer tile loads.
+    max_screen_space_error: float | None = Field(None, gt=0.0)
+    # Tile cache ceiling in bytes. Cesium's default is 512 MiB. Raising it keeps terrain resident
+    # for longer, which is the one knob here that genuinely reduces how often streaming goes cold.
+    max_cached_bytes: int | None = Field(None, gt=0)
+    # Prefetch neighbouring and parent tiles ahead of need.
+    preload_ancestors: bool | None = None
+    preload_siblings: bool | None = None
 
 
 class FeaturesConfig(_Strict):
@@ -571,6 +593,31 @@ class IsaacCoreConfig(_Strict):
         if configured is not None:
             return configured
         return pose_port_for_index(self.vehicle_index(vehicle_id), DEFAULT_POSE_UDP_PORT)
+
+    def resolved_rtsp_port(self, vehicle_id: str, camera_id: str) -> int:
+        """
+        Return a camera's RTSP port, offset per vehicle so a swarm cannot collide.
+
+        Every vehicle mounts its own copy of the camera layer, so with a shared port the second
+        aircraft's RTSP server fails to bind: Isaac reports
+        ``Error binding to address 0.0.0.0:8554: Address already in use`` and that vehicle simply
+        has no stream. Offsetting by the vehicle's index mirrors how pose ports work.
+
+        An explicitly configured port is honoured verbatim, so a single-vehicle setup keeps 8554
+        and a user pinning a port gets exactly that.
+
+        Args:
+            vehicle_id: Key in ``vehicles``.
+            camera_id: Key in that vehicle's ``cameras``.
+
+        Returns:
+            The port this camera's RTSP server should bind.
+
+        """
+        camera = self.vehicles[vehicle_id].cameras[camera_id]
+        if "rtsp_port" in camera.model_fields_set:
+            return camera.rtsp_port
+        return camera.rtsp_port + self.vehicle_index(vehicle_id)
 
     def resolved_mount(self, vehicle_id: str) -> str:
         """

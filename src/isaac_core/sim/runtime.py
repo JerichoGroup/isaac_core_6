@@ -18,6 +18,7 @@ importing this module does NOT pull in Isaac dependencies at the top level.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 import importlib
 import logging
@@ -27,11 +28,12 @@ from pathlib import Path
 import queue
 import socket
 import struct
+import sys
 import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 from isaac_core.config import IsaacCoreConfig
 from isaac_core.contracts import packet as packet_spec
@@ -82,6 +84,18 @@ EXTENSION_WARMUP_FRAMES: int = 60
 # render pipeline, and mounting one before the renderer has produced a frame is the same
 # class of race.
 STAGE_SETTLE_FRAMES: int = 30
+
+# File descriptor of the stream the pre-Kit banners are written to.
+#
+# The launcher banners come out of plain Python ``print()`` calls in Isaac's
+# ``SimulationApp.__init__`` ("Starting kit application with the following args: ...") and out
+# of Kit's own C++ startup writing to the process's stdout. Neither obeys a log level or the
+# ``--/app/enableStdoutOutput=false`` setting, because both happen before or beneath our
+# logging configuration. Redirecting this descriptor -- 1, POSIX stdout -- around the
+# construction of ``SimulationApp`` is the only lever that catches them. Only stdout is
+# touched: our own logging and every Python traceback go to stderr (fd 2), so a crash during
+# construction still surfaces in full.
+STDOUT_FILENO: int = 1
 
 
 @dataclass
@@ -364,6 +378,11 @@ class SimulationRuntime:
         self._gimbal_current: GimbalAngles | None = None
         self._gimbal_prim_path: str | None = None
         self._capture_request: _CaptureRequest | None = None
+        # Set by reset(); the loop presses play one frame later, since play() in the same
+        # frame as stop() is ignored by Kit's timeline.
+        self._pending_play = False
+        # Set once the stage is composed, so clients can tell a live port from a usable sim.
+        self._stage_composed = False
         # Runtime config patches, consulted ahead of the frozen config models.
         self._config_overrides: dict[str, Any] = {}
 
@@ -434,7 +453,9 @@ class SimulationRuntime:
             "renderer": self._config.sim.renderer,
             "extra_args": self._kit_startup_args(),
         }
-        self._app = sim_app_cls(launch_config, experience=self._resolve_experience())
+        self._silence_warp_banner()
+        with self._suppressed_startup_stdout():
+            self._app = sim_app_cls(launch_config, experience=self._resolve_experience())
 
         self._enable_required_extensions()
 
@@ -451,6 +472,65 @@ class SimulationRuntime:
             # need for remote control, and one fewer background thread is one fewer
             # thing interacting with Kit's event loop.
             logger.info("control plane disabled by configuration")
+
+    def _silence_warp_banner(self) -> None:
+        """
+        Set Warp's ``quiet`` flag before Warp initialises, when Isaac logs are off.
+
+        Warp prints a multi-line "Warp <version> initialized: ... Devices: ..." banner to
+        stdout the first time it initialises, guarded solely by ``warp.config.quiet`` -- there
+        is no environment variable for it. Setting the flag here, before ``SimulationApp`` is
+        constructed and long before any extension pulls Warp in, means the flag is already in
+        place when ``warp.init()`` runs. Warp's own docstring notes that errors and warnings are
+        unaffected by ``quiet``, so this hides the banner without hiding a real problem.
+
+        Left untouched when ``logging.isaac_logs`` is set, so a debugging run still sees it. A
+        missing Warp import is not an error: a build without Warp simply has no banner to quiet.
+        """
+        if self._config.logging.isaac_logs:
+            return
+        try:
+            warp_config = importlib.import_module("warp.config")
+        except ImportError:
+            logger.debug("warp not importable; no Warp banner to silence")
+            return
+        # The module is imported dynamically, so its ``quiet`` attribute is invisible to the
+        # type checker even though Warp defines it; the Any handle makes the write explicit.
+        config: Any = warp_config
+        config.quiet = True
+        logger.debug("set warp.config.quiet to suppress the Warp init banner")
+
+    @contextlib.contextmanager
+    def _suppressed_startup_stdout(self) -> "Iterator[None]":
+        """
+        Redirect POSIX stdout to the null device for the duration of the block.
+
+        This is the only lever that catches the launcher banners Isaac's ``SimulationApp``
+        prints with plain ``print()`` and the lines Kit's C++ startup writes to the process's
+        stdout: both bypass every log level and the ``enableStdoutOutput`` setting. Only fd 1 is
+        redirected, and only at the file-descriptor level so the C++ side is covered too; fd 2
+        (stderr) is deliberately left alone, so our own logging and any Python traceback raised
+        while the app is constructed still reach the terminal in full.
+
+        The original descriptor is restored in a ``finally``, unconditionally, even if
+        construction raises -- a silent boot that also swallowed a crash would be far worse than
+        a noisy one. Disabled entirely when ``logging.isaac_logs`` is set, which then shows
+        every startup line.
+        """
+        if self._config.logging.isaac_logs:
+            yield
+            return
+        sys.stdout.flush()
+        saved_fd = os.dup(STDOUT_FILENO)
+        null_fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(null_fd, STDOUT_FILENO)
+            yield
+        finally:
+            sys.stdout.flush()
+            os.dup2(saved_fd, STDOUT_FILENO)
+            os.close(saved_fd)
+            os.close(null_fd)
 
     def _set_viewport_camera(self) -> None:
         """
@@ -643,6 +723,7 @@ class SimulationRuntime:
             layer_search_paths,
             settle=settle,
         )
+        self._stage_composed = True
 
         self._set_viewport_camera()
 
@@ -683,6 +764,7 @@ class SimulationRuntime:
         try:
             while self._running and self._app.is_running():
                 app_utils.update_app()
+                self._step_pending_play()
                 self._step_gimbal()
                 self._step_capture()
                 self._drain_main_thread_tasks()
@@ -902,6 +984,20 @@ class SimulationRuntime:
         )
         return {"roll_deg": target.roll_deg, "pitch_deg": target.pitch_deg, "yaw_deg": target.yaw_deg}
 
+    def _step_pending_play(self) -> None:
+        """
+        Press play if a reset asked for it on a previous frame.
+
+        Separated from the reset handler because Kit ignores ``play()`` issued in the same frame as
+        ``stop()``, which left a reset simulation stopped.
+        """
+        if not self._pending_play:
+            return
+        self._pending_play = False
+        timeline = importlib.import_module("omni.timeline").get_timeline_interface()
+        timeline.play()
+        logger.info("reset: timeline resumed")
+
     def _step_gimbal(self) -> None:
         """
         Move the gimbal one frame's worth toward its target.
@@ -1120,9 +1216,27 @@ class SimulationRuntime:
         return values
 
     def _handle_get_state(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-        """Return the current simulation state."""
+        """
+        Return the current simulation state.
+
+        ``ready`` is the field a client should wait on. The control plane starts listening
+        *before* the stage is composed, so a connectable port means only "the process is alive":
+        commands sent between those two moments are silently lost, because the graphs that would
+        act on them do not exist yet. That is not theoretical -- a `set_pose` issued in that window
+        left the camera motionless with no error anywhere.
+
+        Args:
+            params: Ignored.
+
+        Returns:
+            Running and readiness state plus the scene and headless flags.
+
+        """
+        del params
         return {
             "running": self._running,
+            "ready": self._running and self._stage_composed,
+            "stage_composed": self._stage_composed,
             "scene": self._config.sim.scene,
             "headless": self._config.sim.headless,
         }
@@ -1139,21 +1253,97 @@ class SimulationRuntime:
         return self._config.model_dump(mode="json")  # type: ignore[no-any-return]
 
     def _handle_pause(self, params: dict[str, Any] | list[Any] | None) -> str:
-        """Pause the simulation."""
+        """
+        Pause the simulation.
+
+        The pause goes through the step loop, not the control server's thread. ``pause`` is a
+        thin wrapper over ``omni.timeline``, and a timeline transition fires Isaac's own
+        extension callbacks (the throttling extension's ``_on_play``/``_on_stop`` among them)
+        which assume they run on the main thread with a live asyncio event loop. Calling it from
+        the control-server thread crashed inside Isaac's throttling extension with
+        ``RuntimeError: There is no current event loop in thread 'isaac-core-control-server'``.
+
+        Args:
+            params: Ignored.
+
+        Returns:
+            ``"paused"``.
+
+        """
+        del params
         if self._app_utils is not None:
-            self._app_utils.pause()
+            self._on_main_thread(self._app_utils.pause)
         return "paused"
 
     def _handle_resume(self, params: dict[str, Any] | list[Any] | None) -> str:
-        """Resume the simulation."""
+        """
+        Resume the simulation.
+
+        Dispatched to the step loop for the same reason as :meth:`_handle_pause`: ``play``
+        wraps ``omni.timeline`` and its transition invokes Isaac extension callbacks that need
+        the main thread's event loop. This was the reported bug -- ``resume`` from the control
+        thread reached Isaac's throttling extension ``_on_play`` and died with
+        ``RuntimeError: There is no current event loop in thread 'isaac-core-control-server'``.
+
+        Args:
+            params: Ignored.
+
+        Returns:
+            ``"resumed"``.
+
+        """
+        del params
         if self._app_utils is not None:
-            self._app_utils.play()
+            self._on_main_thread(self._app_utils.play)
         return "resumed"
 
     def _handle_step(self, params: dict[str, Any] | list[Any] | None) -> str:
-        """Advance one step."""
-        if self._app_utils is not None:
-            self._on_main_thread(self._app_utils.update_app)
+        """
+        Advance the simulation by ``count`` frames.
+
+        The frames are pumped inside a single queued main-thread task rather than spread across
+        ``count`` loop iterations like the capture state machine. ``step`` is a synchronous
+        request-response call whose contract is "the simulation has advanced N frames by the time
+        this returns", so the caller must block until all N are done; the capture machine can
+        stretch over frames precisely because its caller waits on a separate event, not on the
+        queued task. Pumping here is not re-entrant either -- the loop drains this task *between*
+        its own ``update_app`` calls, so ``update_app`` is never called from inside itself.
+
+        The bound is :data:`MAIN_THREAD_TASK_TIMEOUT_S`: the whole run of ``count`` frames must
+        finish within that budget or the caller sees a ``TimeoutError``, so a very large ``count``
+        on a slow stage can time out. That is deliberate -- a wedged or glacial loop surfaces as a
+        clear error rather than a client hung forever. Callers wanting many frames should issue
+        several ``step`` calls.
+
+        Args:
+            params: Optional mapping with ``count`` (a positive integer, default 1).
+
+        Returns:
+            ``"stepped"``.
+
+        Raises:
+            InvalidParamsError: If ``count`` is present but not a positive integer.
+
+        """
+        count = _optional_positive_int(_as_mapping(params), "count") or 1
+        if self._app_utils is None:
+            return "stepped"
+        app_utils = self._app_utils
+
+        def _pump() -> None:
+            """Advance the simulation ``count`` frames on the loop thread."""
+            timeline = importlib.import_module("omni.timeline").get_timeline_interface()
+            # `update_app` renders a frame but does NOT advance a paused timeline, so stepping
+            # while paused appeared to do nothing at all -- which is exactly when stepping is
+            # useful. `forward_one_frame` moves the timeline itself; the render still needs
+            # `update_app` afterwards for the new frame to appear.
+            playing = timeline.is_playing()
+            for _ in range(count):
+                if not playing:
+                    timeline.forward_one_frame()
+                app_utils.update_app()
+
+        self._on_main_thread(_pump)
         return "stepped"
 
     def _handle_capture_frame(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
@@ -1540,7 +1730,10 @@ class SimulationRuntime:
             timeline = importlib.import_module("omni.timeline").get_timeline_interface()
             timeline.stop()
             timeline.set_current_time(0.0)
-            timeline.play()
+            # `play()` in the same frame as `stop()` does not take -- the timeline needs a frame
+            # in between, so a reset left the simulation stopped rather than restarted. Deferred
+            # to the next loop iteration instead.
+            self._pending_play = True
             return {"timeline": "restarted", "simulation_time": 0.0}
 
         self._gimbal_target = None

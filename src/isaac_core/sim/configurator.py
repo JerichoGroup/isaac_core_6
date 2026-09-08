@@ -182,6 +182,9 @@ def _resolve_runtime_value(
         "distance_topic": lambda: _resolve_distance_topic(config, vehicle_id),
         "bbox_topic": lambda: _resolve_vehicle_topic(config, BBOX, vehicle_id),
         "rtsp_mount_path": lambda: _resolve_rtsp_mount_path(config, vehicle_id, camera_id),
+        "rtsp_port": lambda: config.resolved_rtsp_port(
+            vehicle_id, camera_id if camera_id is not None else _first_camera_id(config, vehicle_id)
+        ),
         "camera_horizontal_aperture": lambda: _resolve_horizontal_aperture(config, vehicle_id, camera_id),
         "camera_vertical_aperture": lambda: _resolve_vertical_aperture(config, vehicle_id, camera_id),
         "lla_topic": lambda: _resolve_mavros_topic(config, "global_position/global", vehicle_id),

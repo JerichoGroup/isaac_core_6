@@ -192,6 +192,42 @@ def _wrong_port_hint(port: int) -> str:
     return ""
 
 
+def read_attributes(client: ControlClient, requests: list[str]) -> int:
+    """
+    Print live attribute values read off the running stage.
+
+    Args:
+        client: A connected control client.
+        requests: ``PRIM:ATTRIBUTE`` strings.
+
+    Returns:
+        Process exit status: non-zero if any request was malformed or unreadable.
+
+    """
+    status = 0
+    for raw in requests:
+        prim, separator, attribute = raw.rpartition(":")
+        if not separator or not prim or not attribute:
+            print(f"  BAD --read {raw!r}: expected PRIM:ATTRIBUTE")
+            status = 1
+            continue
+        try:
+            result = client.call("read_prim_attribute", {"prim": prim, "attribute": attribute})
+        except Exception as exc:  # noqa: BLE001 - report any RPC failure per request
+            print(f"  {prim}.{attribute}: FAILED {exc}")
+            status = 1
+            continue
+        value = result.get("value")
+        if value is None:
+            # A None value means the prim or attribute is absent, which is worth distinguishing
+            # from an attribute that genuinely holds nothing.
+            print(f"  {prim}.{attribute}: <not found on the stage>")
+            status = 1
+            continue
+        print(f"  {prim}.{attribute} = {value}")
+    return status
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Entry point for ``python -m isaac_core.debug.inspector``.
@@ -235,6 +271,19 @@ def main(argv: list[str] | None = None) -> int:
         ).format(DEFAULT_POLL_INTERVAL_S),
     )
 
+    parser.add_argument(
+        "--read",
+        action="append",
+        metavar="PRIM:ATTRIBUTE",
+        default=None,
+        help=(
+            "Read one live attribute straight off the stage, e.g. "
+            "--read /World/Environment/drone_0/Xform/main_camera_01:focalLength. "
+            "Repeatable. This is the only way to confirm from outside the process what a "
+            "specific prim attribute actually holds, rather than what config asked for."
+        ),
+    )
+
     args = parser.parse_args(argv)
 
     client = ControlClient(host=args.host, port=args.port)
@@ -252,18 +301,24 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    status = 0
     try:
-        # --count on its own means "give me N samples": polling is implied. Before this it
-        # was silently ignored and the one-shot report printed instead.
-        interval = args.poll if args.poll is not None else (DEFAULT_POLL_INTERVAL_S if args.count else None)
-        if interval is not None:
-            poll_pose(client, interval=interval, count=args.count)
+        if args.read:
+            # An explicit read is a targeted question; answer only that rather than also
+            # printing the full report the user did not ask for.
+            status = read_attributes(client, args.read)
         else:
-            inspect_once(client)
+            # --count on its own means "give me N samples": polling is implied. Before this it
+            # was silently ignored and the one-shot report printed instead.
+            interval = args.poll if args.poll is not None else (DEFAULT_POLL_INTERVAL_S if args.count else None)
+            if interval is not None:
+                poll_pose(client, interval=interval, count=args.count)
+            else:
+                inspect_once(client)
     finally:
         client.close()
 
-    return 0
+    return status
 
 
 if __name__ == "__main__":

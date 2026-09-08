@@ -28,3 +28,11 @@ config = "vehicles.{instance}.distance_sensor.max_range_m"
 prim = "{mount}/RangeSensing/ros2_publisher"
 attribute = "inputs:topicName"
 resolve = "distance_topic"
+
+# The ray is cast along the camera's own -Z, so the rangefinder is boresighted with the view.
+# Written by the compositor because the camera lives in the camera layer, which the GUI's
+# relationship picker cannot reach from this one.
+[[bindings]]
+prim = "{mount}/RangeSensing/distance_sensor"
+attribute = "inputs:cameraPath"
+resolve = "camera_prim"

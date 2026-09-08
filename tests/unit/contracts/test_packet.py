@@ -108,7 +108,5 @@ def test_default_ports_are_themselves_valid() -> None:
     for port in (
         ports.DEFAULT_POSE_UDP_PORT,
         ports.DEFAULT_CONTROL_PLANE_PORT,
-        ports.DEFAULT_RTP_VIDEO_PORT,
-        ports.DEFAULT_RTP_META_PORT,
     ):
         assert ports.validate_port(port) == port

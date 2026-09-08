@@ -24,6 +24,11 @@ from isaac_core.control.messages import (
     encode,
 )
 
+# Default socket timeout for a call. Generous because several methods legitimately span multiple
+# render frames -- `capture_frame` resizes, settles and waits for an async file write, and `step`
+# runs N frames -- and a short timeout reported those as failures while they were still working.
+DEFAULT_CALL_TIMEOUT_S: float = 60.0
+
 
 class ControlClient:
     """
@@ -72,7 +77,7 @@ class ControlClient:
         """Return the target port."""
         return self._port
 
-    def connect(self, timeout: float = 5.0) -> None:
+    def connect(self, timeout: float = DEFAULT_CALL_TIMEOUT_S) -> None:
         """
         Establish TCP connection to the server.
 
@@ -155,17 +160,49 @@ class ControlClient:
         """
         return self.call(Method.PING.value)
 
-    def wait_until_ready(self, timeout_s: float = 30.0, poll_interval: float = 0.1) -> None:
+    def _stage_ready(self) -> bool:
         """
-        Block until the server accepts connections and responds to ``ping``.
+        Report whether the simulator has composed its stage.
 
-        This is the documented replacement for the old repo's readiness detection
-        (grepping stdout for ``"rclpy loaded"`` + ``sleep(5)``). The port becoming
-        connectable and replying to ``ping`` IS the readiness signal.
+        Tolerates an older simulator that does not publish the field, treating a missing ``ready``
+        as ready so a newer client cannot hang forever against one.
+
+        Returns:
+            ``True`` when the stage is composed, or the field is absent.
+
+        """
+        try:
+            state = self.call(Method.GET_STATE.value)
+        except RpcError:
+            # A server that does not implement get_state cannot report readiness, so treat it as
+            # ready rather than hanging. Keeps a newer client usable against an older simulator,
+            # and keeps minimal test servers working.
+            return True
+        if not isinstance(state, dict) or "ready" not in state:
+            return True
+        return bool(state["ready"])
+
+    def wait_until_ready(
+        self,
+        timeout_s: float = 30.0,
+        poll_interval: float = 0.1,
+        *,
+        require_stage: bool = True,
+    ) -> None:
+        """
+        Block until the simulator is actually usable, not merely listening.
+
+        A connectable port is **not** readiness. The control plane starts listening before the
+        stage is composed, so commands sent in that window are accepted and then silently lost --
+        the graphs that would act on them do not exist yet. This was observed for real: a
+        ``set_pose`` issued right after the port opened left the camera motionless, with no error
+        anywhere. So by default this also waits for ``get_state`` to report ``ready``.
 
         Args:
             timeout_s: Maximum total time to wait.
-            poll_interval: Seconds between connection attempts.
+            poll_interval: Seconds between attempts.
+            require_stage: Wait for the stage to be composed as well as the port to answer. Pass
+                ``False`` only to talk to a simulator mid-startup deliberately.
 
         Raises:
             TimeoutError: If the server does not become ready within ``timeout_s``.
@@ -176,15 +213,20 @@ class ControlClient:
 
         while time.monotonic() < deadline:
             try:
-                self.connect(timeout=min(poll_interval, deadline - time.monotonic()))
+                # A generous socket timeout, not the poll interval: some methods legitimately take
+                # seconds (a capture spans several frames, `step` runs N of them), and a short
+                # socket timeout made them fail as TimeoutError while the work was still going.
+                self.connect(timeout=max(DEFAULT_CALL_TIMEOUT_S, poll_interval))
                 self.ping()
-                return
+                if not require_stage or self._stage_ready():
+                    return
+                last_error = None
             except (OSError, ConnectionError, RpcError) as exc:
                 last_error = exc
-                self.close()
-                remaining = deadline - time.monotonic()
-                if remaining > 0:
-                    time.sleep(min(poll_interval, remaining))
+            self.close()
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(poll_interval, remaining))
 
         msg = f"server at {self._host}:{self._port} not ready within {timeout_s}s"
         if last_error is not None:
