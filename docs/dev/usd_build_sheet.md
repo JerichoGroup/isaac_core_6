@@ -1,6 +1,6 @@
 # USD task list
 
-Tactical tasks only. Rationale lives in [KIRO.md](../KIRO.md).
+Tactical tasks only. Rationale lives in [docs/development-log.md](../docs/development-log.md).
 
 ---
 
@@ -16,7 +16,20 @@ Added then abandoned — writing a relationship onto a live OmniGraph node abort
 
 ## Tasks
 
-Nothing outstanding.
+## Screenshots for the README
+
+Done: `hero_terrain.png`, `gimbal_reference.png`, `bboxes.png`, `pose_sender.png`,
+`ros_topics_rqt.png`. All five are referenced and resolve.
+
+Dropped: the distance-sensor shot. A number next to a picture is not worth an image.
+
+### Outstanding — `swarm_two_vehicles.png` (optional)
+
+Blocked on the RTSP port collision below, and worth knowing before retrying: there is now only **one
+viewport**, because each camera renders to an offscreen render product rather than its own viewport
+window. So a single screenshot cannot show two camera views. The shot to take is the **Stage tree**
+showing `/World/Environment/lead` and `/World/Environment/wing` alongside the viewport, or skip it --
+the multi-vehicle table in the README carries the information without a picture.
 
 ## How to run
 

@@ -4,7 +4,7 @@
 
 Step-by-step guide for the first end-to-end flight using the UDP camera layer. Covers setup verification, stage composition in the GUI, and flying a trajectory with `send_test_pose.py`. Start here after installation.
 
-## [usd_build_sheet.md](usd_build_sheet.md)
+## [usd_build_sheet.md](dev/usd_build_sheet.md)
 
 Task list for authoring and wiring USD in the Isaac Sim 6 GUI. Describes the remaining wiring gap (ROS publisher execution input) and records settled decisions about prim targeting, mount points, and body-axis conventions.
 

@@ -1,5 +1,34 @@
 # Project status — isaac_core_6
 
+## Per-vehicle gimbal and frame capture
+
+`set_gimbal` and `capture_frame` act on a single vehicle. With more than one configured they now
+**refuse** with a message naming the vehicles, rather than silently acting on the first one and
+reporting success — which is what they used to do.
+
+To lift the restriction: give `set_gimbal` and `capture_frame` a `vehicle` argument (and
+`capture_frame` a `camera` argument), key the gimbal target and current angles per vehicle instead of
+one runtime-wide pair, and route both through the same `_vehicle_from` resolution `set_pose` and
+`get_pose` already use. Around ten call sites resolve `next(iter(vehicles))` today.
+
+Everything else is already per-vehicle: ports, topics, mounts, render products and RTSP streams. Only
+these two commands are not.
+
+## Live stage manipulation (lowest priority)
+
+Both items below were removed from the shipped surface rather than left raising
+`NotImplementedError`, so v2 ships nothing that is known not to work. Neither blocks any workflow
+and neither existed in the 2023 repo. **These are the least important things on this roadmap.**
+
+- **Runtime feature toggling** (`features.enable/disable`) — compose or remove a feature layer on a
+  live stage. Today: list features in config before launch.
+- **Runtime scene swap** (`load_scene`) — open a different scene without restarting. Today: set
+  `sim.scene` and restart, which takes about fifteen seconds.
+
+Whoever picks these up should know why they were deferred: every stage-lifecycle shortcut tried in
+this project produced a *silent abort* rather than an error, so both need a crash-rate harness
+before being considered done.
+
 ## Version 1 — shipped (2026-09-02)
 
 The core sandbox is done, tested, and validated by hand as well as by suite.

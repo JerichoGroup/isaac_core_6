@@ -1,4 +1,4 @@
-# KIRO.md — isaac_core_6 working memory
+# docs/development-log.md — isaac_core_6 working memory
 
 Persistent context for building `isaac_core_6`. Not user documentation; this is my
 engineering notebook. Read this first at the start of any session.
@@ -810,7 +810,7 @@ scripting and replay · deterministic seeded scenarios for regression tests.
   format change. Measured asset sizes and audited `.ogn` node type naming (found four styles
   across seven nodes). Replaced the earlier unagreed §7 proposal with the agreed
   architecture above.
-- **Nothing has been implemented yet.** No source written in isaac_core_6; only `KIRO.md`
+- **Nothing has been implemented yet.** No source written in isaac_core_6; only `docs/development-log.md`
   exists beyond the team template.
 
 - **2026-08-24 (c)** — Implemented the first kernel layer. Retargeted `pyproject.toml`
@@ -925,7 +925,7 @@ scripting and replay · deterministic seeded scenarios for regression tests.
   1. The integrator "fixed" mypy-vs-extensions by adding `extensions/.*` to the
      **top-level** `exclude:` in `.pre-commit-config.yaml`, which silently disabled **every**
      hook on `extensions/` — ruff reported "no files to check" — while its own comment claimed
-     "ruff is fine". KIRO.md explicitly warns against exactly this. Replaced with a
+     "ruff is fine". docs/development-log.md explicitly warns against exactly this. Replaced with a
      **per-hook `exclude: ^extensions/` on the mypy hook only**; ruff and all hygiene hooks
      now run on extensions again. Verified both directions.
   2. No `data/` directory or `package.icon` in any extension (Ofer spotted this by eye, which
@@ -947,7 +947,7 @@ scripting and replay · deterministic seeded scenarios for regression tests.
 Parallelising by package, then by individual extension, both worked well. What makes it work:
 every agent reads this file first; the non-obvious house style is repeated inline (D213
 second-line summaries, flat test functions, `#` comments not attribute docstrings); agents are
-forbidden from touching `pyproject.toml` / `KIRO.md` / `requirements*.txt` / `.pre-commit-config.yaml`
+forbidden from touching `pyproject.toml` / `docs/development-log.md` / `requirements*.txt` / `.pre-commit-config.yaml`
 so there are no write conflicts; and they must *report* needed dependencies rather than install
 them. Give each agent its own test file to avoid collisions on a shared one.
 
@@ -995,7 +995,7 @@ commands and reading the diff establishes fact.
   `doctor` now correctly finds Isaac Sim 6.0.1 and flags the two real outstanding setup
   steps (install into Isaac's interpreter, link extensions).
 
-  Also wrote **`docs/usd_build_sheet.md`** — staged instructions for authoring the USD in the
+  Also wrote **`docs/dev/usd_build_sheet.md`** — staged instructions for authoring the USD in the
   GUI, with exact prim paths, node lists and wiring. Stage 1 (base scene + UDP camera layer)
   is sufficient for a first end-to-end run.
 
@@ -1049,7 +1049,7 @@ commands and reading the diff establishes fact.
   because this failure only appears once an extension is linked into a real install and
   the GUI is launched — expensive to rediscover.
 
-  Also corrected `docs/usd_build_sheet.md`: Stage 1's `PoseSync` graph drops to five nodes
+  Also corrected `docs/dev/usd_build_sheet.md`: Stage 1's `PoseSync` graph drops to five nodes
   and **needs no ROS at all**, so it is still the right starting point.
 
   **Verified:** 709/709 pytest, 14/14 pre-commit hooks PASS, import-linter 18 contracts KEPT.
@@ -1196,7 +1196,7 @@ commands and reading the diff establishes fact.
   2 m. Conclusive.
 
   Chain:
-  1. `docs/usd_build_sheet.md` told Ofer to add a **Cesium Globe Anchor** to `/Root/Xform`.
+  1. `docs/dev/usd_build_sheet.md` told Ofer to add a **Cesium Globe Anchor** to `/Root/Xform`.
      That instruction was wrong.
   2. The camera layer was authored standalone, and its own `/CesiumGeoreference` has **no
      `georeferenceOrigin` authored** — so Cesium fell back to its default origin, **Denver
@@ -1610,7 +1610,7 @@ commands and reading the diff establishes fact.
   log leaked into pytest output. Tests now inject a fake launcher; the devkit suite went
   from 12.9s to 2.8s.
 
-  Two sub-agents wrote `docs/roadmap.md` (repo-wide status, parity table against the 2023
+  Two sub-agents wrote `docs/dev/roadmap.md` (repo-wide status, parity table against the 2023
   repo, what remains for v1) and rewrote `README.md` with usage and worked examples. Both
   were independently checked: the roadmap listed the import-linter hook and `Sim.launch` as
   outstanding when both were done, and test counts were stale. Corrected.
@@ -1749,7 +1749,7 @@ commands and reading the diff establishes fact.
   **The audit.** Both bugs were the same shape -- a config key that parses and validates but
   that nothing reads -- so I checked all 65 schema fields against every use in `src/`,
   `extensions/` and `scripts/`. Twelve were dead. Two are now fixed (`isaac_logs`,
-  `tileset_server_url`); the remaining ten are listed in `docs/roadmap.md` with reasons.
+  `tileset_server_url`); the remaining ten are listed in `docs/dev/roadmap.md` with reasons.
   `tests/unit/config/test_no_dead_keys.py` now fails on any **new** dead key and also fails
   when a key on the known-dead list gets fixed but is left on it, so the backlog cannot rot
   in either direction.
@@ -1993,7 +1993,7 @@ commands and reading the diff establishes fact.
   - Recorded the **migration note**: 2023 abused the quaternion (x=roll, y=pitch, z=yaw); we
     publish a real one (D16), so 2023 consumers need updating.
 
-  Restructured `docs/roadmap.md`: v1 marked shipped with its closeout, the parity table made
+  Restructured `docs/dev/roadmap.md`: v1 marked shipped with its closeout, the parity table made
   README-authoritative, and the flat "after v1" list replaced by **seven ordered v2 milestones**
   (M1 messages -> M2 sensor layers -> M3 gimbal -> M4 streaming -> M5 runtime control ->
   M6 swarm -> M7 production readiness), each with goal, work items, dependencies, size, owner
@@ -2114,7 +2114,7 @@ commands and reading the diff establishes fact.
   **Also fixed:** `bbox_recorder` was dropping 9 of `Bbox.msg`'s 16 fields (the geodetic
   position, orientation and per-axis distances) — now serialises all 16.
 
-  Rewrote `docs/usd_build_sheet.md` for v2: Task A (remove the gimbal ROS subscriber, ready
+  Rewrote `docs/dev/usd_build_sheet.md` for v2: Task A (remove the gimbal ROS subscriber, ready
   now), Task B (distance sensor layer, ready now — node exists and is verified), Task C (bbox,
   blocked on a node I have yet to build), Task D (RTSP, blocked on my investigation).
 
@@ -2325,7 +2325,7 @@ commands and reading the diff establishes fact.
   silently never appears. Sourcing `humble_ws/install/setup.bash` before launch is mandatory for
   the bbox layer; documented in the build sheet's run instructions.
 
-  Rewrote `docs/usd_build_sheet.md` per Ofer's request: tasks only, no rationale, with explicit
+  Rewrote `docs/dev/usd_build_sheet.md` per Ofer's request: tasks only, no rationale, with explicit
   DONE/TODO/BLOCKED status per task and a "do not author these" table. Explanations belong here.
 
 - **2026-09-03** — Answered Ofer's two design questions with live evidence. Both change the plan.
@@ -3311,10 +3311,424 @@ commands and reading the diff establishes fact.
   produced confident but false readings. Before reporting a defect from a live run: confirm no stray
   processes, confirm the check waited long enough, and prefer the launcher over an embedded probe.
 
+- **2026-09-08 (e)** — **Removed the two deferred methods rather than shipping them broken.**
+
+  Ofer's call, and the right one: v2 now ships nothing that is known not to work. Deleted
+  `load_scene`, `enable_feature` and `disable_feature` -- three `Method` enum members, three control
+  plane registrations, three runtime handlers, the devkit `_FeatureManager` proxy and its `features`
+  property. Roadmapped as two-liners under "Live stage manipulation (lowest priority)" with the
+  reason a future implementer needs: every stage-lifecycle shortcut here produced a *silent abort*,
+  so both need a crash-rate harness before being called done.
+
+  Two things the removal surfaced. My `cut` helper removed `_ConfigProxy` along with
+  `_FeatureManager` because they were adjacent -- caught by the suite, restored from
+  `git show HEAD:`, which is the argument for the file being tracked. And a docstring on `Sim`
+  claimed `Sim.launch` "currently raises NotImplementedError for the actual process spawn", which
+  has been false for a long time; `launch` works. Exactly the class of rot Phase 2 exists to remove,
+  found early by accident.
+
+  Adjusted `test_the_scanners_found_something`: it asserted deferred handlers *exist*, which was a
+  reasonable parser self-check when some did and a guaranteed failure once none do. Now asserts the
+  scanner returns a set, and the README-honesty guard stays live for anything added later.
+
+  **1558 tests pass** (two fewer, being the tests for the removed features), all gates green,
+  23 contracts kept.
+
+- **2026-09-08 (f)** — V2 finalization planned; style profile put to Ofer before touching style.
+
+  Plan in `docs/v2_finalization_plan.md`: six phases -- freeze the claim surface, split docs by
+  audience, source cleanup, verify every feature, repo hygiene, release gate. Ofer added that
+  Phase 0's matrix must be **re-run at the end** so cleanup cannot quietly break something the
+  matrix already certified, and dropped the CONTRIBUTING.md in favour of a fresh-clone check on a
+  different machine with a fresh Isaac install.
+
+  He corrected me on style: I had proposed taking docstring inspiration from 2023, whose docstrings
+  are lowercase fragments (`"""this file defines the sim app class"""`). He said it should be the
+  industry standard instead, and he is right -- that is PEP 257, capitalised imperative sentences.
+
+  Measuring to answer him found something worse in *our* config: `pyproject.toml` explicitly ignores
+  **D212**, so we enforce summaries on the **second** line, the opposite of PEP 257 and Google style.
+  538 multi-line docstrings are affected. `ruff --fix` autofixes D212, so the correction is mechanical
+  rather than a hand edit. Question A1 in `docs/dev/style_questions.md`, recommending we switch.
+  I set that ignore originally and should have flagged it as non-standard at the time.
+
+- **2026-09-08 (g)** — Style profile answered; **every lint suppression removed from `src` and
+  `scripts`**; docstrings switched to PEP 257.
+
+  **Docstrings (A1).** Removed `D212` from the ignore list. The pair `D212`/`D213` is mutually
+  exclusive -- you must ignore exactly one -- so this was necessarily a swap, and `D213` went in with
+  a comment recording why. `ruff --fix` corrected **582** docstrings to first-line summaries.
+
+  **`Any` (A2, and Ofer's steer).** He said he is fine with `Any`, so `ANN401` went into the ignore
+  list and 103 inline suppressions came out. Measured first, because the recommendation depended on
+  it: 65 were JSON-RPC/config boundaries where a `JsonValue` alias would have been more precise, and
+  34 were Isaac APIs that ship **no type stubs**, where `Any` is the only honest annotation. Given a
+  third of them cannot be improved at all, the global ignore is the consistent choice.
+
+  **The big finding: most suppressions were already dead.** `PLC0415` (45 uses) is a **preview-only
+  rule and was never active** -- ruff says so directly: "Selection `PLC0415` has no effect because
+  preview is not enabled". Then `RUF100` (unused-noqa) found **51 more** dead directives. So 91 of
+  the ~190 suppressions were protecting against rules that never fired. They accumulated because
+  nothing checked them, which is the argument for enabling `RUF100` permanently.
+
+  **Real fixes, not suppressions**, for the rest:
+  - 5 `assert x is not None  # noqa: S101` in `control/server.py` became three real guards raising
+    `RuntimeError("control server is not running")` -- mypy is satisfied *and* a genuine failure now
+    reports itself instead of vanishing under `-O`.
+  - `key.fileobj` narrowed with `isinstance` rather than `# type: ignore[assignment]`.
+  - 16 **stdlib** modules (`os`, `subprocess`, `pathlib`, `tempfile`, …) were being imported inside
+    functions for no reason; hoisted to module top. The genuinely lazy ones (`rclpy`, `tkinter`,
+    `cv2`, `pymavlink`) stay lazy -- that is the three-interpreter design, not an oversight.
+  - `_launch_simulator(install: object, *, config: object)` and `_configure_logging(config: object)`
+    were annotated `object`, which *forced* three `attr-defined` ignores. Both attributes existed all
+    along. Annotated properly via `TYPE_CHECKING`, so the ignores went and real checking arrived.
+  - `prim.IsValid()` / `prim.HasAttribute()` wrapped in `bool()` instead of `no-any-return` ignores.
+  - `sim/__main__.py` had five `# type: ignore[name-defined]  # noqa: F821` pairs for forward refs
+    with no `TYPE_CHECKING` block. Added the block; all ten suppressions went.
+
+  **Result: `src` and `scripts` contain zero `# noqa` and zero `# type: ignore`.** Remaining are 29
+  in `tests` and 9 in `extensions`, both areas Ofer explicitly exempted. `N802` moved to the existing
+  `tests/**` per-file-ignores with a note -- fakes for Pixar's USD API must copy its PascalCase names
+  exactly or they are not substitutable.
+
+  One self-inflicted break worth recording: deleting `import tkinter as tk` removed the *body* of the
+  `try:` that tests tkinter availability, producing an `IndentationError`. The suite caught it
+  immediately. Its `F811` suppression turned out to be stale anyway.
+
+  **1558 tests, all seven gates green, 23 contracts kept.**
+
+- **2026-09-08 (h)** — Log moved here from `KIRO.md` at Ofer's request (B10), since a 3,300-line
+  engineering log is the first thing a newcomer opened after the README and none of it is
+  user-facing. All six referencing files updated. Also recorded: emoji allowed in the README only,
+  at most one per section heading (B1); Ofer shoots all screenshots during the Phase 1 review, so the
+  build sheet now lists seven with exact `docs/images/<name>.png` filenames the README will
+  reference (B7); no `CONTRIBUTING.md`; and the fresh-clone check happens on a **different machine
+  with a fresh Isaac install**.
+
+- **2026-09-08 (i)** — `RUF100` enabled (approved); test ignores audited; **Phase 0 complete**.
+
+  **Test ignores: nothing stale to remove.** Ofer's distinction was that permitting ignores in tests
+  does not mean permitting *stale* ignores. Checked properly rather than assumed:
+  `warn_unused_ignores = true` was **already** set in `[tool.mypy]`, and mypy reports **0 unused**
+  across `tests/`. Verified the hook genuinely covers tests by injecting a type error into
+  `tests/unit/control/test_messages.py`, confirming mypy caught it, then restoring the file -- without
+  that check "0 stale" could equally have meant "not checked". All 29 are load-bearing, and all 29
+  carry a specific error code; there are no bare `# type: ignore`. So the staleness guard for
+  `type: ignore` already existed, and `RUF100` now provides the matching guard for `# noqa`.
+
+  Proved `RUF100` is live by planting a dead `# noqa: E501` in `contracts/topics.py` and confirming
+  ruff flagged it, then restoring. A rule believed-enabled is worth nothing.
+
+  **Phase 0 complete: `docs/feature_matrix.md`.** ~90 rows over ten areas, each with a verification
+  bucket (A automated / B live-scripted / C eyes-on) and a cited evidence file. All 58 cited test
+  files verified to exist, mechanically, rather than trusted.
+
+  Five findings, none a crash:
+
+  - **F1** — `get_runtime_values` and `read_prim_attribute` are registered handlers called by
+    `isaac-core-inspect` with raw strings and are absent from the `Method` enum. The coverage guard
+    passes *correctly* because both are reachable, but the enum is documented as the control-plane
+    surface, so a user reading it gets an incomplete answer. `read_prim_attribute` is not documented
+    anywhere at all.
+  - **F2** — four dead topic constants in `contracts/topics.py`: `SAT`, `RAW_RGB`, `MAVROS_LLA`,
+    `MAVROS_ORIENTATION`, all confirmed at **zero** references outside their own module. The MAVROS
+    input path itself works -- `_resolve_mavros_topic` builds those names dynamically per vehicle --
+    so only the constants are dead. The dead-symbol guard does not reach module-level string
+    constants, which is why they survived.
+  - **F3** — the README-honesty guard is now vacuous, since nothing raises `NotImplementedError`.
+    Keeping it: it costs nothing and goes live again the moment a capability is deferred.
+  - **F4** — bucket B has no runner. Most live rows are marked pass from ad-hoc runs recorded here,
+    not a repeatable script. That is precisely the weakness that let me report the swarm image topics
+    as broken when they were fine, so Phase 3 builds `eyes_on_check.py --verify`.
+  - **F5** — the unreproduced gimbal report, carried forward.
+
+  The matrix also states what it does **not** cover -- sustained load, crash rate, performance, and
+  fresh-install behaviour -- so those gaps are deliberate rather than accidental.
+
+  Noted for Phase 2: Ofer asked that `Any` not be *overused* now that `ANN401` is off. The policy is
+  that `Any` is for the JSON-RPC/config boundary and unstubbed Isaac APIs, not a default.
+
+  **1558 tests, all gates green.**
+
+- **2026-09-08 (j)** — F1 closed; **Phase 0.5 (adversarial agent review) run and triaged**.
+
+  **F1.** `get_runtime_values` and `read_prim_attribute` added to the `Method` enum, and
+  `isaac-core-inspect` switched from raw strings to enum members — six call sites, including four
+  that already had members and were still using strings. `_INTERNAL_HANDLERS_OK` is now empty, so
+  the enum is once again the complete control-plane surface. Left the two raw strings inside
+  `ControlClient`'s docstring examples, where a literal reads better for a user.
+
+  **Phase 0.5 placement.** Ofer asked for a review phase and where it belonged. Findings split into
+  substantive (missing tests, logic, dead surface) and cosmetic (comments, docstrings, doc
+  structure); the substantive kind must land *before* Phases 2 and 3 to be actionable, and the
+  cosmetic kind would be invalidated *by* them. So it runs after the matrix and before the README
+  rewrite, explicitly scoped to substance, with reviewers told to ignore style. It also means the
+  rewrite answers the confusions a fresh reader actually reported rather than the ones I imagined.
+
+  Seven reviewers ran in parallel: architecture/API, test critic, kernel correctness, Isaac surface,
+  robustness/security, fresh user, config. Full triage in `docs/dev/phase_0_5_triage.md`.
+
+  **The finding that justified the whole phase was mine.** `runtime.py` looked up the OmniGraph node
+  `isaac_get_viewport_render_product`, which has **zero** occurrences in the shipped camera layers —
+  I replaced it with `isaac_create_render_product` during the swarm fix and never updated the
+  runtime. `og.Controller.node()` raised, `except Exception` swallowed it, the lookup returned None,
+  and `capture_frame(width, height)` silently fell back to viewport resolution while reporting
+  success; headless capture would fail outright. Invisible to 1558 passing tests, and I had reported
+  that manifest switch as verified. The name is now a module constant with a test asserting it
+  against both `.usda` files, and I confirmed the guard bites by reverting the constant and watching
+  it fail.
+
+  **Three more real bugs fixed.** (1) A structurally valid UDP packet carrying `lat=200` or `NaN`
+  reached `Lla.__post_init__`, whose `ValueError` is not a `PosePacketError`, so
+  `HoldLastGoodDecoder` did not catch it and the receive loop crashed — remote-triggerable from any
+  sender. `alt=inf` propagated infinity into the stage, the same class as the old `int(inf)` crash.
+  `decode` now validates finiteness and lat/lon range as `PacketPayloadError`; 10 parametrized tests
+  lock it; the bounds are reused from `contracts/pose.py` rather than duplicated.
+  (2) `config/default.toml` had drifted from the schema in three values, and since the README tells
+  users to start from that file, copying it *changed behaviour*: `tilesets_root` pointed at
+  `/tilesets` instead of `/World/tilesets` (silently disabling the tileset URL override and every
+  tile tunable), `delete_cache_on_launch` was `true` (the exact setting our own troubleshooting
+  section warns causes worst-case hitching), and `domain_id` pinned 13 instead of inheriting
+  `$ROS_DOMAIN_ID`. A guard now diffs every key with a two-entry allowlist; the old test checked only
+  validity. (3) `config.layers` is read by **zero** code, and its documented examples were actively
+  misleading — `[layers.distance_sensor] max_range_m = 180.0` contradicted the real per-vehicle key
+  whose docstring explains that a 180 m ray never reaches the ground, `[layers.bbox_publisher]` used
+  an id that is not the shipped layer's, and `[layers.sat]` named a layer that never existed. An
+  existing test *required* those sections to exist, which is why they survived.
+
+  **Highest-value accepted-but-not-done finding:** no OGN node `compute()` is ever executed. All
+  four runtime nodes are tested by parsing their `.ogn` JSON as data, so the code that actually turns
+  a pose into what the camera receives is untested, and `test_gimbal_axes.py` *reimplements* the
+  node's composition instead of calling it — they can drift apart while both stay green. That is
+  Phase 3's first task.
+
+  Reviewers were also wrong in useful ways, and I rejected four claims after checking: capture path
+  confinement is genuinely airtight (`.resolve()` runs before `relative_to`, so symlinks, symlinked
+  parents, absolute paths and `..` are all rejected), the import-linter layering is not ceremony,
+  `normalize_angle` mapping `+pi` to `-pi` is correct, and `slerp` not clamping `t` is a documented
+  precondition all callers respect.
+
+  **1571 tests** (up 13), all seven gates green, 23 contracts kept.
+
+- **2026-09-08 (k)** — Ofer's four decisions implemented; **Phase 1 documentation rewrite**.
+
+  **Decisions.** (1) Multi-vehicle gimbal/capture: took the easy way out as instructed.
+  `_require_single_vehicle` refuses with a message naming every configured vehicle and stating which
+  one it *would* have acted on, instead of silently retargeting; the real per-vehicle work is
+  roadmapped with the ten `next(iter(vehicles))` sites named. (2) `PoseSource` trimmed to
+  `{udp, ros}` — `script`, `replay` and `mavlink` were accepted config that produced a vehicle which
+  never moved. The test that catalogued them now asserts the *invariant*: every member of the enum
+  must imply a shipped layer. (3) Sidecar retained by explicit sanction, recorded in the package
+  docstring and in `architecture.md` so no future reviewer re-raises it. (4) Default features are
+  `camera_udp` only, so a first run publishes exactly what the walkthrough describes.
+
+  **Two facts I got wrong and had to correct mid-edit**, both caught by checking rather than by a
+  test. I wrote that the `isaac_core_ogn.sensors` extension ships *four* nodes while fixing a doc
+  that claimed it was *gone*; the filesystem says **seven** across three extensions. Nearly replaced
+  one false claim with another. And I described `Lla.alt_m` as "only the difference is used", which is
+  an oversimplification: `enu.py` sends both position and reference through a pyproj ECEF transform
+  that treats height as ellipsoidal, so the honest statement is that a consistent MSL input is correct
+  to within the geoid variation across the scene. The original docstring said "above the WGS84
+  ellipsoid; sea level is 0", which names two datums tens of metres apart in one sentence.
+
+  **README rewritten** on the 2023 structure Ofer asked for: requirements, install, run, one section
+  per feature (what it does, how to enable it, how to use it, how to confirm it), topics in/out,
+  conventions, config, devkit, debug tools, troubleshooting. Emoji at most one per section heading.
+  History, architecture and migration notes moved out to their own documents, so the README is about
+  *using* the thing.
+
+  New `tests/unit/test_readme_honesty.py` guards the claims mechanically: every document link
+  resolves, only shipped layers are documented, no stale "what does not work yet" section survives,
+  and the test count is not wildly stale. That last one exists because the count appeared as 1103
+  (README, twice), 1279 (roadmap) and 1558 (matrix) while the suite was actually at 1571 — a reader
+  who checks one number and finds it wrong stops trusting the rest.
+
+  **Other review findings closed.** `first_run.md` rewritten: it previously opened with "There is no
+  `isaac-core run` yet" and walked the reader through building the stage by hand, while the README
+  linked it as *the* first-flight guide. `setup.sh` now uses `-e ".[sim]"` to match the doctor's own
+  hint (the extra is intentionally empty, so the two spellings were always equivalent — just
+  confusing). `rtsp_port`/`rtsp_mount_path` added to `default.toml`, which the README had claimed
+  was the complete surface while those real schema fields were absent. `roadmap.md` and
+  `usd_build_sheet.md` moved under `docs/dev/`, with all references updated.
+
+  Three new user-facing documents hold what left the README: `architecture.md` (the kernel-purity
+  rule and why `contracts/` exists, threading, the control plane, and why the sidecar is empty),
+  `authoring_layers.md` (the extension seam, with the declared-but-unconnected trap that caused three
+  real bugs), and `migrating_from_2023.md` (byte-identical packet, no Docker, gimbal axes fixed so
+  remove your compensation).
+
+  **1575 tests, all seven gates green, 23 contracts kept.** The only unresolved README links are the
+  four screenshots Ofer will shoot.
+
+- **2026-09-09** — **Phase 2 started: correctness and security findings first, style after.**
+
+  Deliberate ordering: the review's substantive findings are worth more than the comment pass, and
+  doing them first means the style sweep runs over code that is already correct.
+
+  **Control plane.** `MAX_REQUEST_BYTES` (1 MiB) caps the per-connection buffer — a client streaming
+  bytes with no newline previously grew it without limit and would OOM a process holding a GPU. Token
+  comparison moved to `hmac.compare_digest`; a byte-wise `!=` leaked the token through timing on
+  exactly the non-loopback path the token exists to protect. Both tested, the buffer one end-to-end
+  over a real socket, asserting the server drops the offender *and still serves other clients*.
+
+  **`limits` was accepted and ignored by two motion functions.** Found `move_to` from the review, then
+  scanned the module with `ast` and found `turn_to_point` doing the same — nine functions take
+  `limits`, seven honoured it. Both now do: `move_to` extends the duration when the implied
+  `distance / duration` exceeds `max_speed_mps`, `turn_to_point` when the implied sweep rate exceeds
+  `max_turn_rate_deg_s`. Verified by measurement, not inspection: a 111 km move under a 1 m/s cap goes
+  from 10 samples to 111,194. The third test asserts the **invariant** via `ast`, so a new function
+  cannot reintroduce the same lie.
+
+  **The live RPC path did not validate what the config path always has.** `_optional_float` used
+  `float(...)`, and `float("nan")`/`float("inf")` parse cleanly, so a NaN latitude reached the packet
+  encoder and the stage. It now rejects non-finite values and takes optional bounds, applied at
+  `set_pose` from the same `MIN_LAT_DEG`/`MAX_LAT_DEG` constants the packet codec uses.
+
+  **Dead surface.** `SAT` and `RAW_RGB` topic constants deleted (zero references). The MAVROS pair was
+  more interesting: `MAVROS_LLA = "/mavros/global_position/global"` could never be used because the
+  real topic is derived per vehicle from `mavros_namespace`, so rather than delete them I replaced them
+  with the *leaves* (`MAVROS_LLA_LEAF`) and wired them into `_resolve_mavros_topic`, which had those
+  strings hardcoded at three sites. Dead constants became the single source of truth. Also removed two
+  capability probes checking 2023-era prim paths (`/Environment/main_camera`, `/semantics`) that exist
+  in no shipped scene, plus their unused constants.
+
+  Two self-inflicted breakages, both caught immediately by the suite: I inserted an import at module
+  indentation into a function-local import block, and then hoisted constants into one function while a
+  second function 80 lines away also needed them. The fix in both cases was a module-level import,
+  which `contracts` being pure makes legal.
+
+  **1588 tests, all seven gates green, 23 contracts kept.** Still to do in Phase 2: the comment-style
+  pass, the duplicate-logic sweep, and the error-message audit.
+
+- **2026-09-09 (b)** — Phase 2 comment pass, using Ofer's metric rather than mine.
+
+  I had been measuring comment *density* per file. He corrected the metric: density is not the
+  problem, **large blocks** are, and his style is one-liners wherever possible with medium chunks
+  only for user-facing or API-shaped things. Re-measured by consecutive-comment-run length, which
+  found a completely different set of targets: 26 blocks of five or more lines, the worst at eleven.
+  Now **9 blocks, largest 6 lines**, and every survivor sits on a config field or a public contract.
+
+  Compressing them surfaced a bug I had introduced: my `RENDER_PRODUCT_NODE_NAME` constant had been
+  inserted *between* the `PATCHABLE_CONFIG_KEYS` comment and the constant it documents, so the comment
+  read as though it described the render-product node. Only visible by reading the region, not from any
+  test.
+
+  **Removed every reference to the old repo from `src`.** 24 mentions of "2023", 30 of "previous
+  generation", plus "the old repo", "god class" and three "defect #N" citations. A generic user has
+  never seen that repo and cannot look up defect numbers. Each was rewritten as a positive statement
+  of the constraint rather than a comparison -- "Do NOT swap roll and pitch here, that makes the axes
+  trade places at the camera" instead of "this deliberately does not match the previous generation,
+  which swapped them". The knowledge that stops someone undoing a hard-won decision is preserved;
+  the archaeology is not. Kept the year-based version numbers in `install.py`, which are real Isaac
+  Sim releases (2022, 2023.1.1) and not history.
+
+  Method note: I did these as scripted exact-string replacements and 10 of 29 missed on docstring
+  indentation, which then left three passages reading as broken sentences ("Anything calibrated
+  against a swapped mapping needs revisited."). Caught by reading the output rather than by the
+  suite -- prose damage is invisible to tests, so a scripted docstring edit has to be re-read.
+
+  **1588 tests, all seven gates green, 23 contracts kept.** Remaining in Phase 2: the duplicate-logic
+  sweep and the error-message audit.
+
+- **2026-09-09 (c)** — Phase 2 duplicate-logic sweep, error-message audit, and the remaining
+  lower-priority review findings.
+
+  **The real duplication was not where the plan guessed.** I had listed three topic resolvers as
+  candidates; reading them showed a shared `_resolve_topic` already exists and what repeats is a
+  three-line "explicit config value wins, else derive" idiom where the *differences* -- which field,
+  which derivation -- are the whole substance. Folding that into one parameterised helper would trade
+  three readable lines for a callable argument and hide which field feeds which topic. Left alone,
+  with a comment saying why, per the plan's own rule.
+
+  What was genuinely duplicated: **`next(iter(config.vehicles))` inlined at 11 sites** across
+  `runtime.py` and `composer.py`, while `configurator.py` had a private helper for exactly that. Now
+  one `IsaacCoreConfig.first_vehicle_id` property, which also raises a real error when no vehicles are
+  configured instead of `StopIteration`. Also renamed a nested `_pump` that shadowed the method of the
+  same name while doing something different -- the method advances frames, the nested one advances the
+  *timeline* too, which is the distinction that made stepping work while paused.
+
+  The quaternion-helper candidate turned out clean: no extension does its own conversion, they all
+  call `isaac_core.geo`.
+
+  **Error-message audit.** Sixteen raised messages are seven words or fewer, but short is not
+  unactionable -- "capture_frame requires params.path" names the method and the field. The one worth
+  fixing was `set_config`, which paired with a review finding: the devkit's `config.patch(**kwargs)`
+  invited `patch(gimbal_max_rate_deg_s=10.0)`, a call the server always rejects because a dotted key
+  cannot be a Python identifier. `patch(key, value)` now matches the wire contract, and the
+  missing-params error shows the exact JSON shape plus the patchable keys.
+
+  **Remaining findings closed.** `/home/ofer/isaacsim` was hardcoded in three shipped scripts while
+  `install.py` correctly probed `Path.home()` -- one user's path shipped to everyone; now
+  `$HOME`/`$ISAACSIM_PATH`. `setup.sh` ended with `isaac-core doctor || true`, so a broken environment
+  still printed "Setup complete"; it now exits non-zero and says to fix the reported lines.
+  `save_video` did not check `writer.isOpened()`, and OpenCV returns a writer even with no codec, then
+  silently drops every frame -- an empty file behind a "wrote N frames" log; it now raises and names
+  the remedy. And capture's render-product resize was undone only on the success path, so a failed
+  capture left the image topic and RTSP stream at capture resolution until relaunch; there is now one
+  `_restore_capture_resolution` used by both paths, with a test asserting the error path calls it.
+
+  **1588 tests, all seven gates green, 23 contracts kept.**
+
+- **2026-09-09 (d)** — README CR round 1 applied; RTSP swarm collision diagnosed; **my OGN framing
+  was wrong and Ofer caught it**.
+
+  **README.** Applied his review and, at his request, extended the same ideology past the 25% he had
+  read so the rest is cheaper to review. Repo-level bragging removed from the summary ("adding your
+  own sensor does not require forking" was *our* grievance with the old repo, not a user's concern) --
+  the capability keeps its own section instead. Specific sensors in the opening paragraph collapsed to
+  "optional robotics and computer-vision features". Every system requirement and every feature is now
+  a collapsible section. Deleted the "two environment facts" block: the rclpy/interpreter split is
+  developer-facing and already lives in `docs/ros2_and_python.md`, and `$ISAACSIM_PATH` is not a
+  requirement because the tooling probes for the install. Removed hand-holding cross-references
+  ("that symptom is covered in troubleshooting") -- a user in trouble reads the troubleshooting
+  section without being sent there. Removed editorialising like "commanded over the control plane
+  because aiming a gimbal is a command rather than telemetry".
+
+  He also caught unfriendly wording: "+pitch raises the look direction". Technically right for a
+  gimbal -- it is the camera that moves, not the nose -- but nobody says "look direction". Now
+  "+pitch aims the camera up".
+
+  `python3-tk` promoted from optional to required in both the README and `requirements.txt`. It is
+  stdlib, so it cannot be a pip line; the file documents it in the not-installable-by-pip section,
+  now marked REQUIRED with the reason the GUI will not start without it. Also stripped the last
+  archaeology from `requirements.txt`.
+
+  **The RTSP swarm collision now has a specific mechanism, not a guess.** `inputs:port` is declared in
+  the USD as `custom int inputs:port` with **no authored value**, and the `.ogn` default is **8554**.
+  So if the per-vehicle port write does not land, both helpers fall back to 8554 -- exactly the
+  observed `Error binding to address 0.0.0.0:8554: Address already in use`. This is the same
+  declared-but-unwritten failure class as the three earlier bugs where an unconnected input silently
+  used its default. Verified what I can statically: the config resolves correctly (lead 8554/wing 8555,
+  both with cameras), `compute_writes` targets the right per-vehicle prim paths, and no stale process
+  or bound port was present. What remains unverified is whether the write *lands* on wing's prim at
+  runtime. Not guessing a fourth time: one probe reading the authored `inputs:port` off both prims
+  after compose settles it.
+
+  Also worth recording for the screenshot: with offscreen render products there is now only **one
+  viewport**, so no single screenshot can show two camera views. Ofer's swarm shot is not obtainable
+  the way it was specified.
+
+  **My OGN claim was mis-framed and he was right to challenge it.** I wrote that "no OGN node
+  compute() is ever executed" as a Phase 3 headline, which reads as though we were failing to call
+  something. Isaac drives `compute()` and `release()`; we never do. The finding was only ever about
+  *test coverage* -- our suite exercises the `.ogn` schemas as data and never runs the compute bodies.
+  Measured how much that actually hides:
+  `OgnGlobalPositionToLocalPosition.compute()` is **67 lines**, `OgnDistanceSensor` 64,
+  `OgnBboxProjector` 53, the rest 20-35. So "the nodes are thin adapters over the kernel" is only
+  partly true, and the untested part is real.
+
+  But the remedy I had queued -- drive `compute()` from tests with a fake `db` -- is the worse of the
+  two options: it is artificial, and it tests our fake as much as our code. The better fix is to make
+  the claim true: move the logic out of those three compute bodies into `isaac_core.geo` /
+  `contracts`, where it is testable with no Isaac and no fake, leaving `compute()` genuinely thin.
+  Phase 3 will do that instead.
+
+  **1590 tests, all seven gates green, 23 contracts kept.** Five of the README images are in place.
+
 ### Known remaining issues
 
 - **Sensor layers** are not built: distance sensor, bounding-box publishing, satellite
-  imagery. See `docs/roadmap.md`.
+  imagery. See `docs/dev/roadmap.md`.
 - **`capture_frame`** raises `NotImplementedError` -- needs Isaac's viewport capture API.
   Route it through `_on_main_thread` when implemented.
 - **Monotonic frame id** cannot reach the image topic; `header.stamp` now covers most of

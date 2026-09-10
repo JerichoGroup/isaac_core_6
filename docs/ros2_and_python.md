@@ -76,13 +76,23 @@ Five nodes were deleted. Every one has a native Isaac Sim 6 equivalent:
 | `isaac_core_ogn.sensors.Ros2Gimbal` | `isaacsim.ros2.bridge.ROS2Subscriber` — our `Gimbal` message |
 | `isaac_core_ogn.sensors.Ros2ImagePublisher` | `isaacsim.ros2.bridge.ROS2CameraHelper` or `ROS2PublishImage` |
 
-The whole `isaac_core_ogn.sensors` extension is gone, since all four of its nodes were
-ROS wrappers. What remains is two real nodes plus a template:
+Every ROS *wrapper* node is gone, because the generic bridge nodes replace them. The
+`isaac_core_ogn.sensors` extension itself was later repurposed for sensors that compute something
+the bridge cannot, so seven nodes ship today across three extensions:
 
-- `isaac_core_ogn.math.GlobalPositionToLocalPosition` — LLA → local ENU + quaternion
-- `isaac_core_ogn.position.UdpToGlobalPosition` — UDP pose packets → LLA + orientation
+| Extension | Node | What it computes |
+|---|---|---|
+| `isaac_core_ogn.math` | `GlobalPositionToLocalPosition` | LLA → local ENU + quaternion |
+| `isaac_core_ogn.math` | `EulerToQuaternion` | roll/pitch/yaw → quaternion |
+| `isaac_core_ogn.math` | `QuaternionToEuler` | quaternion → roll/pitch/yaw |
+| `isaac_core_ogn.math` | `SecondsToRosStamp` | seconds → ROS `sec`/`nanosec` |
+| `isaac_core_ogn.position` | `UdpToGlobalPosition` | UDP pose packets → LLA + orientation |
+| `isaac_core_ogn.sensors` | `DistanceSensor` | render raycast → range in metres |
+| `isaac_core_ogn.sensors` | `BboxProjector` | Isaac's bbox annotators → flat parallel arrays |
 
-Both are pure computation delegating to `isaac_core.geo` and `isaac_core.protocol`.
+All seven are computation only. They delegate to `isaac_core.geo`, `isaac_core.protocol` and
+`isaac_core.contracts`, and publish nothing themselves — a bridge node does that. There is also
+`extensions/_template` to copy when adding your own.
 
 ## Using the generic bridge nodes
 
