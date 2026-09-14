@@ -3725,6 +3725,124 @@ commands and reading the diff establishes fact.
 
   **1590 tests, all seven gates green, 23 contracts kept.** Five of the README images are in place.
 
+- **2026-09-10** — **The swarm RTSP collision was a real bug, found and fixed.** Twice I called it a
+  stale process. It was not.
+
+  Ofer insisted I run scenario 6 live and verify before claiming anything, and that is what found it.
+  Two runs, same machine, minutes apart: my hand-written `--config` file worked (both 8554 and 8555
+  listening, zero errors), and `eyes_on_check.py 6` **reproduced the collision**. The difference is
+  that `Sim.launch` dumps the resolved config to a temp TOML and re-reads it.
+
+  **Root cause.** `resolved_rtsp_port` decided "explicitly set means do not offset" by testing
+  `"rtsp_port" in camera.model_fields_set`. `dump_toml` writes every field, so after a dump/reload
+  *every* field is "explicitly set" -- the per-vehicle offset was skipped and both vehicles asked for
+  8554. Measured directly: before dump `{lead: 8554, wing: 8555}`, after dump `{lead: 8554, wing:
+  8554}`. So every multi-vehicle `Sim.launch` collided, which is every eyes-on swarm run.
+
+  Two things hid it. The existing `test_dump_toml_round_trip_produces_equal_config` compares configs
+  for **equality**, and the configs *are* equal -- `model_fields_set` is not data. Exactly the
+  weak-assertion class the review warned about. And I had twice attributed the symptom to a leftover
+  process, which was plausible and wrong.
+
+  **Fix**: `rtsp_port` is now `Port | None = None`, meaning derive, matching what `udp_port`,
+  `rtsp_mount_path` and every topic field already do -- `resolved_udp_port` was never affected because
+  it already used that pattern. Round-trip verified, explicit pins still honoured verbatim, and three
+  tests added that assert **behaviour** across a dump/reload rather than equality.
+
+  Live result after the fix: scenario 6 shows **zero** occurrences of `Address already in use`,
+  `failed to create socket`, `Failed to attach RTSP`, `renderProductPath is empty` and
+  `Render product '' not valid`. The last two were downstream of the RTSP failure, which is why my
+  earlier "transient first-tick warning" reading looked self-consistent.
+
+  Also verified, since Ofer asked whether cleanup had caused it: the camera manifests are **unchanged**
+  since `c532c03`, the commit whose message claims all eight checks passed. The bug predates the
+  cleanup; that claim was wrong when I wrote it.
+
+  **Ofer's frames question, answered by reading the code.** The README said "on the wire: NED", which
+  is only true of the UDP packet. `OgnUdpToGlobalPosition` calls `ned_to_enu`; the ROS path takes
+  MAVROS orientation, which is **already ENU** per ROS convention, straight through
+  `quaternion_to_euler`. Each path converts exactly once and both reach the stage as ENU. That also
+  **disproves** the Phase 0.5 suspicion (isaac_surface #7) of a double conversion on the ROS path --
+  recorded as rejected.
+
+  **README round 2.** Removed the test-count status line (an us-metric). Rewrote the pose-input
+  section to answer "what are all the ways to command a pose": exactly two *sources* the simulator
+  listens on, plus a table of host-side adapters that feed the UDP one -- which is what
+  `isaac-core-mavlink` is, and why there is no `mavlink` pose_source. Config precedence became a
+  five-row table explaining that `--config` and `$ISAAC_CORE_CONFIG` are two spellings of the *same*
+  slot while env vars are a different mechanism. The devkit section now documents every class a user
+  touches with full signatures and a start-to-finish example, in collapsibles. Feature-layer authoring
+  gained a USD tree, a full `layer.toml` and the two config keys, with a step-by-step GUI walkthrough
+  in `authoring_layers.md`. Every troubleshooting entry is now collapsible. 35 collapsible sections in
+  total.
+
+  `opencv-python` was referenced by the README but declared nowhere; it is pip-installable, so it went
+  into the `[devkit]` extra with the README naming the install command.
+
+  **1593 tests, all seven gates green, 23 contracts kept.**
+
+- **2026-09-10 (b)** — **Ofer found a real functional regression in the offscreen-render-product
+  switch: Cesium does not stream terrain for a camera that has no viewport.**
+
+  He noticed it from the picture, not from a log: with one viewport, `wing`'s image contained only the
+  union of tiles `lead` had pulled in. Confirmed the mechanism in Cesium's own source --
+  `extension.py` builds its per-frame view list by iterating `get_viewport_window_instances()` and
+  reading each window's view and projection matrix, then passes that to `on_update_frame`. An
+  offscreen render product is not a window, so Cesium never knows to load tiles for it. There is no
+  hook to register a view without a window; the list is built solely from windows.
+
+  He also remembered a version where two viewports worked, and he was right: `a77b631` and `dac8867`
+  carry the four-node chain (`IsaacCreateViewport`, `IsaacSetViewportResolution`,
+  `IsaacGetViewportRenderProduct`, `IsaacSetCameraOnRenderProduct`). `c532c03` -- the commit whose
+  message claims all eight eyes-on checks passed -- **already** had the offscreen node, so that claim
+  was made after the regression was introduced and did not catch it.
+
+  **Fixed in Python rather than by reverting the USD.** `omni.kit.viewport.utility.create_viewport_window`
+  takes `name`, `width`, `height` and `camera_path`, so the runtime now opens one window per vehicle
+  after the first, pointed at that vehicle's camera at its configured resolution. This keeps Cesium
+  happy without reintroducing `IsaacGetViewportRenderProduct`, whose NVIDIA bug I read in source (a
+  local `viewport = None` instead of `self.viewport`, so the attribute only exists when the window
+  lookup succeeds and is read unconditionally). It also needs no USD authoring from Ofer.
+
+  Matching the viewport resolution to the camera matters: `IsaacCreateRenderProduct` reuses an
+  existing product whose `camera` relationship and `resolution` both match, so viewport plus node is
+  one render pass, not two.
+
+  Live: scenario 6 logs `viewport looking through .../lead/...` and `opened viewport 'wing' looking
+  through .../wing/...`, with zero occurrences of every error class. Ofer then got the two-viewport
+  screenshot, now in the README.
+
+  Two bugs of my own on the way, both caught immediately: `_viewport_size_for` read
+  `camera.width`/`camera.height`, which do not exist -- the field is a `resolution` tuple -- and a
+  README anchor string I asserted on had drifted.
+
+  **`opencv-python` question.** It *is* used: `devkit/recording.py` imports `cv2` lazily to write
+  video. It was declared in no dependency list, so a user following the README would hit ImportError.
+  An "extra" is pip's optional-dependency group -- `[project.optional-dependencies]` in
+  `pyproject.toml` -- installed with `pip install 'isaac-core[devkit]'`. `devkit` already existed but
+  was empty; `opencv-python>=4.8,<5` now lives there because video writing is genuinely optional,
+  while `requirements.txt` stays the always-needed set.
+
+  **1595 tests, all seven gates green, 23 contracts kept.** All six README images now resolve.
+
+- **2026-09-10 (c)** — Startup viewport named after the first vehicle.
+
+  Ofer's observation after re-running scenario 6: the swarm viewports work, but `wing` had a title and
+  `lead` was Kit's generic unnamed "Viewport", so one of a matched set looked different from the rest.
+
+  Kit takes the startup window's name from `/exts/omni.kit.viewport.window/startup/windowName`, read
+  when it creates that window -- so it has to be a startup argument, not something set afterwards.
+  `_default_viewport_name_args` adds it from `first_vehicle_id`, and returns nothing when headless or
+  when no vehicle is configured. Verified live: both windows are now labelled with their vehicle id,
+  and scenario 6 still shows zero errors of every class.
+
+  Fixing it broke `test_log_arguments_are_omitted_when_isaac_logs_is_wanted`, which asserted
+  `_kit_startup_args() == []`. That assertion was too broad: it claimed the *whole* argument list is
+  empty when Isaac's logs are wanted, when what it means is that no `--/log/` arguments appear. Now
+  narrowed to that, so an unrelated startup argument cannot fail it again.
+
+  **1598 tests, all seven gates green, 23 contracts kept.**
+
 ### Known remaining issues
 
 - **Sensor layers** are not built: distance sensor, bounding-box publishing, satellite

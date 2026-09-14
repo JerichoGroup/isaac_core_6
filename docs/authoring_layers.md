@@ -85,6 +85,61 @@ Things that will cost you an afternoon otherwise:
   `scripts/link_extensions.sh` does this for you.
 - **`OnTick` does not fire unless the timeline is playing.**
 
+
+## A worked USD example
+
+There is no substitute for authoring in the GUI, but here is the shape to build, and why each part is
+where it is.
+
+```
+/Root                                       default prim -- composition references THIS
+└── /Root/Xform                             the vehicle carries everything under here
+    ├── /Root/Xform/thermal_camera_01       your prim
+    └── /Root/Xform/ThermalExport           your OmniGraph
+        ├── on_playback_tick                fires only while the timeline plays
+        ├── thermal_node                    your compute node
+        └── ros2_publisher                  one of Isaac's generic bridge nodes
+```
+
+Building it, step by step in the GUI:
+
+1. **File > New**, then create an Xform named `Root` at the stage root.
+2. Select `Root` and **set it as the default prim** (right-click > Set as Default Prim). Skipping this
+   is the single most common reason a layer composes to nothing with no error.
+3. Add a child Xform named `Xform` under `Root`. Everything the vehicle carries hangs here, so a
+   mounted layer inherits the vehicle's transform.
+4. Add your prim under `/Root/Xform`. A camera, a sensor, a mesh -- whatever the feature is.
+5. If the feature computes something, add an **Action Graph** under `/Root/Xform`, named to match
+   what your manifest expects. Inside it, start with `on_playback_tick`, not `on_tick`.
+6. Save as `<layer_id>.usda` next to your `layer.toml`.
+
+At runtime that becomes, for a vehicle called `drone_0`:
+
+```
+/World/Environment/drone_0/Xform/thermal_camera_01
+/World/Environment/drone_0/Xform/ThermalExport/thermal_node
+```
+
+which is exactly what `{mount}/ThermalExport/thermal_node` resolves to in the manifest. The same file
+serves every vehicle in a swarm because the mount differs and nothing inside the layer is absolute.
+
+### Checking the composition before you write any Python
+
+```bash
+isaac-core run --set features.enabled='["camera_udp","thermal_cam"]' \
+               --set assets.layer_search_paths='["/home/you/my_layers"]'
+```
+
+The startup report lists what composed and what was skipped. Then confirm your values actually
+arrived, rather than trusting the log:
+
+```bash
+isaac-core-inspect
+```
+
+If a binding silently did nothing, the attribute will still hold its `.ogn` default -- which is the
+failure mode worth being paranoid about, because it looks like success.
+
 ## If your layer needs Python
 
 Write an OmniGraph node. Copy `extensions/_template`, which is a working node with its `.ogn`,

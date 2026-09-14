@@ -1,16 +1,14 @@
 # isaac_core 🌍
 
 Fly a camera over real-world 3D terrain in NVIDIA Isaac Sim 6, driven by position and orientation
-you send from your own source.
+sent from your own source.
 
-You give it a latitude, longitude, altitude and attitude - over a UDP packet or a ROS2 topic - and
+You give it a latitude, longitude, altitude and attitude, over a UDP packet or a ROS2 topic, and
 it puts a camera there, above streamed Cesium 3D Tiles terrain. It publishes the camera image, the
-camera's geodetic pose and an RTSP video stream, plus optional robotics and computer-vision features.
-Everything is configured in a single TOML file, while allowing adding features without changing the source code.
+camera's geodetic pose and an RTSP video stream, plus optional robotics and computer-vision features & capabilities.
+Everything is configured in a single TOML file, while still allowing adding features without changing the source code.
 
 ![The vehicle camera over terrain](docs/images/hero_terrain.png)
-
-**Status:** working end to end. 1590 tests pass with no GPU, no Isaac Sim and no ROS2 installed.
 
 ---
 
@@ -63,18 +61,23 @@ At this point you should be set to run Isaac Sim 6.0.1 for the first time:
 cd ~/isaacsim
 ./isaac-sim.sh
 ```
-`isaac-core doctor` will find your install and reports the version it accepted.
 
 </details>
 
 <details>
-<summary><b>System Python 3.10 or newer</b></summary>
+<summary><b>System Python 3.10</b></summary>
 
 Isaac Sim bundles inside of it python 3.12.
-On top of Isaac Sim's Python  you should have Python 3.10+ installed locally on your machine:
+On top of Isaac Sim's Python you should have Python 3.10 installed locally on your machine:
 ```bash
 sudo apt update
 sudo apt install -y python3.10 python3.10-dev
+```
+
+In order to check your local python version:
+```bash
+which python3   # usually something like: /usr/bin/python3
+python3 --version
 ```
 
 </details>
@@ -92,12 +95,12 @@ sudo apt-get remove --purge '^nvidia-.*'
 Next install your desired GPU driver:
 ```bash
 sudo apt update
-sudo apt install nvidia-driver-535
+sudo apt install nvidia-driver-580
 ```
 At this point your new GPU driver should be set, reboot and verify:
 ```bash
 sudo reboot
-nvidia-smi
+nvidia-smi | grep -i "Driver Version"
 ```
 
 </details>
@@ -105,7 +108,7 @@ nvidia-smi
 <details>
 <summary><b>A Cesium 3D Tiles server</b></summary>
 
-The terrain is streamed, so you need a tileset URL this machine can reach - or your own locally hosted tileset server :
+The terrain is streamed live, so you need a tileset URL your simulation machine can reach - or your own locally hosted tileset server:
 
 ```toml
 [cesium]
@@ -151,7 +154,7 @@ Five steps the script runs, in order:
 
 1. `pip install --user -r requirements.txt` - runtime dependencies into system Python
 2. `pip install --user -e .` - this package into system Python
-3. `$ISAAC_PATH/python.sh -m pip install -e ".[sim]"` - the same package into Isaac's Python 3.12
+3. `$ISAAC_PATH/python.sh -m pip install -e ".[sim]"` - the same package into Isaac Sim's embedded Python 3.12
 4. `scripts/link_extensions.sh` - symlink the OmniGraph extensions into `extsUser`
 5. `colcon build --packages-select isaac_core_ros2_msgs` - build the custom ROS2 messages
    (skipped if you have no ROS2)
@@ -228,7 +231,7 @@ The camera is mounted per vehicle and driven by whichever pose source you choose
 
 ```toml
 [vehicles.drone_0]
-pose_source = "udp"          # or "ros"
+pose_source = "udp" # or "ros"
 
 [vehicles.drone_0.cameras.eo]
 fov_deg = 60.0
@@ -236,11 +239,30 @@ width = 1280
 height = 720
 ```
 
-- `udp` - the [51-byte packet](#the-udp-pose-packet) on port 33333. No ROS2 needed.
-- `ros` - `NavSatFix` + `PoseStamped`, as published by MAVROS.
+There are exactly **two** pose sources, those are the two things the simulation can listens for:
 
-Either way the camera publishes `image_rgb` and `global_pose` while also streaming over RTSP. Choosing a source pulls in the layer
-that implements it, so you do not list it under `[features]` yourself.
+| `pose_source` | What it listens to |
+|---|---|
+| `udp` | the [51-byte packet](#the-udp-pose-packet) on port 33333 by default. No ROS 2 needed. |
+| `ros` | `NavSatFix` + `PoseStamped`, as published by MAVROS. |
+
+Either way the camera publishes `image_rgb` and `global_pose` while also streaming over RTSP.
+Choosing a source pulls in the layer that implements it, so you do not list it under `[features]`
+yourself.
+
+**Anything else feeds one of those two.** If your data is in another format it is converted on your
+side of the wire, not by the simulator:
+
+| You have | Use | What it does |
+|---|---|---|
+| MAVLink | `isaac-core-mavlink` | reads `GLOBAL_POSITION_INT` and `ATTITUDE`, sends the UDP packet |
+| Your own code | `UdpPoseTransport` | build a pose and `send()` it |
+| A canned flight | `scripts/send_test_pose.py` | hold, orbit, or fly a path |
+| Hand control | `isaac-core-pose-sender` | a GUI with sliders |
+| A recorded track | your own loop | replay poses through `UdpPoseTransport` |
+
+There is no `mavlink` or `replay` value for `pose_source`: they are adapters onto the UDP
+packet on your side, not an option the simulation understand.
 
 </details>
 
@@ -264,7 +286,7 @@ with Sim.attach() as session:
 
 - `+pitch` aims the camera **up**
 - `+roll` drops the **right** side of the image (clockwise)
-- `+yaw` swings the camera **right**
+- `+yaw` swings the camera **right** (unlike the image below)
 
 `set_gimbal` returns as soon as the target is accepted, not when the camera arrives - with a rate
 limit the move takes time. Poll `get_pose()` to watch it get there.
@@ -297,7 +319,7 @@ return value reports the path written and the resolution used.
 <summary><b>Distance sensor</b></summary>
 
 A laser rangefinder, boresighted with the camera - it measures along the camera's own axis,
-so the reading matches the centre of frame.
+so the reading matches the center of frame.
 
 ```toml
 [features]
@@ -343,8 +365,7 @@ source ~/IsaacSim-ros_workspaces/humble_ws/install/setup.bash
 <details>
 <summary><b>RTSP video</b></summary>
 
-Every camera streams H.264 over RTSP the whole time the simulator is up. No flag, no separate
-process.
+Every camera streams H.264 over RTSP the whole time the simulator is up. No flag needed.
 
 ```bash
 # To open the stream:
@@ -395,8 +416,12 @@ print(session.get_pose(vehicle="wing"))
 An unknown name is rejected with the list of configured vehicles. `set_gimbal` and `capture_frame`
 are single-vehicle only and refuse rather than guess.
 
-The viewport shows the first vehicle declared. Every other vehicle still gets its own image topic and
-RTSP stream. Point the viewport elsewhere with `sim.viewport_camera`.
+Each vehicle gets its own viewport window, named after it. That is not only for looking at: Cesium
+decides which terrain tiles to stream from the viewports that exist, so a camera without one would
+publish an image with ground missing under it. Point the main viewport window elsewhere with
+`sim.viewport_camera`.
+
+![Two vehicles, each with its own viewport](docs/images/swarm_two_vehicles.png)
 
 </details>
 
@@ -431,8 +456,7 @@ All topics sit under `/isaac_core`, namespaced per vehicle when there is more th
 ![ROS2 topics in rqt](docs/images/ros_topics_rqt.png)
 
 ### Subscribed
-
-Only when `pose_source = "ros"`:
+**Only when `pose_source = "ros"`:**
 
 | Topic | Type |
 |---|---|
@@ -487,9 +511,14 @@ The thing we got confused by the most.
 
 ### Frames
 
-- **On the wire:** LLA position plus roll/pitch/yaw in **NED**.
-- **In the stage:** **ENU**, because Isaac Sim and Cesium both use ENU.
-- **Body axes:** +X nose, +Y left wing, +Z up.
+- **In the stage:** **ENU**, because Isaac Sim and Cesium both use ENU. Always.
+- **Body axes:** +X nose, +Y left wing, +Z up. Always.
+- **On the wire:** depends which source you use.
+  - The [UDP packet](#the-udp-pose-packet) carries **NED** angles, in radians.
+  - `pose_source = "ros"` reads MAVROS, which publishes **ENU** already, per ROS conventions.
+
+Each path converts exactly once, so both arrive in the stage as ENU and behave identically from
+there. The NED-to-ENU mapping below therefore applies only to the UDP packet.
 
 ### NED to ENU
 
@@ -509,7 +538,7 @@ enu_reference = { lat_deg = 32.22481, lon_deg = 35.25621, alt_m = 516.7 }
 ```
 
 A pose at exactly that lat/lon sits at stage origin, and stage Z is `altitude - alt_m`. This must
-match the `CesiumGeoreference` in the scene, a mismatch over 1 m is reported at startup with both
+match the `CesiumGeoreference` in the scene, a mismatch between usda & camera layer over 1 m is reported at startup with both
 values and how to fix it.
 
 Use the same altitude datum for your poses and for `enu_reference.alt_m`. What matters is that they
@@ -522,12 +551,19 @@ agree.
 Everything lives in a single file. [`config/default.toml`](config/default.toml) which includes inline documents for every key,
  it is the file to copy as a new project starting point.
 
-```
-package defaults -> --config <file> / $ISAAC_CORE_CONFIG -> env vars -> --set flags -> runtime patch
-```
+Values are resolved from five places. Later beats earlier:
 
-Later wins. Environment variables nest with double underscores:
-`ISAAC_CORE__VEHICLES__DRONE_0__CAMERAS__EO__FOV_DEG=90`.
+| | Source | Example |
+|---|---|---|
+| 1 | Package defaults | built in; what you get with no config at all |
+| 2 | Your config file | `isaac-core run --config my.toml` |
+| 3 | Environment variables | `ISAAC_CORE__VEHICLES__DRONE_0__CAMERAS__EO__FOV_DEG=90` |
+| 4 | `--set` flags | `isaac-core run --set sim.headless=true` |
+| 5 | Runtime patch | `session.config.patch("gimbal.max_rate_deg_s", 10.0)` |
+
+**Two ways to name the file, one slot.** `--config my.toml` and `ISAAC_CORE_CONFIG=my.toml` do the
+same job at step 2; the flag wins if you use both. That is different from step 3, which is not a file
+at all — those are individual values, one variable per key, with `__` for each level of nesting.
 
 ```bash
 isaac-core config dump            # the fully resolved config
@@ -540,38 +576,228 @@ Invalid values are rejected at load with the key, the value and what to do inste
 
 ## Scripting with the devkit 🐍
 
+Everything the simulator can do is reachable from Python, over the control plane. The devkit is a
+typed client for it: `pip install --user -e .` and `from isaac_core.devkit import Sim`.
+
 ```python
 from isaac_core.devkit import Sim
 
-# Attach to a simulator someone else started -- possibly on another machine.
-with Sim.attach(host="192.168.1.50", port=8760) as session:
-    print(session.get_capabilities())
+with Sim.attach() as session:
     print(session.get_pose())
-    session.pause()
-    session.step(count=10)
-    session.resume()
-```
-
-`attach` leaves the simulator running when the block ends. `launch` owns the Isaac Sim process and stops it:
-
-```python
-with Sim.launch(headless=True, scene="earth") as session:
+    session.set_gimbal(pitch_deg=-30.0)
     session.capture_frame("shot.png")
 ```
 
-### Sending poses from your own code
+<details>
+<summary><b><code>Sim</code> — get a session</b></summary>
+
+Two entry points. Both return the same `SimSession`, so a script does not care how the simulator
+started.
 
 ```python
+Sim.attach(
+    host: str = "127.0.0.1",
+    port: int = 8760,
+    *,
+    token: str | None = None,      # required only if the sim binds a non-loopback address
+    timeout_s: float = 30.0,       # how long to wait for the sim to answer
+) -> SimSession
+```
+
+Connects to a simulator someone else started, possibly on another machine. Needs no filesystem
+knowledge. Leaves the simulator running when the block ends, because it belongs to whoever started
+it.
+
+```python
+Sim.launch(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8760,
+    scene: str = "earth",
+    headless: bool = False,
+    timeout_s: float = 120.0,          # startup takes 15-30s; this is the ceiling
+    overrides: dict[str, Any] | None = None,   # dotted config keys, e.g. {"sim.renderer": "PathTracing"}
+    launcher: Any = None,              # inject a fake process launcher, for tests
+) -> SimSession
+```
+
+Resolves the Isaac Sim install, starts a simulator, waits for it to be ready, and **owns the
+process**: leaving the block stops it, including on an exception or Ctrl-C.
+
+</details>
+
+<details>
+<summary><b><code>SimSession</code> — drive the simulator</b></summary>
+
+| Method | What it does |
+|---|---|
+| `get_pose(*, vehicle=None)` | the live prim transform, read off the running stage |
+| `set_pose(*, vehicle=None, lat_deg, lon_deg, alt_m, roll_deg=0, pitch_deg=0, yaw_deg=0)` | put a vehicle somewhere |
+| `set_gimbal(*, roll_deg=None, pitch_deg=None, yaw_deg=None)` | aim the camera; omitted axes hold. Single vehicle only |
+| `capture_frame(path, *, width=None, height=None)` | write a still. `width`/`height` together, or neither. Single vehicle only |
+| `get_capabilities()` | which layers composed, and which were skipped |
+| `pause()` / `resume()` | stop and start the timeline; the control plane stays responsive |
+| `step(count=1)` | advance `count` frames, including while paused |
+| `reset()` | stop, restore the opening state, play again |
+| `wait_until_ready(timeout_s=120.0)` | block until the stage has composed |
+| `close()` | release the session, and stop the simulator if this session started it |
+
+| Property | What it is |
+|---|---|
+| `state` | lifecycle state, including whether the stage is `ready` |
+| `config` | `.get()` the resolved config, `.patch(key, value)` a runtime-mutable key |
+| `client` | the raw `ControlClient`, for anything not wrapped here |
+
+`set_gimbal` returns when the target is accepted, not when the camera arrives — with a rate limit the
+move takes time, so poll `get_pose()` to watch it get there.
+
+</details>
+
+<details>
+<summary><b>Pose transports — send poses yourself</b></summary>
+
+```python
+UdpPoseTransport(host: str = "127.0.0.1", port: int = 33333)
+    .send(pose: GeodeticPose) -> None
+    .close() -> None
+
+FakePoseTransport()          # records instead of sending; for tests
+    .send(pose) -> None
+    .close() -> None
+
+pace(poses: Iterator[GeodeticPose], transport: PoseTransport, rate_hz: float) -> int
+```
+
+`pace` walks a pose iterator and sends at a real-time rate, returning how many it sent. It uses an
+accumulating deadline rather than `sleep(dt)`, so a long run does not drift.
+
+</details>
+
+<details>
+<summary><b>Trajectories — canned flight paths</b></summary>
+
+```python
+HoldTrajectory(pose: GeodeticPose)
+
+OrbitTrajectory(
+    center_lat_deg: float, center_lon_deg: float,
+    radius_m: float, height_m: float,
+    speed_mps: float, orbit_duration_s: float,
+    roll_r: float = 0.0, pitch_r: float = 0.0,
+)
+
+PathTrajectory(
+    waypoints: tuple[Lla, ...],
+    speed_mps: float,
+    roll_r: float = 0.0, pitch_r: float = 0.0,
+)
+```
+
+Each has one method: `.poses(rate_hz: float) -> Iterator[GeodeticPose]`. They generate poses and
+never touch the network, so they are usable with any transport — or with none, in a test.
+
+</details>
+
+<details>
+<summary><b>MAVLink bridge</b></summary>
+
+```python
+MavlinkPoseBridge(connection, transport: PoseTransport, *, rate_hz: float = 30.0)
+    .run(*, sleep=None) -> int          # loop until stopped; returns packets sent
+    .poll_once() -> GeodeticPose | None # one read, for your own loop
+    .current_pose() -> GeodeticPose | None
+    .stop() -> None
+    .close() -> None
+```
+
+`connection` is a pymavlink connection. This runs on system Python, not inside Isaac. The
+`isaac-core-mavlink` command is a thin wrapper around it.
+
+</details>
+
+<details>
+<summary><b>Recording</b></summary>
+
+```python
+from isaac_core.devkit.recording import Recorder
+```
+
+Records poses and images to disk. Runs on system Python with ROS 2 sourced, because it subscribes
+with `rclpy`. Writing video needs `opencv-python` (`pip install --user 'isaac-core[devkit]'`);
+recording poses does not.
+
+</details>
+
+<details>
+<summary><b>A full example, start to finish</b></summary>
+
+Launch a headless simulator, fly an orbit while recording the pose, capture a frame at the top of
+the orbit, and shut down. Nothing here needs a GUI.
+
+```python
+"""Fly one orbit, capture a frame, and report where the camera ended up."""
+
+from __future__ import annotations
+
+import threading
+
+from isaac_core.devkit import Sim
 from isaac_core.devkit.transport import UdpPoseTransport, pace
 from isaac_core.vehicle import OrbitTrajectory
 
-trajectory = OrbitTrajectory(
-    center_lat_deg=32.22481, center_lon_deg=35.25621,
-    radius_m=800, height_m=1000, speed_mps=30, orbit_duration_s=60,
-)
-transport = UdpPoseTransport(host="127.0.0.1", port=33333)
-print(f"sent {pace(trajectory.poses(rate_hz=30.0), transport, rate_hz=30.0)} packets")
+CENTRE_LAT, CENTRE_LON = 32.22481, 35.25621
+
+
+def fly(transport: UdpPoseTransport) -> None:
+    """Send one 60-second orbit at 30 Hz."""
+    trajectory = OrbitTrajectory(
+        center_lat_deg=CENTRE_LAT,
+        center_lon_deg=CENTRE_LON,
+        radius_m=800.0,
+        height_m=1000.0,
+        speed_mps=30.0,
+        orbit_duration_s=60.0,
+    )
+    sent = pace(trajectory.poses(rate_hz=30.0), transport, rate_hz=30.0)
+    print(f"sent {sent} pose packets")
+
+
+def main() -> None:
+    """Run the flight and capture a frame part-way through."""
+    # launch owns the process: leaving this block stops Isaac Sim, even on Ctrl-C.
+    with Sim.launch(headless=True) as session:
+        print("capabilities:", session.get_capabilities())
+
+        # Poses arrive over UDP, independently of the control plane.
+        transport = UdpPoseTransport(port=33333)
+        flight = threading.Thread(target=fly, args=(transport,), daemon=True)
+        flight.start()
+
+        # Give the first packets time to land, then aim the camera down and shoot.
+        session.step(count=60)
+        session.set_gimbal(pitch_deg=-40.0)
+        session.step(count=30)
+
+        shot = session.capture_frame("orbit.png", width=1920, height=1080)
+        print("captured:", shot)
+
+        flight.join(timeout=90.0)
+        transport.close()
+
+        print("final pose:", session.get_pose())
+
+
+if __name__ == "__main__":
+    main()
 ```
+
+Run it on system Python:
+
+```bash
+python3 orbit_example.py
+```
+
+</details>
 
 ---
 
@@ -586,7 +812,7 @@ isaac-core-mavlink                 # bridge MAVLink into the UDP port
 ```
 
 `isaac-core-inspect` reads the live prim transform through the control plane, which is how you
-confirm from outside the process that pose input is reaching the camera.
+confirm from outside that your pose input source is reaching the camera.
 
 ![Pose sender](docs/images/pose_sender.png)
 
@@ -594,8 +820,8 @@ confirm from outside the process that pose input is reaching the camera.
 
 ## Adding your own feature layer 🧩
 
-A sensor, a publisher or anything else can be added without changing `isaac_core` source code. A layer is a
-directory with a manifest and optionally a USD file:
+A sensor, a publisher or anything else can be added **without changing `isaac_core`**. A layer is a
+directory with a manifest and usually a USD file:
 
 ```
 my_layers/thermal_cam/
@@ -603,38 +829,127 @@ my_layers/thermal_cam/
 └── thermal_cam.usda
 ```
 
+<details>
+<summary><b>1. The USD file — what the prims must look like</b></summary>
+
+It is recommended to author `usda` files via the Isaac Sim GUI. The shape that composes correctly:
+
+```
+/Root                                  <- the default prim. Composition references THIS.
+└── /Root/Xform                        <- everything the vehicle carries hangs here
+    ├── /Root/Xform/thermal_camera_01   <- your prim: a camera, a sensor, whatever
+    └── /Root/Xform/ThermalExport       <- an OmniGraph, if you need one
+        ├── on_playback_tick
+        ├── thermal_node                <- your compute node
+        └── ros2_publisher              <- one of Isaac's generic bridge nodes
+```
+
+Three rules that will cost you an afternoon otherwise:
+
+1. **Set `/Root` as the default prim.** Composition references the default prim; without one your
+   layer contributes nothing and reports no error.
+2. **Name graph nodes exactly as your manifest's `prim` paths expect.** A path that does not resolve
+   is a warning you will scroll past.
+3. **`OnTick` does not fire unless the timeline is playing**, so put an `on_playback_tick` in the
+   graph rather than a plain tick.
+
+Your layer is mounted under the vehicle, so `/Root/Xform/thermal_camera_01` becomes
+`/World/Environment/drone_0/Xform/thermal_camera_01` at runtime. That is what makes the same layer
+work unchanged for every vehicle in a swarm.
+
+</details>
+
+<details>
+<summary><b>2. The manifest — <code>layer.toml</code></b></summary>
+
+```toml
+id = "thermal_cam"
+usd = "thermal_cam.usda"
+
+# What must already exist on the stage. Satisfied by the scene or by another layer, so you do not
+# have to care about ordering.
+requires = ["CAMERA"]
+
+# What this layer contributes, for other layers to require.
+provides = ["THERMAL"]
+
+# Config -> prim attribute. Wiring only: never put values here.
+[[bindings]]
+prim = "{mount}/ThermalExport/thermal_node"
+attribute = "inputs:gain"
+config = "layers.thermal_cam.gain"
+
+[[bindings]]
+prim = "{mount}/ThermalExport/ros2_publisher"
+attribute = "inputs:topicName"
+resolve = "thermal_topic"
+```
+
+- `{mount}` expands to the vehicle's mount, e.g. `/World/Environment/drone_0`.
+- `config = "dotted.key"` reads straight from your config.
+- `resolve = "name"` calls a named resolver, for anything that has to differ per vehicle (ports
+  offset by index, namespaced topics). Every `resolve` name must exist — a test enforces it.
+
+</details>
+
+<details>
+<summary><b>3. Turning it on — what to change in your config</b></summary>
+
+Two keys. One says where to look, the other says to use it:
+
 ```toml
 [assets]
 layer_search_paths = ["/home/you/my_layers"]
 
 [features]
 enabled = ["camera_udp", "thermal_cam"]
+
+# Your layer's own settings live under its id.
+[layers.thermal_cam]
+gain = 1.5
 ```
 
-The manifest declares what the layer needs from the stage (`requires`), what it provides
-(`provides`), and how config flows into prim attributes (`[[bindings]]`). Your layer's own settings
-live under `[layers.<your_id>]`.
+Then run normally:
 
-For a layer that ships as a package, register it under
-`[project.entry-points."isaac_core.layers"]` and no search path is needed.
+```bash
+isaac-core run
+```
 
-Full walkthrough, including the USD side and the traps: [docs/authoring_layers.md](docs/authoring_layers.md).
+The startup report lists every layer it composed and every layer it skipped with the reason. A layer
+that does not appear at all was not found on the search path.
+
+If your layer ships as an installable package, register it instead and no search path is needed:
+
+```toml
+[project.entry-points."isaac_core.layers"]
+thermal_cam = "my_package.layers:thermal_cam_dir"
+```
+
+</details>
+
+Full walkthrough, including OmniGraph nodes and the traps:
+[docs/authoring_layers.md](docs/authoring_layers.md).
 
 ---
 
 ## Troubleshooting 🔍
 
-### No terrain, just empty space
+
+<details>
+<summary><b>No terrain, just empty space</b></summary>
 
 - **No reachable tileset.** Check `cesium.tileset_server_url` from the machine running Isaac. An
   unreachable URL is valid USD that draws nothing, silently.
 - **Missing Cesium extension.** It installs into `~/.local/share/ov/data/exts/v2`, which Isaac's
-  Python experience does not search by default. `sim.extension_search_paths` and `sim.extensions`
+  Python does not search by default. `sim.extension_search_paths` and `sim.extensions`
   handle this in the shipped config.
-- **`sim.renderer` set to `MinimalRendering`.** It skips the RTX passes terrain needs (does not show cesium tiles).
+- **`sim.renderer` set to `MinimalRendering`.** It skips the RTX passes terrain needs (works but does not show cesium tiles).
 Use a different renderer such as `RaytracedLighting`.
 
-### The camera seems frozen
+</details>
+
+<details>
+<summary><b>The camera seems frozen</b></summary>
 
 Usually the window is showing Kit's default camera, not the vehicle's. Set `sim.viewport_camera`, and
 confirm the pose is arriving with `isaac-core-inspect --poll 0.5`.
@@ -647,18 +962,27 @@ pgrep -af 'send_test_pose|pose_sender' || echo "no senders running"
 
 When all senders stop, the last good pose is held by design.
 
-### Nothing moves at all
+</details>
+
+<details>
+<summary><b>Nothing moves at all</b></summary>
 
 `OnTick` does not fire unless the timeline is playing. The runtime presses play automatically, if you
 stopped it in the GUI, press play again.
 
-### No ROS2 topics
+</details>
+
+<details>
+<summary><b>No ROS2 topics</b></summary>
 
 DDS discovery takes a few seconds. For `bbox`, confirm you sourced the workspace containing
 `isaac_core_ros2_msgs`. Check `ROS_DOMAIN_ID` matches your other nodes - it is inherited from the
 environment unless you pin `ros2.domain_id`.
 
-### `Address already in use` on the RTSP port
+</details>
+
+<details>
+<summary><b>`Address already in use` on the RTSP port</b></summary>
 
 Isaac ignores `SIGTERM`, so a simulator from an earlier session can still hold the port:
 
@@ -666,7 +990,10 @@ Isaac ignores `SIGTERM`, so a simulator from an earlier session can still hold t
 pgrep -af 'isaac_core.sim' && kill -9 <pid>
 ```
 
-### A new OGN node does not appear
+</details>
+
+<details>
+<summary><b>A new OGN node does not appear</b></summary>
 
 ```bash
 rm -rf ~/.cache/ov/ogn_generated/*/isaac_core_ogn.*
@@ -674,7 +1001,10 @@ rm -rf ~/.cache/ov/ogn_generated/*/isaac_core_ogn.*
 
 Then restart. `scripts/link_extensions.sh` does this for you.
 
-### Startup segfault, roughly one launch in three
+</details>
+
+<details>
+<summary><b>Startup segfault, roughly one launch in three</b></summary>
 
 Inside Kit's own `update_app()`, it reproduces with our extensions disabled. Stale `/tmp/carb.*`
 directories make it worse:
@@ -683,19 +1013,32 @@ directories make it worse:
 rm -rf /tmp/carb.*
 ```
 
-### Frame rate dips while flying
+</details>
 
-Terrain is streamed, so new ground means waiting on downloads. Measured: 7 fps on a first pass over
+<details>
+<summary><b>Frame rate dips while flying</b></summary>
+
+Terrain is streamed, so new ground means waiting on network requests. Measured: 7 fps the first few seconds for a first pass over
 fresh terrain, 59.9 on the second pass over the same ground. try adjusting cesium tile settings for better results.
 
-### Cesium cache growing without limit
+</details>
+
+<details>
+<summary><b>Cesium cache growing without limit</b></summary>
 
 Long sessions grow `~/.cache/ov/cesium-request-cache.sqlite-wal`. Delete it, or set
 `cesium.delete_cache_on_launch = true`.
 
-### Stale `$ISAACSIM_PATH`
+</details>
 
-`isaac-core doctor` finds the real install anyway. If it cannot, pass `--isaac-path` to `setup.sh`.
+<details>
+<summary><b>Stale `$ISAACSIM_PATH`</b></summary>
+
+`isaac-core doctor` finds the real install anyway. If it cannot, pass `--isaac-path /path/to/isaacsim/install` to `setup.sh`.
+
+---
+
+</details>
 
 ---
 
