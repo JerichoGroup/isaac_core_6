@@ -1,14 +1,12 @@
-"""
-Feature planner: decide which layers to compose and resolve their bindings.
+"""Feature planner: decide which layers to compose and resolve their bindings.
 
 Given a set of requested layer ids, a manifest registry, and the detected stage
 capabilities, the planner produces a :class:`FeaturePlan` listing — in
 deterministic order — which layers will be composed and which are skipped, each
 with a human-readable reason.
 
-This replaces the ``if "distance_sensor" in self.usds_to_add:`` branches of
-the previous generation. The ``SimulationRuntime`` never mentions a feature by
-name; it just iterates the plan.
+This is what removes any ``if "distance_sensor" in ...:`` branch from the runtime. The
+``SimulationRuntime`` never mentions a feature by name; it just iterates the plan.
 """
 
 from __future__ import annotations
@@ -27,8 +25,7 @@ class PlanningError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ResolvedBinding:
-    """
-    A binding with its prim template rendered to a concrete path.
+    """A binding with its prim template rendered to a concrete path.
 
     Args:
         prim: Concrete absolute prim path after placeholder substitution.
@@ -46,8 +43,7 @@ class ResolvedBinding:
 
 @dataclass(frozen=True, slots=True)
 class PlannedLayer:
-    """
-    A layer that will be composed onto the stage.
+    """A layer that will be composed onto the stage.
 
     Args:
         manifest: The validated layer manifest.
@@ -67,8 +63,7 @@ class PlannedLayer:
 
 @dataclass(frozen=True, slots=True)
 class SkippedLayer:
-    """
-    A layer that was requested but cannot be composed.
+    """A layer that was requested but cannot be composed.
 
     Args:
         id: Layer id as requested.
@@ -82,8 +77,7 @@ class SkippedLayer:
 
 @dataclass(frozen=True, slots=True)
 class FeaturePlan:
-    """
-    The complete plan of layers to compose and layers to skip.
+    """The complete plan of layers to compose and layers to skip.
 
     Layers are in a deterministic order (sorted by id). The plan is the single
     input to the compositor — it never needs to re-query capabilities or look up
@@ -94,8 +88,7 @@ class FeaturePlan:
     skipped: tuple[SkippedLayer, ...] = ()
 
     def _is_repeated(self, planned: PlannedLayer) -> bool:
-        """
-        Report whether another enabled layer shares this one's id.
+        """Report whether another enabled layer shares this one's id.
 
         Args:
             planned: The layer being described.
@@ -107,8 +100,7 @@ class FeaturePlan:
         return sum(1 for other in self.enabled if other.manifest.id == planned.manifest.id) > 1
 
     def render_report(self) -> str:
-        """
-        Produce a human-readable startup summary.
+        """Produce a human-readable startup summary.
 
         Enabled layers get a tick (\u2713); skipped layers get a circled-slash
         (\u2298) and their reason. This is the report printed at simulator startup
@@ -138,8 +130,7 @@ class _PlanBuilder:
 
 
 def _render_mount(mount_template: str, instance: str) -> str:
-    """
-    Render a mount template into a concrete prim path segment.
+    """Render a mount template into a concrete prim path segment.
 
     The mount template may contain ``{instance}`` but not ``{mount}`` (the mount
     IS the mount). Only ``{instance}`` is substituted.
@@ -156,8 +147,7 @@ def _render_mount(mount_template: str, instance: str) -> str:
 
 
 def _render_config_key(template: str, *, instance: str, camera: str | None) -> str:
-    """
-    Substitute placeholders in a binding's dotted config key.
+    """Substitute placeholders in a binding's dotted config key.
 
     Both ``{instance}`` and ``{camera}`` are substituted here, mirroring what
     :func:`~isaac_core.contracts.prims.render` does for prim paths. A leftover
@@ -208,8 +198,7 @@ def _resolve_bindings(
     instance: str,
     camera: str | None,
 ) -> tuple[ResolvedBinding, ...]:
-    """
-    Render each binding's prim template and config key into concrete strings.
+    """Render each binding's prim template and config key into concrete strings.
 
     Both sides need the instance substituted, not just the prim path. A binding like
     ``config = "vehicles.{instance}.rotation_frame"`` is meaningless until
@@ -252,14 +241,13 @@ def _resolve_bindings(
 
 
 def _capability_names() -> tuple[str, ...]:
-    """
-    Return every known stage capability name.
+    """Return every known stage capability name.
 
     Returns:
         Enum member names usable in a manifest's ``requires``/``provides``.
 
     """
-    from isaac_core.sim.capabilities import StageCapability  # noqa: PLC0415
+    from isaac_core.sim.capabilities import StageCapability
 
     return tuple(c.name for c in StageCapability)
 
@@ -273,8 +261,7 @@ def plan_features(
     instance: str = "default",
     camera: str | None = None,
 ) -> FeaturePlan:
-    """
-    Decide which layers to compose and which to skip.
+    """Decide which layers to compose and which to skip.
 
     Processing order is deterministic: requested ids are sorted alphabetically.
     For each requested id, if it is unknown or its requirements are unmet, it is
@@ -312,14 +299,10 @@ def plan_features(
             continue
         pending.append(layer_id)
 
-    # A layer's requirement can be satisfied by the scene OR by another enabled layer: a bbox
-    # projector requires CAMERA, which the camera layer provides. So capabilities are grown as
-    # layers are admitted, and admission repeats until a pass changes nothing. Checking only the
-    # scene's capabilities made a layer-provided requirement permanently unsatisfiable.
-    #
-    # The resulting order is also the COMPOSITION order, which matters independently: a layer
-    # that references another layer's prim must be composed after it, or the target does not
-    # exist yet. Alphabetical order got this wrong (bbox before camera_udp).
+    # A requirement may be satisfied by the scene OR by another layer (bbox requires CAMERA, which
+    # the camera layer provides), so capabilities grow as layers are admitted and admission repeats
+    # to a fixed point. The resulting order is also the composition order, which matters: a layer
+    # referencing another's prim must come after it. Alphabetical put bbox before camera_udp.
     available = {name for name in _capability_names() if capabilities.has_named(name)}
 
     while pending:

@@ -32,7 +32,8 @@ and every enum member has a handler — enforced by `control/test_method_coverag
 | `get_pose` — live prim transform | A + B | `sim/test_runtime_handlers.py`; live via inspector | pass |
 | `set_pose` — inject a pose | A + B | `sim/test_set_pose.py` | pass |
 | `set_gimbal` — slew-limited offsets | A + B | `sim/test_gimbal_control.py`, `geo/test_gimbal_axes.py` | pass |
-| `capture_frame` — arbitrary resolution | A + B | `sim/test_capture_frame.py` | pass |
+| `capture_frame` at the camera's resolution | A + B | `tests/system/test_capture.py` | pass |
+| `capture_frame` at a requested resolution | A + B | `tests/system/test_capture.py` asserts PNG pixels | pass |
 | `pause` / `resume` — main-thread dispatch | A | `sim/test_main_thread_dispatch.py` | pass |
 | `step(count)` — advance N frames while paused | A | `sim/test_runtime_handlers.py` | pass |
 | `reset` — stop, restore, deferred replay | A | `sim/test_runtime_handlers.py` | pass |
@@ -203,14 +204,29 @@ With the deferred methods removed there are none, so the check passes trivially.
 guards nothing. Keep it — it costs nothing and becomes live again the moment someone defers a
 capability.
 
-### F4 — bucket B has no runner
+### F4 — bucket B has no runner — **CLOSED**
 
-Most B rows are marked pass from ad-hoc live runs recorded in the development log, not from a
-repeatable script. That is exactly the weakness that let me report the swarm image topics as broken
+`tests/system/` runs a real Isaac Sim under pytest (`--system`), and `eyes_on_check.py --verify`
+remains for interactive use. Five of the eight
+scenarios are automated: pose tracking, gimbal, capture, swarm and lifecycle. It found F6 on its first
+run. The remaining three need ROS 2 subscribers or human eyes.
+
+Originally: most B rows were marked pass from ad-hoc live runs recorded in the development log, not
+from a repeatable script. That is exactly the weakness that let me report the swarm image topics as broken
 when they were fine.
 
 **Action (Phase 3):** `eyes_on_check.py --verify` that asserts numbers and exits non-zero, so bucket
 B becomes reproducible rather than a matter of memory.
+
+### F7 — the swarm system-test simulator is flaky to launch
+
+Roughly one run in three cannot bring the two-vehicle simulator to a composed, ready stage, and those
+tests **skip** rather than fail. Mitigated by running the heaviest module first, retrying a launch
+twice, and bounding every wait so a bad run is slow rather than hung.
+
+Not a product defect: standalone runs measure exactly 600.00 m of commanded separation, and eyes-on
+scenario 6 passes. It is the harness contending with Isaac's own startup instability -- the same
+roughly-one-in-three segfault documented in the README.
 
 ### F5 — one unreproduced gimbal report
 

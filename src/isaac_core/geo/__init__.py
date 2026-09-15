@@ -1,5 +1,4 @@
-"""
-Geodesy and rotation maths layer.
+"""Geodesy and rotation maths layer.
 
 Pure-Python functions for geographic coordinate conversions, frame rotations,
 SLERP, and distance computations. This package depends only on ``numpy``,
@@ -19,6 +18,13 @@ Modules:
 
 from isaac_core.geo.distance import geodesic_distance_m, meters_to_latlon_offset
 from isaac_core.geo.enu import EnuConverter
+from isaac_core.geo.pose_pipeline import (
+    LocalPose,
+    compose_local_pose,
+    has_position_fix,
+    quaternion_to_isaac_order,
+    rotation_frame_from_text,
+)
 from isaac_core.geo.rotations import (
     compose_rotation,
     enu_to_ned,
@@ -32,6 +38,11 @@ from isaac_core.geo.rotations import (
 )
 
 __all__ = [
+    "rotation_frame_from_text",
+    "quaternion_to_isaac_order",
+    "has_position_fix",
+    "compose_local_pose",
+    "LocalPose",
     "EnuConverter",
     "compose_rotation",
     "enu_to_ned",

@@ -93,41 +93,47 @@ where it is.
 
 ```
 /Root                                       default prim -- composition references THIS
-└── /Root/Xform                             the vehicle carries everything under here
-    ├── /Root/Xform/thermal_camera_01       your prim
-    └── /Root/Xform/ThermalExport           your OmniGraph
-        ├── on_playback_tick                fires only while the timeline plays
-        ├── thermal_node                    your compute node
-        └── ros2_publisher                  one of Isaac's generic bridge nodes
+├── /Root/Xform                             prims that must MOVE with the vehicle
+│   └── /Root/Xform/thermal_camera_01       your camera, sensor, or mesh
+└── /Root/ThermalExport                     your OmniGraph, a SIBLING of Xform
+    ├── on_playback_tick                    fires only while the timeline plays
+    ├── thermal_node                        your compute node
+    └── ros2_publisher                      one of Isaac's generic bridge nodes
 ```
+
+Why the graph is *not* under `Xform`: `Xform` carries the vehicle's transform, and a graph has no
+transform to inherit. Every layer this repo ships is built this way -- `camera_udp` has
+`/Root/CameraImageExport` and `/Root/PoseSync` beside `/Root/Xform`, and `bbox` has
+`/Root/BboxExport`. Putting a graph inside `Xform` is not fatal, but then your manifest paths must say
+`{mount}/Xform/ThermalExport/...`, and you lose the symmetry with everything else.
 
 Building it, step by step in the GUI:
 
 1. **File > New**, then create an Xform named `Root` at the stage root.
 2. Select `Root` and **set it as the default prim** (right-click > Set as Default Prim). Skipping this
    is the single most common reason a layer composes to nothing with no error.
-3. Add a child Xform named `Xform` under `Root`. Everything the vehicle carries hangs here, so a
-   mounted layer inherits the vehicle's transform.
-4. Add your prim under `/Root/Xform`. A camera, a sensor, a mesh -- whatever the feature is.
-5. If the feature computes something, add an **Action Graph** under `/Root/Xform`, named to match
-   what your manifest expects. Inside it, start with `on_playback_tick`, not `on_tick`.
-6. Save as `<layer_id>.usda` next to your `layer.toml`.
+3. Add a child Xform named `Xform` under `Root`, and put anything that must move with the aircraft
+   inside it -- it inherits the vehicle's transform once mounted.
+4. If the feature computes something, add an **Action Graph** directly under `/Root`, beside `Xform`,
+   named to match what your manifest expects. Inside it, start with `on_playback_tick`, not `on_tick`.
+5. Save as `<layer_id>.usda` next to your `layer.toml`.
 
 At runtime that becomes, for a vehicle called `drone_0`:
 
 ```
 /World/Environment/drone_0/Xform/thermal_camera_01
-/World/Environment/drone_0/Xform/ThermalExport/thermal_node
+/World/Environment/drone_0/ThermalExport/thermal_node
 ```
 
-which is exactly what `{mount}/ThermalExport/thermal_node` resolves to in the manifest. The same file
-serves every vehicle in a swarm because the mount differs and nothing inside the layer is absolute.
+The second is exactly what `{mount}/ThermalExport/thermal_node` resolves to in the manifest. The same
+file serves every vehicle in a swarm, because only the mount differs and nothing inside the layer is
+absolute.
 
 ### Checking the composition before you write any Python
 
 ```bash
-isaac-core run --set features.enabled='["camera_udp","thermal_cam"]' \
-               --set assets.layer_search_paths='["/home/you/my_layers"]'
+isaac-core run --set features.enabled '["camera_udp","thermal_cam"]' \
+               --set assets.layer_search_paths '["/home/you/my_layers"]'
 ```
 
 The startup report lists what composed and what was skipped. Then confirm your values actually
@@ -163,7 +169,7 @@ thermal_cam = "my_package.layers:thermal_cam_dir"
 ## Checking it worked
 
 ```bash
-isaac-core run --set features.enabled='["camera_udp","thermal_cam"]'
+isaac-core run --set features.enabled '["camera_udp","thermal_cam"]'
 ```
 
 The startup report lists every layer it composed, and every layer it skipped with the reason. A layer

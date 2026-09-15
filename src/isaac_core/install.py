@@ -1,5 +1,4 @@
-"""
-Locate and validate an Isaac Sim installation.
+"""Locate and validate an Isaac Sim installation.
 
 The resolution order avoids trusting ``$ISAACSIM_PATH`` blindly -- that variable
 is stale on many team machines, pointing at the old 2023.1.1 install while the
@@ -12,6 +11,7 @@ contains ``python.sh``, ``isaac-sim.sh`` and a ``VERSION`` file.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -45,8 +45,7 @@ _YEAR_VERSION_THRESHOLD = 100
 
 
 def _probe_candidates() -> tuple[str, ...]:
-    """
-    Return the directories probed when no install is explicitly configured.
+    """Return the directories probed when no install is explicitly configured.
 
     Home-relative entries are resolved here rather than at import time, so the list
     is correct for whichever user is running it and tests have a single seam to
@@ -61,8 +60,7 @@ def _probe_candidates() -> tuple[str, ...]:
 
 
 class IsaacInstallError(RuntimeError):
-    """
-    Raise when no valid Isaac Sim installation can be found.
+    """Raise when no valid Isaac Sim installation can be found.
 
     The message includes all locations that were tried, so the user knows what to
     fix.
@@ -70,8 +68,7 @@ class IsaacInstallError(RuntimeError):
 
 
 class IsaacInstall:
-    """
-    Represent a validated Isaac Sim installation on disk.
+    """Represent a validated Isaac Sim installation on disk.
 
     Exposes the version, key paths, and a support check. Instantiate via
     :meth:`locate` rather than calling the constructor directly with an unvalidated
@@ -79,8 +76,7 @@ class IsaacInstall:
     """
 
     def __init__(self, root: Path) -> None:
-        """
-        Wrap a *pre-validated* root path.
+        """Wrap a *pre-validated* root path.
 
         Args:
             root: Directory that has already been confirmed to contain the required
@@ -102,8 +98,7 @@ class IsaacInstall:
 
     @property
     def major_version(self) -> int:
-        """
-        Return the major version number.
+        """Return the major version number.
 
         Returns:
             Integer major version. Returns ``0`` if parsing fails.
@@ -130,8 +125,7 @@ class IsaacInstall:
         return self._root / "extsUser"
 
     def is_supported(self) -> bool:
-        """
-        Return whether this install is Isaac Sim 6.x or newer.
+        """Return whether this install is Isaac Sim 6.x or newer.
 
         Versions older than 6.0 used the ``omni.isaac.*`` extension namespace, which
         was renamed to ``isaacsim.*`` in 4.5. Older installs will not work with our
@@ -150,8 +144,7 @@ class IsaacInstall:
 
     @property
     def support_message(self) -> str:
-        """
-        Return a human-readable support status string.
+        """Return a human-readable support status string.
 
         Returns:
             A message indicating whether the install is supported or explaining why
@@ -175,8 +168,7 @@ class IsaacInstall:
         environ: dict[str, str] | None = None,
         extra_candidates: Sequence[Path] | None = None,
     ) -> "IsaacInstall":
-        """
-        Find and validate an Isaac Sim installation.
+        """Find and validate an Isaac Sim installation.
 
         Resolution walks the sources below in order, but a candidate only wins
         outright if it is both structurally valid **and** a supported version. A
@@ -214,7 +206,6 @@ class IsaacInstall:
                 resolution steps.
 
         """
-        import os  # noqa: PLC0415
 
         env_map = environ if environ is not None else dict(os.environ)
         tried: list[str] = []
@@ -283,8 +274,7 @@ class IsaacInstall:
 
 
 def _is_valid_install(path: Path) -> bool:
-    """
-    Check whether a directory looks like a valid Isaac Sim installation.
+    """Check whether a directory looks like a valid Isaac Sim installation.
 
     Args:
         path: Candidate directory.

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Run one eyes-on check scenario, with instructions for what to look at.
+"""Run one eyes-on check scenario, with instructions for what to look at.
 
 Each scenario launches Isaac Sim **with the GUI** through the devkit, drives it, and prints what
 you should see. Everything is driven through ``isaac_core.devkit`` rather than the control plane
@@ -34,6 +33,7 @@ import argparse
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import math
+from pathlib import Path
 import sys
 import time
 from typing import Any
@@ -41,7 +41,7 @@ from typing import Any
 # Printed when the devkit cannot be imported, which is nearly always a PYTHONPATH problem.
 REPO_ROOT_HINT = "run from the repo root with PYTHONPATH=src"
 
-# Reference scene origin. Matches usd/scenes/earth.usda's Cesium georeference, so an aircraft
+# Reference scene origin. Matches the shipped earth scene's Cesium georeference, so an aircraft
 # placed here starts over the terrain rather than in the ocean.
 ORIGIN_LAT = 32.22481
 ORIGIN_LON = 35.25621
@@ -67,6 +67,9 @@ class Scenario:
     title: str
     watch: tuple[str, ...]
     run: Callable[[Any, float, float], None]
+    # Assertive counterpart to `run`, for --verify. Raises AssertionError on a real failure and
+    # returns a one-line summary of what it measured. None means this scenario needs human eyes.
+    verify: Callable[[Any], str] | None = None
     overrides: dict[str, Any] = field(default_factory=dict)
     needs_ros: bool = False
     note: str = ""
@@ -78,8 +81,7 @@ def _banner(text: str) -> None:
 
 
 def _hold(seconds: float, message: str) -> None:
-    """
-    Keep the simulator open so there is time to look at it.
+    """Keep the simulator open so there is time to look at it.
 
     Args:
         seconds: How long to wait.
@@ -94,9 +96,8 @@ def _hold(seconds: float, message: str) -> None:
         print("\n  Stopped early.", flush=True)
 
 
-def _fly_circle(session: Any, seconds: float, *, alt_m: float = 1200.0, radius_deg: float = 0.004) -> None:  # noqa: ANN401
-    """
-    Fly a slow circle over the origin using repeated ``set_pose`` calls.
+def _fly_circle(session: Any, seconds: float, *, alt_m: float = 1200.0, radius_deg: float = 0.004) -> None:
+    """Fly a slow circle over the origin using repeated ``set_pose`` calls.
 
     Uses the devkit's ``set_pose`` rather than a UDP sender so the scenario exercises the
     documented API. Motion is deliberately slow: a fast orbit hides whether the camera tracks
@@ -123,15 +124,14 @@ def _fly_circle(session: Any, seconds: float, *, alt_m: float = 1200.0, radius_d
 
 
 def _fly_leg(
-    session: Any,  # noqa: ANN401
+    session: Any,
     seconds: float,
     *,
     bearing_deg: float,
     alt_m: float = 1200.0,
     speed_deg_s: float = 0.0006,
 ) -> None:
-    """
-    Fly a straight track on a fixed compass bearing at constant altitude.
+    """Fly a straight track on a fixed compass bearing at constant altitude.
 
     The commanded yaw is set to the bearing being flown, so the nose points exactly along the
     direction of travel. That is what makes nose alignment unambiguous: with a correctly wired
@@ -171,9 +171,8 @@ def _fly_leg(
         time.sleep(0.05)
 
 
-def _place_and_confirm(session: Any, *, alt_m: float = 1200.0, attempts: int = 10) -> bool:  # noqa: ANN401
-    """
-    Put the aircraft over the origin and confirm the pose actually landed.
+def _place_and_confirm(session: Any, *, alt_m: float = 1200.0, attempts: int = 10) -> bool:
+    """Put the aircraft over the origin and confirm the pose actually landed.
 
     Poses are delivered over UDP, which is fire-and-forget: a packet sent before the receiver
     graph exists is simply gone, with no error anywhere. That is exactly what made an early
@@ -204,9 +203,8 @@ def _place_and_confirm(session: Any, *, alt_m: float = 1200.0, attempts: int = 1
     return False
 
 
-def _scenario_linear(session: Any, keep_open: float, dwell: float) -> None:  # noqa: ANN401
-    """
-    Fly two straight legs so nose-to-track alignment is unambiguous.
+def _scenario_linear(session: Any, keep_open: float, dwell: float) -> None:
+    """Fly two straight legs so nose-to-track alignment is unambiguous.
 
     A circle cannot show whether the nose points along the direction of travel -- every heading
     looks equally plausible on a curve. Two straight legs on different bearings can: on each leg
@@ -243,7 +241,7 @@ def _scenario_linear(session: Any, keep_open: float, dwell: float) -> None:  # n
     _hold(max(keep_open - 2.0 * leg_s, 10.0), "Both legs finished; the camera holds its last pose.")
 
 
-def _scenario_terrain(session: Any, keep_open: float, dwell: float) -> None:  # noqa: ANN401
+def _scenario_terrain(session: Any, keep_open: float, dwell: float) -> None:
     """Fly a slow circle over the terrain."""
     del dwell
     _place_and_confirm(session)
@@ -252,7 +250,7 @@ def _scenario_terrain(session: Any, keep_open: float, dwell: float) -> None:  # 
     _hold(max(keep_open - 120.0, 10.0), "Circle finished; the camera holds its last pose.")
 
 
-def _scenario_gimbal(session: Any, keep_open: float, dwell: float) -> None:  # noqa: ANN401
+def _scenario_gimbal(session: Any, keep_open: float, dwell: float) -> None:
     """Step the gimbal through each axis with a rate limit in place."""
     del dwell
     _place_and_confirm(session)
@@ -273,7 +271,7 @@ def _scenario_gimbal(session: Any, keep_open: float, dwell: float) -> None:  # n
     _hold(keep_open, "Gimbal sequence finished.")
 
 
-def _scenario_distance(session: Any, keep_open: float, dwell: float) -> None:  # noqa: ANN401
+def _scenario_distance(session: Any, keep_open: float, dwell: float) -> None:
     """Descend in steps so the reported range changes visibly."""
     del dwell
     print("  Watch the ROS topic in another terminal:", flush=True)
@@ -286,7 +284,7 @@ def _scenario_distance(session: Any, keep_open: float, dwell: float) -> None:  #
     _hold(keep_open, "Descent finished.")
 
 
-def _scenario_bbox(session: Any, keep_open: float, dwell: float) -> None:  # noqa: ANN401
+def _scenario_bbox(session: Any, keep_open: float, dwell: float) -> None:
     """Look down at the tracked cubes so bounding boxes have something to report."""
     del dwell
     print("  Watch the bbox topic in another terminal:", flush=True)
@@ -300,7 +298,7 @@ def _scenario_bbox(session: Any, keep_open: float, dwell: float) -> None:  # noq
     _hold(max(keep_open - 150.0, 10.0), "Circle finished.")
 
 
-def _scenario_capture(session: Any, keep_open: float, dwell: float) -> None:  # noqa: ANN401
+def _scenario_capture(session: Any, keep_open: float, dwell: float) -> None:
     """Capture stills at several resolutions."""
     del dwell
     _place_and_confirm(session)
@@ -318,7 +316,7 @@ def _scenario_capture(session: Any, keep_open: float, dwell: float) -> None:  # 
     _hold(keep_open, "Captures finished.")
 
 
-def _scenario_swarm(session: Any, keep_open: float, dwell: float) -> None:  # noqa: ANN401
+def _scenario_swarm(session: Any, keep_open: float, dwell: float) -> None:
     """Fly two vehicles to different altitudes and positions."""
     del dwell
     print("  Two vehicles configured: lead and wing.\n", flush=True)
@@ -335,9 +333,8 @@ def _scenario_swarm(session: Any, keep_open: float, dwell: float) -> None:  # no
     _hold(keep_open, "Both vehicles are holding their poses.")
 
 
-def _translate_of(pose: Any) -> tuple[float, float, float] | None:  # noqa: ANN401
-    """
-    Return a pose's translate as a float triple, or ``None`` when it is absent.
+def _translate_of(pose: Any) -> tuple[float, float, float] | None:
+    """Return a pose's translate as a float triple, or ``None`` when it is absent.
 
     Args:
         pose: A dict as returned by ``get_pose``.
@@ -353,8 +350,7 @@ def _translate_of(pose: Any) -> tuple[float, float, float] | None:  # noqa: ANN4
 
 
 def _announce(step: str, watch: str, dwell: float) -> None:
-    """
-    Print a clearly delimited banner for one lifecycle phase.
+    """Print a clearly delimited banner for one lifecycle phase.
 
     Args:
         step: What is about to happen.
@@ -367,9 +363,8 @@ def _announce(step: str, watch: str, dwell: float) -> None:
     print(f"  This phase lasts about {dwell:.0f}s.", flush=True)
 
 
-def _scenario_lifecycle(session: Any, keep_open: float, dwell: float) -> None:  # noqa: ANN401
-    """
-    Exercise pause, step, resume and reset with loud, verifiable narration.
+def _scenario_lifecycle(session: Any, keep_open: float, dwell: float) -> None:
+    """Exercise pause, step, resume and reset with loud, verifiable narration.
 
     Each phase announces itself before it happens, states what to watch and for how long, then
     confirms afterwards. Because a frozen viewport is hard to judge by eye, the pose is read
@@ -437,9 +432,115 @@ def _scenario_lifecycle(session: Any, keep_open: float, dwell: float) -> None:  
     _hold(keep_open, "Lifecycle sequence finished.")
 
 
+# --------------------------------------------------------------------------- #
+# Assertive verifiers for --verify. Each measures numbers and raises on a real
+# failure, so bucket B of docs/dev/feature_matrix.md stops depending on memory.
+# --------------------------------------------------------------------------- #
+
+# How many times --verify will retry a launch that never becomes ready.
+_LAUNCH_ATTEMPTS = 3
+
+# Metres of tolerance when comparing a commanded altitude to the stage transform.
+_ALTITUDE_TOLERANCE_M = 1.0
+
+# The resolution --verify asks a capture for, deliberately unlike the viewport's.
+_CAPTURE_WIDTH = 1920
+_CAPTURE_HEIGHT = 1080
+
+# A stage transform is always a triple.
+_TRANSLATE_COMPONENTS = 3
+
+# Degrees of tolerance when reading a commanded gimbal target back.
+_GIMBAL_TOLERANCE_DEG = 0.001
+
+# Altitude separation --verify commands between the two swarm vehicles, in metres.
+_SWARM_SEPARATION_M = 600.0
+
+
+def _reference_altitude(session: Any) -> float:
+    """Return the scene's ENU reference altitude from the running simulator's own config."""
+    config = session.config.get()
+    return float(config["geo"]["enu_reference"]["alt_m"])
+
+
+def _verify_pose_tracking(session: Any) -> str:
+    """Assert a commanded pose reaches the stage with the documented altitude mapping."""
+    altitude = 1500.0
+    session.set_pose(lat_deg=32.22481, lon_deg=35.25621, alt_m=altitude)
+    _settle(session)
+    pose = session.get_pose()
+    translate = pose["translate"]
+    expected_up = altitude - _reference_altitude(session)
+    assert (
+        abs(translate[2] - expected_up) < _ALTITUDE_TOLERANCE_M
+    ), f"stage Z is {translate[2]:.2f} but altitude {altitude} above reference should give {expected_up:.2f}"
+    return f"stage Z {translate[2]:.2f} m matches altitude {altitude} m above the reference"
+
+
+def _verify_capture(session: Any) -> str:
+    """Assert a capture writes a file at the requested resolution, not the viewport's."""
+    session.set_pose(lat_deg=32.22481, lon_deg=35.25621, alt_m=1200.0)
+    _settle(session)
+    result = session.capture_frame("verify_capture.png", width=_CAPTURE_WIDTH, height=_CAPTURE_HEIGHT)
+    assert int(result["width"]) == _CAPTURE_WIDTH, f"asked for width {_CAPTURE_WIDTH}, got {result['width']}"
+    assert int(result["height"]) == _CAPTURE_HEIGHT, f"asked for height {_CAPTURE_HEIGHT}, got {result['height']}"
+    written = Path(str(result["path"]))
+    assert written.is_file(), f"capture reported {written} but no file exists"
+    assert written.stat().st_size > 0, f"{written} is empty"
+    return f"wrote {written.name} at {result['width']}x{result['height']}, {written.stat().st_size} bytes"
+
+
+def _verify_swarm(session: Any) -> str:
+    """Assert each vehicle has its own prim and its own altitude."""
+    session.set_pose(vehicle="lead", lat_deg=32.22481, lon_deg=35.25621, alt_m=1500.0)
+    session.set_pose(vehicle="wing", lat_deg=32.22481, lon_deg=35.25621, alt_m=1500.0 - _SWARM_SEPARATION_M)
+    _settle(session)
+    lead = session.get_pose(vehicle="lead")
+    wing = session.get_pose(vehicle="wing")
+    assert lead["prim"] != wing["prim"], f"both vehicles report the same prim {lead['prim']}"
+    separation = abs(lead["translate"][2] - wing["translate"][2])
+    assert (
+        abs(separation - 600.0) < _ALTITUDE_TOLERANCE_M
+    ), f"commanded 600 m of separation, measured {separation:.2f} m"
+    return f"{lead['prim']} and {wing['prim']} separated by {separation:.1f} m"
+
+
+def _verify_lifecycle(session: Any) -> str:
+    """Assert pause, step and resume leave the control plane responsive and the timeline advancing."""
+    session.pause()
+    before = session.get_pose()["translate"]
+    session.step(count=5)
+    session.resume()
+    after = session.get_pose()["translate"]
+    state = session.state()
+    assert state, "get_state returned nothing after a pause/step/resume cycle"
+    # The pose need not change, but every call must have been answered.
+    assert len(before) == _TRANSLATE_COMPONENTS, "get_pose stopped returning a translate triple"
+    assert len(after) == _TRANSLATE_COMPONENTS, "get_pose stopped returning a translate triple"
+    return f"paused, stepped 5, resumed; state reports {state.get('state', state)}"
+
+
+def _verify_gimbal(session: Any) -> str:
+    """Assert a commanded gimbal target is accepted and reported back."""
+    session.set_pose(lat_deg=32.22481, lon_deg=35.25621, alt_m=1200.0)
+    _settle(session)
+    result = session.set_gimbal(pitch_deg=-35.0)
+    assert result, "set_gimbal returned nothing"
+    reported = float(result.get("pitch_deg", result.get("pitch", 0.0)))
+    assert abs(reported - -35.0) < _GIMBAL_TOLERANCE_DEG, f"asked for pitch -35, target reads {reported}"
+    return f"gimbal target accepted as pitch {reported} deg"
+
+
+def _settle(session: Any, frames: int = 30) -> None:
+    """Advance a few frames so a command reaches the stage before it is read back."""
+    session.step(count=frames)
+    time.sleep(0.5)
+
+
 SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         number=1,
+        verify=_verify_pose_tracking,
         title="Terrain and camera tracking",
         watch=(
             "Cesium terrain is VISIBLE (textured ground, not grey or empty).",
@@ -452,6 +553,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         number=2,
+        verify=_verify_gimbal,
         title="Gimbal start angles and rate-limited slewing",
         overrides={
             "vehicles.drone_0.gimbal.start_pitch_deg": -15.0,
@@ -496,6 +598,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         number=5,
+        verify=_verify_capture,
         title="Frame capture at several resolutions",
         watch=(
             "Three files are written at the paths printed by the script.",
@@ -507,6 +610,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         number=6,
+        verify=_verify_swarm,
         title="Two vehicles (swarm)",
         overrides={
             "vehicles.lead.pose_source": "udp",
@@ -523,6 +627,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         number=7,
+        verify=_verify_lifecycle,
         title="Lifecycle: pause, step, resume, reset",
         watch=(
             "pause() visibly freezes the viewport.",
@@ -552,8 +657,7 @@ SCENARIOS: tuple[Scenario, ...] = (
 
 
 def _find(number: int) -> Scenario | None:
-    """
-    Return the scenario with this number.
+    """Return the scenario with this number.
 
     Args:
         number: The scenario number.
@@ -574,9 +678,109 @@ def _print_list() -> None:
     print("\n  Run one with:  PYTHONPATH=src ./scripts/eyes_on_check.py <number>", flush=True)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _verify_one(sim: Any, scenario: Scenario, port: int) -> tuple[bool, str]:
+    """Launch headless and run one scenario's assertive checker.
+
+    Isaac segfaults during startup on roughly one launch in three, which is a Kit issue that
+    reproduces with our extensions disabled, so a launch that never becomes ready is retried.
+    A failed *assertion* is never retried -- that would hide the failures this exists to find.
+
+    Args:
+        sim: The ``Sim`` entry point.
+        scenario: The scenario to verify. Its ``verify`` must not be ``None``.
+        port: Control plane port to bind.
+
+    Returns:
+        ``(passed, detail)`` where detail is the measurement or the failure.
+
     """
-    Run one scenario, or list them all.
+    assert scenario.verify is not None
+    detail = ""
+    for attempt in range(1, _LAUNCH_ATTEMPTS + 1):
+        try:
+            with sim.launch(headless=True, port=port, overrides=scenario.overrides) as session:
+                return True, scenario.verify(session)
+        except (TimeoutError, ConnectionError) as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            if attempt < _LAUNCH_ATTEMPTS:
+                print(f"      launch attempt {attempt} did not come up; retrying", flush=True)
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+    return False, detail
+
+
+def _resolve_scenario(text: str) -> Scenario | None:
+    """Resolve a scenario number from the command line, reporting why if it cannot.
+
+    Args:
+        text: The raw ``scenario`` argument.
+
+    Returns:
+        The scenario, or ``None`` when the argument is not a known number.
+
+    """
+    try:
+        number = int(text)
+    except ValueError:
+        print(f"ERROR: expected a scenario number or 'list', got {text!r}", file=sys.stderr)
+        return None
+    scenario = _find(number)
+    if scenario is None:
+        print(f"ERROR: no scenario {number}", file=sys.stderr)
+    return scenario
+
+
+def _run_verifications(args: argparse.Namespace) -> int:
+    """Run the assertive checkers headless and report a pass/fail table.
+
+    Args:
+        args: Parsed command line, using ``scenario`` (a number or ``all``) and ``port``.
+
+    Returns:
+        ``0`` when every selected scenario verified, ``1`` otherwise.
+
+    """
+    try:
+        from isaac_core.devkit import Sim
+    except ImportError as exc:
+        print(f"ERROR: cannot import the devkit ({exc}); {REPO_ROOT_HINT}", file=sys.stderr)
+        return 1
+
+    if args.scenario == "all":
+        selected = [s for s in SCENARIOS if s.verify is not None]
+    else:
+        try:
+            one = _find(int(args.scenario))
+        except ValueError:
+            print(f"ERROR: expected a scenario number or 'all', got {args.scenario!r}", file=sys.stderr)
+            return 2
+        if one is None:
+            print(f"ERROR: no scenario {args.scenario}", file=sys.stderr)
+            return 2
+        if one.verify is None:
+            print(f"Scenario {one.number} has no automated check; it needs human eyes.", file=sys.stderr)
+            return 2
+        selected = [one]
+
+    _banner(f"Verifying {len(selected)} scenario(s) headless")
+    results: list[tuple[int, str, bool, str]] = []
+    for scenario in selected:
+        print(f"\n  [{scenario.number}] {scenario.title}", flush=True)
+        ok, detail = _verify_one(Sim, scenario, args.port)
+        results.append((scenario.number, scenario.title, ok, detail))
+        print(f"      {'PASS' if ok else 'FAIL'}  {detail}", flush=True)
+
+    passed = sum(1 for _n, _t, ok, _d in results if ok)
+    _banner(f"{passed}/{len(results)} verified")
+    for number, title, ok, detail in results:
+        print(f"  {'PASS' if ok else 'FAIL'}  {number}  {title}", flush=True)
+        if not ok:
+            print(f"          {detail}", flush=True)
+    return 0 if passed == len(results) else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run one scenario, or list them all.
 
     Args:
         argv: Command line arguments, defaulting to ``sys.argv[1:]``.
@@ -598,6 +802,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--port", type=int, default=8760, help="Control plane port (default 8760).")
     parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Assert instead of describe: run headless, check numbers, exit non-zero on failure. "
+        "Use 'all' as the scenario to run every verifiable one.",
+    )
+    parser.add_argument(
         "--dwell",
         type=float,
         default=DEFAULT_DWELL_S,
@@ -609,16 +819,11 @@ def main(argv: list[str] | None = None) -> int:
         _print_list()
         return 0
 
-    try:
-        number = int(args.scenario)
-    except ValueError:
-        print(f"ERROR: expected a scenario number or 'list', got {args.scenario!r}", file=sys.stderr)
-        _print_list()
-        return 2
+    if args.verify:
+        return _run_verifications(args)
 
-    scenario = _find(number)
+    scenario = _resolve_scenario(args.scenario)
     if scenario is None:
-        print(f"ERROR: no scenario {number}", file=sys.stderr)
         _print_list()
         return 2
 
@@ -644,7 +849,7 @@ def main(argv: list[str] | None = None) -> int:
             scenario.run(session, args.keep_open, args.dwell)
     except KeyboardInterrupt:
         print("\n  Interrupted; shutting the simulator down.", flush=True)
-    except Exception as exc:  # noqa: BLE001 - a scenario failure is a finding, not a crash to hide
+    except Exception as exc:
         print(f"\nERROR: scenario {scenario.number} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         print("  That is itself a finding worth reporting.", file=sys.stderr)
         return 1

@@ -1,5 +1,4 @@
-"""
-Service protocol, registry, and supervisor for sidecar processes.
+"""Service protocol, registry, and supervisor for sidecar processes.
 
 The supervisor polls service health at a configurable interval, restarts failed
 services per a policy (with a maximum restart count to avoid a spin loop on hard
@@ -34,8 +33,7 @@ _DEFAULT_MAX_RESTARTS = 5
 
 @runtime_checkable
 class Service(Protocol):
-    """
-    Protocol for a supervised sidecar service.
+    """Protocol for a supervised sidecar service.
 
     Implementations must be safe to call ``start()`` after ``stop()`` for restart
     support. ``is_healthy()`` should be cheap and non-blocking.
@@ -51,8 +49,7 @@ class Service(Protocol):
         ...
 
     def stop(self, timeout: float = 5.0) -> None:
-        """
-        Stop the service gracefully within *timeout* seconds.
+        """Stop the service gracefully within *timeout* seconds.
 
         If the service cannot stop in time it must still release resources to the
         extent possible -- the supervisor will not call it again.
@@ -70,8 +67,7 @@ class Service(Protocol):
 
 @dataclass(frozen=True)
 class RestartPolicy:
-    """
-    Control how the supervisor handles a failed service.
+    """Control how the supervisor handles a failed service.
 
     Args:
         max_restarts: Maximum number of restarts before the service is abandoned.
@@ -102,8 +98,7 @@ _REGISTRY: dict[str, Callable[..., Any]] = {}
 
 
 class ServiceRegistry:
-    """
-    Registry mapping service kind strings to factory classes.
+    """Registry mapping service kind strings to factory classes.
 
     Factories must accept a single ``SidecarServiceConfig`` argument and return a
     :class:`Service`-compatible object.
@@ -111,8 +106,7 @@ class ServiceRegistry:
 
     @staticmethod
     def register(kind: str, factory: Callable[..., Any]) -> None:
-        """
-        Register a factory for the given service kind.
+        """Register a factory for the given service kind.
 
         Args:
             kind: The ``kind`` string from config.
@@ -124,8 +118,7 @@ class ServiceRegistry:
 
     @staticmethod
     def get(kind: str) -> Callable[..., Any] | None:
-        """
-        Look up the factory for a service kind.
+        """Look up the factory for a service kind.
 
         Args:
             kind: The ``kind`` string from config.
@@ -144,8 +137,7 @@ class ServiceRegistry:
 
 @dataclass
 class ServiceSupervisor:
-    """
-    Start, monitor and restart sidecar services per a restart policy.
+    """Start, monitor and restart sidecar services per a restart policy.
 
     The supervisor runs a background polling thread. Call :meth:`shutdown` to
     stop all services and join the poller.
@@ -159,8 +151,7 @@ class ServiceSupervisor:
 
     @classmethod
     def from_config(cls, config: SidecarConfig, policy: RestartPolicy | None = None) -> "ServiceSupervisor":
-        """
-        Build a supervisor from the sidecar configuration.
+        """Build a supervisor from the sidecar configuration.
 
         Instantiates each service from the registry and returns a ready-to-start
         supervisor. Unknown kinds are logged and skipped.
@@ -200,8 +191,7 @@ class ServiceSupervisor:
         return supervisor
 
     def add_service(self, service: Service) -> None:
-        """
-        Add a service to the supervisor.
+        """Add a service to the supervisor.
 
         Args:
             service: A :class:`Service`-compatible instance.
@@ -228,8 +218,7 @@ class ServiceSupervisor:
         self._poll_thread.start()
 
     def shutdown(self, timeout: float | None = None) -> None:
-        """
-        Stop all services and the supervisor polling thread.
+        """Stop all services and the supervisor polling thread.
 
         Args:
             timeout: Override the policy's shutdown timeout.

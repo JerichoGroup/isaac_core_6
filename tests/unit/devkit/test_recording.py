@@ -25,9 +25,9 @@ def test_import_recording_succeeds_without_rclpy() -> None:
     sys.modules["rclpy"] = None  # type: ignore[assignment]
     try:
         # Force reimport.
-        import importlib  # noqa: PLC0415
+        import importlib
 
-        import isaac_core.devkit.recording  # noqa: PLC0415
+        import isaac_core.devkit.recording
 
         importlib.reload(isaac_core.devkit.recording)
         # Should succeed.
@@ -111,7 +111,7 @@ def test_topic_recorder_save_to(tmp_path: Path) -> None:
     assert out_path.exists()
 
     with out_path.open("rb") as fh:
-        loaded = pickle.load(fh)  # noqa: S301
+        loaded = pickle.load(fh)
 
     assert len(loaded) == 5
     assert loaded[0] == {"msg": "frame_0", "idx": 0}
@@ -204,7 +204,7 @@ def test_topic_recorder_high_frame_count(tmp_path: Path) -> None:
     recorder.save_to(out_path)
 
     with out_path.open("rb") as fh:
-        loaded = pickle.load(fh)  # noqa: S301
+        loaded = pickle.load(fh)
     assert len(loaded) == 1000
     assert loaded[999] == 999
 
@@ -354,7 +354,7 @@ def test_save_video_fps_override_is_used(tmp_path: Path) -> None:
     frames = [_frame(i, i * (_NS // 30)) for i in range(10)]
     rec = _load_recorder_with_frames(frames)
     out = rec.save_video(tmp_path / "override.mp4", fps_override=12.0)
-    import cv2  # noqa: PLC0415
+    import cv2
 
     cap = cv2.VideoCapture(str(out))
     try:

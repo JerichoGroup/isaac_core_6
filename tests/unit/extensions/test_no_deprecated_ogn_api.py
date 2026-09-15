@@ -1,5 +1,4 @@
-"""
-Guard against deprecated OmniGraph APIs re-entering the Kit extensions.
+"""Guard against deprecated OmniGraph APIs re-entering the Kit extensions.
 
 Isaac Sim 6 / Kit 110 deprecated the state *accessors* the previous generation used.
 Read from ``omni/graph/core/_impl/database.py`` in omni.graph 1.142.5:

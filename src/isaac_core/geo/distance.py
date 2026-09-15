@@ -1,24 +1,20 @@
-"""
-Geodesic distance and metre-to-degree offset utilities.
+"""Geodesic distance and metre-to-degree offset utilities.
 
-Haversine-based great-circle distance matches the previous generation exactly
-(using R = 6 371 000 m). The metre-to-latlon offset function uses unambiguous
+Haversine-based great-circle distance (R = 6 371 000 m). The metre-to-latlon offset function uses unambiguous
 parameter names (``north_m``, ``east_m``) to fix the confusing ``(dx, dy)``
-signature of the 2023 repo, where ``dx`` mapped to latitude and ``dy`` to
-longitude.
+signature, where ``dx`` mapped to latitude and ``dy`` to longitude.
 """
 
 import math
 
 from isaac_core.contracts.pose import Lla
 
-# Mean Earth radius in metres, matching the 2023 repo constant.
+# Mean Earth radius in metres.
 EARTH_RADIUS_M: float = 6_371_000.0
 
 
 def geodesic_distance_m(point_a: Lla, point_b: Lla) -> float:
-    """
-    Compute the great-circle distance between two points using the haversine formula.
+    """Compute the great-circle distance between two points using the haversine formula.
 
     Uses a spherical Earth model with radius :data:`EARTH_RADIUS_M`.
 
@@ -44,10 +40,9 @@ def geodesic_distance_m(point_a: Lla, point_b: Lla) -> float:
 
 
 def meters_to_latlon_offset(north_m: float, east_m: float, ref_lat_deg: float) -> tuple[float, float]:
-    """
-    Convert north/east metre offsets to latitude/longitude degree offsets.
+    """Convert north/east metre offsets to latitude/longitude degree offsets.
 
-    Uses the same spherical approximation as the 2023 repo, but with unambiguous
+    Uses a spherical approximation, with unambiguous
     parameter names. The old signature was ``(dx, dy, ref_lat)`` where ``dx``
     mapped to latitude and ``dy`` to longitude -- a naming that caused confusion
     and bugs. Here: ``north_m`` → latitude, ``east_m`` → longitude.

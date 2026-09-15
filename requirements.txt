@@ -27,11 +27,15 @@
 #                                  gstreamer1.0-plugins-bad \
 #                                  gstreamer1.0-plugins-ugly \
 #                                  gstreamer1.0-libav gstreamer1.0-tools
-#   tkinter                      apt install python3-tk
+#   opencv-python    OPTIONAL     pip install 'isaac-core[devkit]'
+#                                Only for writing video from a recording. It is pip-installable,
+#                                so it lives in the [devkit] extra rather than here.
+#   tkinter          REQUIRED     apt install python3-tk
+#                                stdlib, but Debian/Ubuntu ship it separately. The pose-sender
+#                                GUI does not start without it.
 #
-# PyGObject is installed via apt rather than pip on purpose: the pip build needs
-# libgirepository, pkg-config and cairo headers and frequently fails, whereas
-# the apt package just works. The previous generation's Dockerfile did the same.
+# PyGObject comes from apt rather than pip on purpose: the pip build needs
+# libgirepository, pkg-config and cairo headers, and frequently fails.
 # ---------------------------------------------------------------------------
 
 numpy>=1.24,<3

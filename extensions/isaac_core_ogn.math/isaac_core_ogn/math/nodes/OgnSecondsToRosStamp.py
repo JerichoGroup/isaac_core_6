@@ -1,5 +1,4 @@
-"""
-OmniGraph node: split a seconds value into a ROS 2 ``(sec, nanosec)`` timestamp.
+"""OmniGraph node: split a seconds value into a ROS 2 ``(sec, nanosec)`` timestamp.
 
 Thin adapter over :func:`isaac_core.contracts.stamp.seconds_to_ros_stamp`, which is unit
 tested without Isaac Sim. This module contains no arithmetic of its own.
@@ -26,8 +25,7 @@ class OgnSecondsToRosStamp:
 
     @staticmethod
     def compute(db: OgnSecondsToRosStampDatabase) -> bool:
-        """
-        Convert the input seconds to a ROS 2 timestamp and write both outputs.
+        """Convert the input seconds to a ROS 2 timestamp and write both outputs.
 
         Args:
             db: OmniGraph node database.

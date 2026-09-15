@@ -1,5 +1,4 @@
-"""
-JSON-RPC 2.0 message envelopes for the control plane.
+"""JSON-RPC 2.0 message envelopes for the control plane.
 
 Wire format is newline-delimited JSON (NDJSON): one JSON object per line,
 terminated by a newline character. This is trivially streamable and debuggable
@@ -24,8 +23,7 @@ from isaac_core.control.errors import (
 
 
 class Method(str, Enum):
-    """
-    Supported JSON-RPC method names.
+    """Supported JSON-RPC method names.
 
     Using an enum ensures typos fail at import time rather than at runtime, and
     gives IDE completion.
@@ -35,9 +33,6 @@ class Method(str, Enum):
     GET_CAPABILITIES = "get_capabilities"
     GET_CONFIG = "get_config"
     SET_CONFIG = "set_config"
-    ENABLE_FEATURE = "enable_feature"
-    DISABLE_FEATURE = "disable_feature"
-    LOAD_SCENE = "load_scene"
     RESET = "reset"
     PAUSE = "pause"
     RESUME = "resume"
@@ -47,11 +42,15 @@ class Method(str, Enum):
     SET_POSE = "set_pose"
     GET_POSE = "get_pose"
     PING = "ping"
+    # Read-only introspection, used by isaac-core-inspect to prove from outside the process
+    # that pose input is reaching the stage. In the enum because they are reachable over the
+    # wire like any other method, not private helpers.
+    GET_RUNTIME_VALUES = "get_runtime_values"
+    READ_PRIM_ATTRIBUTE = "read_prim_attribute"
 
 
 class RpcRequest(BaseModel):
-    """
-    A JSON-RPC 2.0 request.
+    """A JSON-RPC 2.0 request.
 
     The ``token`` field is an extension for authenticated non-loopback channels;
     it is stripped before dispatch and never forwarded to handlers.
@@ -62,13 +61,12 @@ class RpcRequest(BaseModel):
     jsonrpc: str = "2.0"
     method: str
     params: dict[str, Any] | list[Any] | None = None
-    id: int | str | None = Field(default=None)  # noqa: A003
+    id: int | str | None = Field(default=None)
     token: str | None = None
 
 
 class RpcErrorData(BaseModel):
-    """
-    The ``error`` object inside a JSON-RPC 2.0 error response.
+    """The ``error`` object inside a JSON-RPC 2.0 error response.
 
     Round-trips cleanly: server encodes from an ``RpcError`` exception, client
     decodes back to the same exception type.
@@ -82,8 +80,7 @@ class RpcErrorData(BaseModel):
 
     @classmethod
     def from_exception(cls, exc: RpcError) -> "RpcErrorData":
-        """
-        Build from a typed ``RpcError``.
+        """Build from a typed ``RpcError``.
 
         Args:
             exc: The exception to encode.
@@ -96,8 +93,7 @@ class RpcErrorData(BaseModel):
 
     @classmethod
     def from_unhandled(cls, exc: BaseException) -> "RpcErrorData":
-        """
-        Wrap an unexpected exception as an internal error.
+        """Wrap an unexpected exception as an internal error.
 
         Args:
             exc: The unexpected exception.
@@ -109,8 +105,7 @@ class RpcErrorData(BaseModel):
         return cls(code=INTERNAL_ERROR_CODE, message=repr(exc))
 
     def to_exception(self) -> RpcError:
-        """
-        Reconstruct the typed exception on the client side.
+        """Reconstruct the typed exception on the client side.
 
         Returns:
             The appropriate ``RpcError`` subclass.
@@ -120,8 +115,7 @@ class RpcErrorData(BaseModel):
 
 
 class RpcResponse(BaseModel):
-    """
-    A JSON-RPC 2.0 response (success or error, never both).
+    """A JSON-RPC 2.0 response (success or error, never both).
 
     Construction helpers :meth:`success` and :meth:`error` enforce the mutual
     exclusion invariant.
@@ -132,12 +126,11 @@ class RpcResponse(BaseModel):
     jsonrpc: str = "2.0"
     result: Any = None
     error: RpcErrorData | None = None
-    id: int | str | None = Field(default=None)  # noqa: A003
+    id: int | str | None = Field(default=None)
 
     @classmethod
-    def success(cls, result: Any, request_id: int | str | None) -> "RpcResponse":  # noqa: ANN401
-        """
-        Build a success response.
+    def success(cls, result: Any, request_id: int | str | None) -> "RpcResponse":
+        """Build a success response.
 
         Args:
             result: The handler's return value.
@@ -151,8 +144,7 @@ class RpcResponse(BaseModel):
 
     @classmethod
     def error_response(cls, err: RpcErrorData, request_id: int | str | None = None) -> "RpcResponse":
-        """
-        Build an error response.
+        """Build an error response.
 
         Args:
             err: The structured error.
@@ -166,8 +158,7 @@ class RpcResponse(BaseModel):
 
 
 def encode(msg: RpcRequest | RpcResponse) -> bytes:
-    """
-    Serialise a message to a single NDJSON line (UTF-8 bytes ending with newline).
+    """Serialise a message to a single NDJSON line (UTF-8 bytes ending with newline).
 
     Args:
         msg: The pydantic model to serialise.
@@ -181,8 +172,7 @@ def encode(msg: RpcRequest | RpcResponse) -> bytes:
 
 
 def decode_request(line: bytes) -> RpcRequest:
-    """
-    Parse one NDJSON line into an ``RpcRequest``.
+    """Parse one NDJSON line into an ``RpcRequest``.
 
     Args:
         line: Raw bytes (with or without trailing newline).
@@ -199,8 +189,7 @@ def decode_request(line: bytes) -> RpcRequest:
 
 
 def decode_response(line: bytes) -> RpcResponse:
-    """
-    Parse one NDJSON line into an ``RpcResponse``.
+    """Parse one NDJSON line into an ``RpcResponse``.
 
     Args:
         line: Raw bytes (with or without trailing newline).

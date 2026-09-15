@@ -1,5 +1,4 @@
-"""
-Layer discovery: scan search directories for ``layer.toml`` manifests.
+"""Layer discovery: scan search directories for ``layer.toml`` manifests.
 
 The discovery logic replaces the hardcoded ``OPTIONAL_USDS`` dict. Adding a
 feature layer is now a directory-drop: place a folder containing ``layer.toml``
@@ -26,8 +25,7 @@ class MalformedManifestError(Exception):
 
 
 def discover_layers(search_paths: Sequence[Path]) -> dict[str, LayerManifest]:
-    """
-    Scan directories for ``*/layer.toml`` and return validated manifests keyed by id.
+    """Scan directories for ``*/layer.toml`` and return validated manifests keyed by id.
 
     Each element of ``search_paths`` is a directory. Its immediate subdirectories
     are inspected for a ``layer.toml`` file. If found, the manifest is loaded and

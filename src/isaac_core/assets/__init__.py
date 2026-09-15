@@ -1,5 +1,4 @@
-"""
-Shipped assets: scenes and feature-layer manifests bundled in the wheel.
+"""Shipped assets: scenes and feature-layer manifests bundled in the wheel.
 
 The package exposes :data:`LAYERS_DIR` for programmatic access to the shipped
 layer manifests, which discovery can scan alongside user-provided search paths.

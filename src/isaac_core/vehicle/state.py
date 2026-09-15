@@ -1,5 +1,4 @@
-"""
-Immutable vehicle state: geodetic position plus a world-frame rotation matrix.
+"""Immutable vehicle state: geodetic position plus a world-frame rotation matrix.
 
 A ``VehicleState`` is never mutated -- every transition returns a **new** state.
 The rotation matrix is the authoritative orientation; Euler angles and direction
@@ -23,8 +22,7 @@ from isaac_core.geo.rotations import euler_to_matrix, matrix_to_euler
 
 @dataclass(frozen=True, slots=True)
 class VehicleState:
-    """
-    Immutable snapshot of a vehicle's kinematic state.
+    """Immutable snapshot of a vehicle's kinematic state.
 
     Carries a WGS84 position and a world-frame 3×3 rotation matrix. All
     transitions produce a new instance rather than mutating this one. Direction
@@ -45,8 +43,7 @@ class VehicleState:
 
     @classmethod
     def from_pose(cls, pose: GeodeticPose) -> VehicleState:
-        """
-        Construct a state from a :class:`~isaac_core.contracts.pose.GeodeticPose`.
+        """Construct a state from a :class:`~isaac_core.contracts.pose.GeodeticPose`.
 
         The pose must be in NED frame (the wire/user-facing convention). The
         resulting rotation matrix is built from the NED Euler angles.
@@ -74,8 +71,7 @@ class VehicleState:
         )
 
     def to_pose(self) -> GeodeticPose:
-        """
-        Convert this state to a :class:`~isaac_core.contracts.pose.GeodeticPose`.
+        """Convert this state to a :class:`~isaac_core.contracts.pose.GeodeticPose`.
 
         The returned pose is tagged NED (the wire/user-facing convention).
 
@@ -91,8 +87,7 @@ class VehicleState:
 
     @property
     def heading_r(self) -> float:
-        """
-        Return the yaw angle in radians, normalised to ``[-pi, pi]``.
+        """Return the yaw angle in radians, normalised to ``[-pi, pi]``.
 
         This is the compass heading in the NED intrinsic-XYZ convention.
 
@@ -102,13 +97,12 @@ class VehicleState:
 
     @property
     def forward_vector(self) -> NDArray[np.float64]:
-        """
-        Return the unit vector pointing in the vehicle's forward (heading) direction.
+        """Return the unit vector pointing in the vehicle's forward (heading) direction.
 
         In the navigation convention, heading ``h`` maps to world-frame
         direction ``[sin(h), cos(h), 0]`` where X=east, Y=north, Z=up.
         This is the direction that :func:`~isaac_core.vehicle.motion.move_forward_backward`
-        travels along, matching the 2023 ``UdpBot`` geometry.
+        travels along.
 
         """
         h = self.heading_r
@@ -116,8 +110,7 @@ class VehicleState:
 
     @property
     def right_vector(self) -> NDArray[np.float64]:
-        """
-        Return the unit vector pointing to the vehicle's right.
+        """Return the unit vector pointing to the vehicle's right.
 
         Perpendicular to :attr:`forward_vector`, rotated 90° clockwise in
         the horizontal plane: ``[cos(h), -sin(h), 0]``.
@@ -128,8 +121,7 @@ class VehicleState:
 
     @property
     def up_vector(self) -> NDArray[np.float64]:
-        """
-        Return the unit vector pointing upward from the vehicle.
+        """Return the unit vector pointing upward from the vehicle.
 
         For a level vehicle this is ``[0, 0, 1]``. For a tilted vehicle,
         this is column 2 of the rotation matrix (body Z-axis in world space).
@@ -139,8 +131,7 @@ class VehicleState:
         return vec
 
     def with_position(self, lat_deg: float, lon_deg: float, alt_m: float) -> VehicleState:
-        """
-        Return a new state with the given position and the same orientation.
+        """Return a new state with the given position and the same orientation.
 
         Args:
             lat_deg: New latitude.
@@ -154,8 +145,7 @@ class VehicleState:
         return VehicleState(lat_deg=lat_deg, lon_deg=lon_deg, alt_m=alt_m, rotation=self.rotation)
 
     def with_rotation(self, rotation: NDArray[np.float64]) -> VehicleState:
-        """
-        Return a new state with the given rotation and the same position.
+        """Return a new state with the given rotation and the same position.
 
         Args:
             rotation: A 3×3 rotation matrix.
@@ -167,8 +157,7 @@ class VehicleState:
         return VehicleState(lat_deg=self.lat_deg, lon_deg=self.lon_deg, alt_m=self.alt_m, rotation=rotation)
 
     def with_heading_r(self, yaw_r: float) -> VehicleState:
-        """
-        Return a new state with the given yaw, preserving roll and pitch.
+        """Return a new state with the given yaw, preserving roll and pitch.
 
         Args:
             yaw_r: Desired yaw in radians.
@@ -182,10 +171,9 @@ class VehicleState:
         return self.with_rotation(new_mat)
 
     def distance_to(self, other_lat_deg: float, other_lon_deg: float, other_alt_m: float) -> float:
-        """
-        Compute the Euclidean 3D distance to another LLA point using flat-earth approximation.
+        """Compute the Euclidean 3D distance to another LLA point using flat-earth approximation.
 
-        This uses the same spherical offset approach as the 2023 repo for
+        This uses a spherical offset approach for
         consistency in motion computations (haversine for horizontal, direct
         subtraction for vertical).
 

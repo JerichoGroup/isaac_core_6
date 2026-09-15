@@ -1,15 +1,12 @@
-"""
-LLA ↔ ENU coordinate conversion.
+"""LLA ↔ ENU coordinate conversion.
 
 Provide an immutable :class:`EnuConverter` that converts between WGS84 geodetic
 coordinates (LLA) and a local East-North-Up tangent plane anchored at a
 reference point, using ECEF as the intermediate representation.
 
-The maths match the previous generation exactly: pyproj transforms LLA to ECEF
-via EPSG:4979 → EPSG:4978, then the standard closed-form ECEF→ENU rotation
-matrix projects the ECEF delta into the tangent plane. The inverse (ENU→LLA),
-which the previous generation never provided, is achieved by inverting the
-rotation, adding the reference ECEF, and transforming back.
+pyproj transforms LLA to ECEF via EPSG:4979 → EPSG:4978, then the standard closed-form
+ECEF→ENU rotation matrix projects the ECEF delta into the tangent plane. The inverse
+(ENU→LLA) inverts the rotation, adds the reference ECEF, and transforms back.
 """
 
 import math
@@ -22,8 +19,7 @@ from isaac_core.contracts.pose import Lla
 
 
 def _build_enu_rotation_matrix(lat_rad: float, lon_rad: float) -> NDArray[np.float64]:
-    """
-    Build the ECEF→ENU rotation matrix for a given reference latitude and longitude.
+    """Build the ECEF→ENU rotation matrix for a given reference latitude and longitude.
 
     Args:
         lat_rad: Reference latitude in radians.
@@ -49,8 +45,7 @@ def _build_enu_rotation_matrix(lat_rad: float, lon_rad: float) -> NDArray[np.flo
 
 
 class EnuConverter:
-    """
-    Convert between LLA and a local ENU tangent plane.
+    """Convert between LLA and a local ENU tangent plane.
 
     Immutable after construction. The pyproj :class:`~pyproj.Transformer` is
     built once and reused for every call, avoiding the cost of CRS resolution on
@@ -79,8 +74,7 @@ class EnuConverter:
         self._rotation_inv: NDArray[np.float64] = self._rotation.T
 
     def lla_to_enu(self, position: Lla) -> tuple[float, float, float]:
-        """
-        Convert an LLA position to ENU metres relative to the reference point.
+        """Convert an LLA position to ENU metres relative to the reference point.
 
         Args:
             position: A WGS84 geodetic position.
@@ -95,10 +89,9 @@ class EnuConverter:
         return (float(enu[0]), float(enu[1]), float(enu[2]))
 
     def enu_to_lla(self, east: float, north: float, up: float) -> Lla:
-        """
-        Convert ENU metres back to an LLA position.
+        """Convert ENU metres back to an LLA position.
 
-        This is the inverse of :meth:`lla_to_enu`, which the previous generation
+        This is the inverse of :meth:`lla_to_enu`, which many pipelines
         never provided.
 
         Args:

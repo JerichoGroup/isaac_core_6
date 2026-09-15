@@ -1,5 +1,4 @@
-"""
-Guard the control plane's method surface end to end.
+"""Guard the control plane's method surface end to end.
 
 The existing coverage guard (tests/unit/devkit/test_control_method_coverage.py) only checks
 the methods the devkit *happens* to call. That leaves two gaps this file closes:
@@ -40,12 +39,11 @@ _CALLER_ROOTS: Final = (
 # only raises a clear NotImplementedError. Grow this only with a written reason in the audit.
 _ENUM_WITHOUT_HANDLER_OK: Final[frozenset[str]] = frozenset()
 
-# Registered handlers that are allowed to have no external caller. These are internal-only
-# methods invoked by name (not via the Method enum) from a shipped tool. Each entry names the
-# tool that reaches it, so an entry that stops being true will be caught by the reachability test
-# below rather than hidden here.
-#   get_runtime_values  -> isaac-core-inspect (src/isaac_core/debug/inspector.py)
-_INTERNAL_HANDLERS_OK: Final[frozenset[str]] = frozenset({"get_runtime_values"})
+# Registered handlers allowed to have no external caller. Empty by design: every registered
+# handler is either called by a shipped tool or absent. get_runtime_values and read_prim_attribute
+# used to sit here, invoked by raw string from isaac-core-inspect; both are now Method members, so
+# the enum is once again the complete control-plane surface.
+_INTERNAL_HANDLERS_OK: Final[frozenset[str]] = frozenset()
 
 
 def _registered_methods() -> set[str]:
@@ -62,8 +60,7 @@ def _enum_wire_names() -> set[str]:
 
 
 def _called_wire_names() -> set[str]:
-    """
-    Return every control-method wire name any caller tree invokes.
+    """Return every control-method wire name any caller tree invokes.
 
     Matches both spellings a caller can use: ``client.call("get_state")`` with a string literal,
     and ``Method.GET_STATE.value`` via the enum (resolved back to its wire name).

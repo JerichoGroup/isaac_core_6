@@ -1,9 +1,8 @@
-"""
-Tests for scene path resolution.
+"""Tests for scene path resolution.
 
 `sim.scene` accepts three forms: an absolute path, a path relative to the working directory,
 and a bare name resolved against the asset search paths and built-in scenes. The relative
-form was reported broken by Ofer -- a non-absolute path fell straight through to the
+form was reported broken -- a non-absolute path fell straight through to the
 name-search and failed.
 """
 
@@ -16,18 +15,22 @@ import pytest
 from isaac_core.config import load
 from isaac_core.sim.__main__ import _resolve_scene_path
 
+# Scenes ship inside the package, beside the layers. There is no repo-relative fallback, so an
+# installed package resolves a scene exactly as a source checkout does.
+_PACKAGED_SCENES = Path(__file__).resolve().parents[3] / "src" / "isaac_core" / "assets" / "scenes"
+
 
 def test_absolute_path_is_used_directly() -> None:
-    absolute = (Path("usd/scenes/earth.usda")).resolve()
+    absolute = (_PACKAGED_SCENES / "earth.usda").resolve()
     config = load(cli_overrides={"sim.scene": str(absolute)})
     assert _resolve_scene_path(config) == absolute
 
 
 def test_relative_path_resolves_against_the_working_directory(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The reported bug: "./usd/scenes/earth.usda" must resolve, not fall through to the
+    # The reported bug: a relative path with a slash must resolve, not fall through to the
     # bare-name search and fail.
     monkeypatch.chdir(Path(__file__).resolve().parents[3])
-    config = load(cli_overrides={"sim.scene": "./usd/scenes/earth.usda"})
+    config = load(cli_overrides={"sim.scene": "./src/isaac_core/assets/scenes/earth.usda"})
     resolved = _resolve_scene_path(config)
     assert resolved.is_file()
     assert resolved.name == "earth.usda"

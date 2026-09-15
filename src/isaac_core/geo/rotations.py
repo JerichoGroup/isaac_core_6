@@ -1,5 +1,4 @@
-"""
-Rotation utilities: frame conversion, Euler/matrix/quaternion wrappers, and SLERP.
+"""Rotation utilities: frame conversion, Euler/matrix/quaternion wrappers, and SLERP.
 
 All Euler angles use the intrinsic-XYZ convention (``transforms3d`` axes string
 ``rxyz``), imported as :data:`~isaac_core.contracts.frames.EULER_AXES`.
@@ -19,7 +18,7 @@ from isaac_core.contracts.frames import EULER_AXES, Frame, RotationFrame
 from isaac_core.contracts.pose import Rpy
 
 # Threshold above which slerp falls back to normalised linear interpolation.
-# Matching the 2023 DOT_THRESHOLD constant from udp_bot.py.
+# Above this dot product two quaternions are close enough that nlerp is used instead of slerp.
 SLERP_DOT_THRESHOLD: float = 0.9995
 
 
@@ -30,8 +29,7 @@ _WORLD_EULER_AXES: str = "rzyx"
 
 
 def ned_to_enu(attitude: Rpy) -> Rpy:
-    """
-    Convert an attitude from NED to ENU.
+    """Convert an attitude from NED to ENU.
 
     The mapping is::
 
@@ -42,13 +40,12 @@ def ned_to_enu(attitude: Rpy) -> Rpy:
     Roll passes through, pitch flips sign, and yaw flips sign and rotates by 90 degrees to
     turn a compass heading into an ENU bearing.
 
-    This deliberately does NOT match the previous generation, which swapped roll and pitch
-    (``roll_enu = pitch_ned``). That swap made the two axes trade places at the camera: a
-    pitch input banked the image and a roll input tilted the nose. Verified against the
-    body-axis convention (+X nose, +Y left wing, +Z up) and the camera's own 90 degree
-    mount: with this mapping ``+pitch`` raises the nose, ``+roll`` drops the right wing,
-    and ``+yaw`` turns right. Anything calibrated against the old behaviour needs its signs
-    revisited.
+    Do NOT swap roll and pitch here (``roll_enu = pitch_ned``): that makes the two axes trade
+    places at the camera, so a pitch input banks the image and a roll input tilts the nose.
+    Verified against the body-axis convention (+X nose, +Y left wing, +Z up) and the camera's
+    own 90 degree mount: with this mapping ``+pitch`` raises the nose, ``+roll`` drops the
+    right wing, and ``+yaw`` turns right. Anything calibrated against a swapped mapping needs its
+    signs revisited.
 
     Args:
         attitude: An :class:`~isaac_core.contracts.pose.Rpy` tagged with
@@ -74,8 +71,7 @@ def ned_to_enu(attitude: Rpy) -> Rpy:
 
 
 def enu_to_ned(attitude: Rpy) -> Rpy:
-    """
-    Convert an attitude from ENU to NED.
+    """Convert an attitude from ENU to NED.
 
     This is the true inverse of :func:`ned_to_enu`::
 
@@ -112,8 +108,7 @@ def euler_to_matrix(
     yaw_r: float,
     frame: RotationFrame = RotationFrame.BODY,
 ) -> NDArray[np.float64]:
-    """
-    Build a rotation matrix from roll, pitch and yaw in radians.
+    """Build a rotation matrix from roll, pitch and yaw in radians.
 
     The ``frame`` argument selects the composition order, which is what decides how the
     three angles interact -- not a cosmetic choice:
@@ -148,8 +143,7 @@ def matrix_to_euler(
     matrix: NDArray[np.float64],
     frame: RotationFrame = RotationFrame.BODY,
 ) -> tuple[float, float, float]:
-    """
-    Decompose a rotation matrix into roll, pitch and yaw in radians.
+    """Decompose a rotation matrix into roll, pitch and yaw in radians.
 
     Inverse of :func:`euler_to_matrix`, and must be called with the same ``frame`` or the
     angles will not round-trip.
@@ -175,8 +169,7 @@ def euler_to_quaternion(
     yaw_r: float,
     frame: RotationFrame = RotationFrame.BODY,
 ) -> tuple[float, float, float, float]:
-    """
-    Convert roll, pitch and yaw in radians to a quaternion.
+    """Convert roll, pitch and yaw in radians to a quaternion.
 
     Args:
         roll_r: Roll in radians.
@@ -196,8 +189,7 @@ def euler_to_quaternion(
 
 
 def quaternion_to_euler(w: float, x: float, y: float, z: float) -> tuple[float, float, float]:
-    """
-    Convert a quaternion to intrinsic-XYZ Euler angles.
+    """Convert a quaternion to intrinsic-XYZ Euler angles.
 
     Quaternion input is ``(w, x, y, z)`` -- the native ``transforms3d``
     convention.
@@ -221,8 +213,7 @@ def compose_rotation(
     delta_matrix: NDArray[np.float64],
     frame: RotationFrame,
 ) -> NDArray[np.float64]:
-    """
-    Compose a rotation delta onto a current orientation.
+    """Compose a rotation delta onto a current orientation.
 
     This is the single place where decision D14 is expressed:
 
@@ -252,8 +243,7 @@ def slerp(
     q_to: tuple[float, float, float, float],
     t: float,
 ) -> tuple[float, float, float, float]:
-    """
-    Spherical linear interpolation between two unit quaternions.
+    """Spherical linear interpolation between two unit quaternions.
 
     Uses shortest-path negation: if the dot product is negative, one quaternion
     is flipped so interpolation traverses the short arc. When the quaternions are

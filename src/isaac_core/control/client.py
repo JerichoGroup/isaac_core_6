@@ -1,12 +1,11 @@
-"""
-Client for the JSON-RPC control plane.
+"""Client for the JSON-RPC control plane.
 
 Connects to a running :class:`~isaac_core.control.server.ControlServer`, sends
 requests, and returns typed results or raises typed exceptions from
 :mod:`isaac_core.control.errors`.
 
 The :meth:`ControlClient.wait_until_ready` method is the documented replacement
-for the old repo's log-grep-plus-sleep readiness hack: it polls until the port
+for grepping logs and sleeping to detect readiness: it polls until the port
 accepts a connection and a ``ping`` succeeds, so the port becoming connectable
 IS the readiness signal.
 """
@@ -31,8 +30,7 @@ DEFAULT_CALL_TIMEOUT_S: float = 60.0
 
 
 class ControlClient:
-    """
-    Synchronous JSON-RPC 2.0 client over TCP with newline-delimited messages.
+    """Synchronous JSON-RPC 2.0 client over TCP with newline-delimited messages.
 
     Usage::
 
@@ -51,8 +49,7 @@ class ControlClient:
     def __init__(
         self, host: str = "127.0.0.1", port: int = DEFAULT_CONTROL_PLANE_PORT, token: str | None = None
     ) -> None:
-        """
-        Initialise the client.
+        """Initialise the client.
 
         Args:
             host: Server host.
@@ -78,8 +75,7 @@ class ControlClient:
         return self._port
 
     def connect(self, timeout: float = DEFAULT_CALL_TIMEOUT_S) -> None:
-        """
-        Establish TCP connection to the server.
+        """Establish TCP connection to the server.
 
         Args:
             timeout: Socket timeout in seconds.
@@ -104,9 +100,8 @@ class ControlClient:
             self._sock = None
             self._buffer = b""
 
-    def call(self, method: str, params: dict[str, Any] | list[Any] | None = None) -> Any:  # noqa: ANN401
-        """
-        Send a JSON-RPC request and return the result.
+    def call(self, method: str, params: dict[str, Any] | list[Any] | None = None) -> Any:
+        """Send a JSON-RPC request and return the result.
 
         Args:
             method: The method name.
@@ -150,9 +145,8 @@ class ControlClient:
 
         return response.result
 
-    def ping(self) -> Any:  # noqa: ANN401
-        """
-        Send a ping request.
+    def ping(self) -> Any:
+        """Send a ping request.
 
         Returns:
             The server's pong result.
@@ -161,8 +155,7 @@ class ControlClient:
         return self.call(Method.PING.value)
 
     def _stage_ready(self) -> bool:
-        """
-        Report whether the simulator has composed its stage.
+        """Report whether the simulator has composed its stage.
 
         Tolerates an older simulator that does not publish the field, treating a missing ``ready``
         as ready so a newer client cannot hang forever against one.
@@ -189,8 +182,7 @@ class ControlClient:
         *,
         require_stage: bool = True,
     ) -> None:
-        """
-        Block until the simulator is actually usable, not merely listening.
+        """Block until the simulator is actually usable, not merely listening.
 
         A connectable port is **not** readiness. The control plane starts listening before the
         stage is composed, so commands sent in that window are accepted and then silently lost --

@@ -5,6 +5,7 @@ import math
 import pytest
 
 from isaac_core.contracts.rangefinder import (
+    boresight_direction,
     clamp_to_band,
     is_saturated,
     is_valid_reading,
@@ -93,3 +94,24 @@ def test_clamp_is_independent_of_hit_handling() -> None:
     assert clamp_to_band(-5.0, MIN_M, MAX_M) == MIN_M
     assert clamp_to_band(6000.0, MIN_M, MAX_M) == MAX_M
     assert clamp_to_band(12.5, MIN_M, MAX_M) == 12.5
+
+
+def test_boresight_direction_is_the_negated_third_row() -> None:
+    # A USD camera looks along its own local -Z, which is the negated third row of its world
+    # rotation. Reading it off the CAMERA rather than a sibling Xform is what keeps the sensor
+    # aligned: an Xform is identity while the camera carries orient (0.5, 0.5, -0.5, -0.5), so
+    # casting along the Xform's -Z was permanently 90 degrees off the view.
+    identity = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    assert boresight_direction(identity) == (0.0, 0.0, -1.0)
+
+
+def test_boresight_direction_follows_a_rotated_camera() -> None:
+    # A camera rotated so its -Z points along +X must give +X, not -Z.
+    rotated = ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0))
+    assert boresight_direction(rotated) == (1.0, 0.0, 0.0)
+
+
+def test_boresight_direction_of_a_straight_down_camera_is_down() -> None:
+    # The case the distance sensor exists for: looking at the ground, so ENU up is negative.
+    looking_down = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    assert boresight_direction(looking_down)[2] == pytest.approx(-1.0)

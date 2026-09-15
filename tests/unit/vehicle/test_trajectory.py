@@ -5,6 +5,7 @@ import math
 
 import pytest
 
+from isaac_core.contracts.angles import normalize_angle
 from isaac_core.contracts.frames import Frame
 from isaac_core.contracts.pose import GeodeticPose, Lla, Rpy
 from isaac_core.vehicle.trajectory import (
@@ -122,14 +123,15 @@ def test_orbit_returns_to_start_after_full_revolution() -> None:
 
 
 def test_orbit_yaw_is_tangent_to_path() -> None:
-    # For a circular path, yaw should be perpendicular to the radius vector
+    # This test used to assert only `isfinite(yaw_r)`, which would pass with yaw hardcoded to 0.0 --
+    # it named a behaviour and then checked nothing about it. Now it measures the actual bearing from
+    # each sample to the next and asserts the reported yaw matches, which is what "tangent" means.
     radius = 200.0
-    circumference = 2.0 * math.pi * radius
     speed = 20.0
-    duration = circumference / speed
+    duration = (2.0 * math.pi * radius) / speed
     rate = 30.0
 
-    orb = OrbitTrajectory(
+    orbit = OrbitTrajectory(
         center_lat_deg=32.0,
         center_lon_deg=35.0,
         radius_m=radius,
@@ -137,18 +139,40 @@ def test_orbit_yaw_is_tangent_to_path() -> None:
         speed_mps=speed,
         orbit_duration_s=duration,
     )
-    poses = list(orb.poses(rate_hz=rate))
+    poses = list(orbit.poses(rate_hz=rate))
+    assert len(poses) > 40
 
-    # Check a sample roughly at step N/4 (quarter circle)
-    quarter_idx = len(poses) // 4
-    p = poses[quarter_idx]
-    # The tangent direction should be roughly perpendicular to the radial direction
-    # from center to the point. For a CCW orbit starting at angle 0:
-    # at t ~ pi/2, position is roughly at angle pi/2, tangent should be ~ pi
-    # This is a geometry sanity check, not exact due to discretisation
-    assert p.orientation.frame is Frame.NED
-    # Just verify yaw is a finite number (tangent computation didn't blow up)
-    assert math.isfinite(p.orientation.yaw_r)
+    # Sample away from the wrap-around at the very end, where the finite difference straddles the seam.
+    for index in (len(poses) // 8, len(poses) // 4, len(poses) // 2, (3 * len(poses)) // 4):
+        here, nxt = poses[index], poses[index + 1]
+        assert here.orientation.frame is Frame.NED
+
+        # Bearing of travel, in the same NED convention the trajectory reports: atan2(east, north).
+        north = nxt.position.lat_deg - here.position.lat_deg
+        east = (nxt.position.lon_deg - here.position.lon_deg) * math.cos(math.radians(here.position.lat_deg))
+        travel_yaw_r = math.atan2(east, north)
+
+        delta = normalize_angle(here.orientation.yaw_r - travel_yaw_r)
+        assert abs(delta) < math.radians(2.0), (
+            f"sample {index}: reported yaw {math.degrees(here.orientation.yaw_r):.2f} deg is not "
+            f"tangent to the path bearing {math.degrees(travel_yaw_r):.2f} deg"
+        )
+
+
+def test_orbit_yaw_would_fail_if_it_were_constant() -> None:
+    # A companion to the test above: yaw must actually sweep through the orbit, so a hardcoded or
+    # frozen heading cannot pass.
+    orbit = OrbitTrajectory(
+        center_lat_deg=32.0,
+        center_lon_deg=35.0,
+        radius_m=200.0,
+        height_m=300.0,
+        speed_mps=20.0,
+        orbit_duration_s=(2.0 * math.pi * 200.0) / 20.0,
+    )
+    yaws = [pose.orientation.yaw_r for pose in orbit.poses(rate_hz=10.0)]
+    spread = max(yaws) - min(yaws)
+    assert spread > math.radians(180.0), f"yaw only spanned {math.degrees(spread):.1f} deg over a full orbit"
 
 
 def test_orbit_deterministic() -> None:

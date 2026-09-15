@@ -1,5 +1,4 @@
-"""
-Whole-pipeline validation of both rotation frames.
+"""Whole-pipeline validation of both rotation frames.
 
 A bug in the orientation pipeline makes the entire project useless, so this file checks the
 chain end to end rather than any single function: wire bytes, decode, NED to ENU, matrix

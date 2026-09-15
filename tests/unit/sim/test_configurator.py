@@ -1,5 +1,4 @@
-"""
-Test the pure configuration applicator against the RecordingWriter fake.
+"""Test the pure configuration applicator against the RecordingWriter fake.
 
 Cover every binding kind, dotted config lookup, camera intrinsics maths,
 prim_overrides winning last, deterministic ordering, and error paths.
@@ -418,7 +417,7 @@ def _capture_configurator_warnings() -> tuple[logging.Handler, list[logging.LogR
 
 
 def test_override_colliding_with_a_binding_warns() -> None:
-    # Ofer set focal_length_mm in config and focalLength via a prim_override, and the
+    # Reported bug: focal_length_mm in config and focalLength via a prim_override, and the
     # override silently won. It still wins by design, but the collision must be announced.
     config = _make_config(prim_overrides=(PrimOverride(prim="/Env/node", attribute="inputs:port", value=9999),))
     binding = ResolvedBinding(prim="/Env/node", attribute="inputs:port", config="sim.control_plane.port")

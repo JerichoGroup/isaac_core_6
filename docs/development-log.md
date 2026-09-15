@@ -3336,7 +3336,7 @@ commands and reading the diff establishes fact.
 
 - **2026-09-08 (f)** — V2 finalization planned; style profile put to Ofer before touching style.
 
-  Plan in `docs/v2_finalization_plan.md`: six phases -- freeze the claim surface, split docs by
+  Plan in `dev/v2_finalization_plan.md`: six phases -- freeze the claim surface, split docs by
   audience, source cleanup, verify every feature, repo hygiene, release gate. Ofer added that
   Phase 0's matrix must be **re-run at the end** so cleanup cannot quietly break something the
   matrix already certified, and dropped the CONTRIBUTING.md in favour of a fresh-clone check on a
@@ -3419,7 +3419,7 @@ commands and reading the diff establishes fact.
   Proved `RUF100` is live by planting a dead `# noqa: E501` in `contracts/topics.py` and confirming
   ruff flagged it, then restoring. A rule believed-enabled is worth nothing.
 
-  **Phase 0 complete: `docs/feature_matrix.md`.** ~90 rows over ten areas, each with a verification
+  **Phase 0 complete: `dev/feature_matrix.md`.** ~90 rows over ten areas, each with a verification
   bucket (A automated / B live-scripted / C eyes-on) and a cited evidence file. All 58 cited test
   files verified to exist, mechanically, rather than trusted.
 
@@ -3842,6 +3842,469 @@ commands and reading the diff establishes fact.
   narrowed to that, so an unrelated startup argument cannot fail it again.
 
   **1598 tests, all seven gates green, 23 contracts kept.**
+
+- **2026-09-14** — README CR3. Two of the three items were **my errors**, both caught by Ofer reading
+  rather than by any test.
+
+  **The USD tree I documented contradicted every layer we ship.** I had drawn the OmniGraph under
+  `/Root/Xform`. Checked all four shipped layers: `bbox` has `/Root/BboxExport`, `camera_udp` and
+  `camera_ros` have `/Root/CameraImageExport` and `/Root/PoseSync`, `distance_sensor` has
+  `/Root/RangeSensing` -- every graph is a **sibling** of `Xform`, directly under `/Root`. That is not
+  arbitrary: `Xform` carries the vehicle transform and a graph has none, which is exactly why manifest
+  paths read `{mount}/CameraImageExport/...`. `docs/authoring_layers.md` was worse than wrong, it was
+  self-contradictory: it drew the graph inside `Xform`, said it resolves to
+  `.../Xform/ThermalExport/...`, then claimed that is what `{mount}/ThermalExport/...` resolves to.
+  Both fixed, and `test_every_layer_puts_its_graphs_directly_under_root` now asserts the convention so
+  the docs cannot drift from the layers again.
+
+  **The README imported a class that does not exist.** `from isaac_core.devkit.recording import
+  Recorder`, in two places. There is no `Recorder`: the module exports `TopicRecorder` plus four
+  factories (`video_recorder`, `pose_recorder`, `range_recorder`, `bbox_recorder`) and two timing
+  helpers. A user would have hit `ImportError` on the first line they copied. Both sites now document
+  the real surface, including the five-method recorder lifecycle and the `TopicRecorder` constructor
+  for topics with no factory.
+
+  **Ofer's `*` question.** He asked whether the bare `*` in `Sim.attach`/`Sim.launch` hid additional
+  options. It does not -- it is Python's keyword-only marker. Verified by introspection that neither
+  takes `**kwargs`, and that `attach` has `host`/`port` positional-or-keyword while **every** argument
+  of `launch` is keyword-only. Now stated explicitly, along with the fact that both lists are complete.
+
+  **New devkit example**, to his spec: launches with `bbox` enabled, starts a video recorder and a bbox
+  recorder each on its own thread *before* the flight, changes the simulation both ways (`set_gimbal`
+  as a control call and `config.patch` as a runtime patch), flies an orbit over UDP, then saves the mp4
+  and the boxes and prints capabilities and the final pose. Every one of the 18 symbols it uses was
+  checked to exist, and `config.patch(key, value)` matches the signature corrected in Phase 2.
+
+  **1599 tests, all seven gates green, 23 contracts kept.** Phase 1 is closed.
+
+- **2026-09-14 (b)** — **Phase 3 begins: logic moved out of the OGN compute bodies into the kernel,
+  which is the fix Ofer preferred over driving `compute()` from tests with a fake database.**
+
+  **`OgnGlobalPositionToLocalPosition`: 67 lines -> 38.** The whole composition now lives in
+  `geo/pose_pipeline.py` as `compose_local_pose`, plus `has_position_fix` (the zero-position guard),
+  `rotation_frame_from_text` (string to enum, defaulting to BODY) and `quaternion_to_isaac_order` (the
+  WXYZ-to-IJKR reorder that is a 180 degree error when reversed). Before rewriting the node I checked
+  the extracted kernel reproduces the original maths **exactly** across three cases including a WORLD
+  frame with non-zero offsets, so this is a move rather than a rewrite. 21 new tests cover the
+  branches that previously could only be reached by launching Isaac.
+
+  **Closed finding T2, the one that mattered most.** `tests/unit/geo/test_gimbal_axes.py` carried a
+  *copy* of the node's composition and said so in its own docstring -- node and test could drift apart
+  while both stayed green, which is precisely how the original pitch-as-roll bug survived. It now
+  calls `compose_local_pose`, so the assertions about the camera's real world look direction are
+  measuring the shipped path.
+
+  **`OgnDistanceSensor`: honest result, not a forced one.** Most of its 64 lines are irreducible Isaac
+  interaction -- stage lookup, `Xformable.ComputeLocalToWorldTransform`, the render raycast sequence --
+  and its pure part (`resolve_range`) was already in `contracts/rangefinder.py`. What I did extract is
+  `boresight_direction`, the negated third row of the camera's world rotation, because that *was* a
+  real bug: casting along a sibling Xform's -Z was permanently 90 degrees off, since an Xform is
+  identity while the camera carries orient (0.5, 0.5, -0.5, -0.5). Three tests. Also collapsed four
+  identical "report no detection" exits into one helper, which matters because reporting zero instead
+  of the rated maximum reads as "touching the ground".
+
+  Two self-inflicted breakages, both the same mistake twice: a naive string replacement on
+  `from x import y` mangled a **multi-line** import into `import boresight_direction, (`. I had already
+  done this once in Phase 2. Stopping that pattern: multi-line imports get rebuilt, not string-patched.
+
+  **1623 tests, all seven gates green, 23 contracts kept.** Remaining in Phase 3: `OgnBboxProjector`
+  (53 lines, parallel-array assembly is genuinely extractable), the `--verify` runner for bucket B, and
+  the rest of the T-list.
+
+- **2026-09-14 (c)** — Phase 3 continued. The `--verify` runner found a real regression on its first
+  run, which is exactly why it exists.
+
+  **Equivalence of the extracted pose pipeline, done properly.** Ofer was right that three cases was
+  thin for the heart of the repo. Ran a systematic sweep of the extracted kernel against the original
+  inline node body pulled from git: four ENU references (including the equator and 78 degrees north),
+  fifteen positions each, six airframe attitudes including one at gimbal lock, six gimbal offsets
+  including near-180-degree values, both rotation frames -- **4320 cases, largest deviation exactly
+  0.000e+00**. Bit-identical, so the extraction is a move rather than a rewrite. Froze 54 of those as
+  golden vectors in `test_pose_pipeline_golden.py`, which is better than keeping the second
+  implementation around: a copy is what let the node and its test drift in the first place. Verified
+  the golden test bites by removing the gimbal pitch sign flip -- 41 failures.
+
+  **`OgnBboxProjector`.** The 16 parallel arrays moved to `contracts/bbox.py`, where `BboxArrays`
+  takes one whole frozen `BboxDetection` per append. Sixteen independent `list.append` calls could
+  silently omit one and shift every later detection; now that is unrepresentable. 12 tests cover the
+  invariant, including that an invisible target and an anchorless target each still occupy their
+  index, and that `ARRAY_FIELDS` matches both the dataclass and the shipped `.msg`.
+
+  **T6 found a real bug.** The distance sensor's `.ogn` default for `max_range_m` was **100.0** while
+  config says **5000.0** -- and the schema's own docstring explains that a 100 m ray never reaches the
+  ground and reports "no detection" forever while looking perfectly healthy. So a binding that failed
+  to land would silently use the known-broken value. Fixed, plus three `.ogn` descriptions still
+  claiming the sensor reports `+inf`/`-inf` when it has saturated at its limits since D28. Guarded by
+  `test_ogn_defaults_match_config.py`.
+
+  **T3 and T4.** `test_orbit_yaw_is_tangent_to_path` asserted only `isfinite(yaw)` -- it named a
+  behaviour and checked nothing about it. Now it measures the bearing from each sample to the next and
+  asserts the reported yaw matches within 2 degrees, with a companion asserting yaw sweeps more than
+  180 degrees over a full orbit so a frozen heading cannot pass. Added four distinct-field golden
+  packet vectors; verified they catch a roll/pitch transposition in `encode()` (11 failures) which the
+  existing single near-symmetric vector could not.
+
+  **A trap in my own verification technique.** Break-and-restore appeared to show the orbit fix
+  failing after restore. The cause: my frozen edit `yaw_r=0.0,` is exactly as long as `yaw_r=yaw,`, so
+  the restored file had an identical **size**, and Python's timestamp+size `.pyc` invalidation reused
+  stale bytecode. Every earlier break-and-restore proof stands (the tests did fail then pass), but the
+  technique now requires clearing `__pycache__` or making a size-changing edit.
+
+  **`--verify` runner built** (closing F4). `eyes_on_check.py --verify` runs headless, asserts numbers,
+  and exits non-zero; `all` runs every verifiable scenario. Five of eight are now automated: pose
+  tracking, gimbal, capture, swarm and lifecycle. Launches are retried up to three times because Isaac
+  segfaults on roughly one launch in three, but a failed **assertion** is never retried -- that would
+  hide the failures the runner exists to find. First full run: `3/5`, and both failures were real
+  information. Scenario 1 was the startup segfault (passed alone, hence the retry logic).
+
+  **Scenario 5 is a genuine regression and it is mine.** `capture_frame(width=1920, height=1080)`
+  silently captures at **1280x720** and reports those numbers back. It fails outright headless. A
+  19 MB `four_k.png` from 2026-09-07 proves 4 K capture used to work. Mechanism: capture resizes the
+  render product it resolves, but `IsaacCreateRenderProduct` **reuses a product whose camera and
+  resolution already match** -- and the viewport aimed at that camera owns one. So capture is resizing
+  a viewport-owned product, and the viewport puts it back. Correcting the node-name lookup earlier was
+  necessary but not sufficient. **The fix is for capture to create its own render product at the
+  requested resolution instead of resizing a shared one.** Not attempted yet; it is the one open item
+  in Phase 3 and it affects a documented feature.
+
+  **1704 tests, all seven gates green, 23 contracts kept.**
+
+- **2026-09-14 (d)** — Capture-at-resolution: two fix attempts failed, so the behaviour is now honest
+  rather than half-fixed.
+
+  Tried creating a dedicated render product with `rep.create.render_product(..., force_new=True)` so
+  capture would stop resizing the viewport's -- it produces **no file at all**. Then added
+  `rep.vp_manager.attach_hydra_texture(path)`, which is what Isaac's own node does for the same
+  reason -- still no file. Two attempts at the same approach, so I stopped guessing per my own rule and
+  reverted to the mechanism that works for camera-resolution capture.
+
+  **What changed instead:** the finish stage now compares the achieved resolution against the request
+  and **fails with an explanation** when they differ. Before this, asking for 4 K silently wrote 720p
+  *and reported 1280x720 as though that were fine* -- a caller had no way to notice. Verified live:
+  camera-resolution capture writes its file, a 4 K request is refused with the reason and the
+  workaround. The README's 4 K example is gone and the limitation is stated where the feature is
+  documented.
+
+  `docs/dev/roadmap.md` records both failed attempts explicitly, so whoever picks this up does not
+  repeat them, plus the two remaining hypotheses: a freshly created product may need more than
+  `CAPTURE_SETTLE_FRAMES` before `capture_viewport_to_file` will write it, or the call may need the
+  viewport that *owns* the product rather than the active one.
+
+  Matrix updated: **F4 closed** (bucket B has a runner), **F6 opened** for this. Worth stating plainly
+  that the runner justified itself immediately -- this was invisible to 1704 unit tests because it needs
+  a live renderer, and it is the second time in this project that a documented capability turned out
+  not to work while everything green said otherwise.
+
+  **1704 tests, all seven gates green, 23 contracts kept.**
+
+- **2026-09-14 (e)** — **A regression I introduced, caught by Ofer, plus five failed attempts at
+  capture-at-resolution.**
+
+  **The viewport rename was mine and it broke a Kit extension.** Ofer said the
+  `AttributeError: 'NoneType' object has no attribute 'get_frame'` "was not there before", which was the
+  clue. `omni.kit.viewport_widgets_manager/manager.py:201` does
+  `get_active_viewport_window(window_name="Viewport")` with the name **hardcoded**. Naming Kit's startup
+  window after the first vehicle made that return `None`, and the extension died on every launch.
+  Reverted; verified live that a plain `python -m isaac_core.sim` now logs zero occurrences of
+  `get_frame`, `viewport_widgets_manager` and `Failed to startup python extension`. The function is kept
+  as a stub returning `[]` with the reason in its docstring, so nobody re-adds the argument, and the
+  test is now the inverse: assert the window is **never** renamed. Cosmetic consistency was not worth a
+  startup error, and I should have launched once after making that change instead of trusting the tests.
+
+  **Capture-at-resolution: still not fixed after five approaches.** All six ruled-out attempts are
+  recorded in `docs/dev/roadmap.md` with what each produced. The important correction: one instrumented
+  run reported 1920x1080 and I described it as working. I never checked the pixels on disk for that run,
+  and every subsequent run with identical code wrote 1280x720. `request.used` is read back from the
+  render product, so the product can claim the new size while the capture writes the viewport's -- so my
+  "it works" was very likely a false positive of exactly the kind the new honest check exists to catch.
+  Correcting it here rather than leaving it in the log.
+
+  Also hit the stale-`.pyc` trap a third time, which is what made the race look real: a run with a debug
+  log line behaved differently from one without. Every capture experiment from here on clears
+  `__pycache__` first.
+
+  Left the tree in the honest state: camera-resolution capture works, a requested resolution refuses
+  with the reason and the workaround, the README says so, and the speculative settle-frame bump is
+  reverted so the code is the known-good shape.
+
+  **1703 tests, all seven gates green, 23 contracts kept.**
+
+- **2026-09-14 (f)** — System test harness built. Capture still not fixed, and the archaeology
+  overturned my earlier account of it.
+
+  **Archaeology on `c532c03`, which Ofer asked for, changes the story.** At that commit
+  `_camera_render_product()` looked up `isaac_get_viewport_render_product` while the USD had already
+  been refactored to `isaac_create_render_product`. So the lookup resolved **nothing**, the resize was
+  a no-op on `None`, and capture silently used viewport resolution and reported it. Capture-at-resolution
+  was therefore **already broken at the commit whose message says all eight checks passed** -- Ofer's
+  recollection of scenario 5 passing is consistent with a file being produced, which it was. The 19 MB
+  4 K file dated 2026-09-07 belongs to the earlier era (`a77b631`/`dac8867`) when each camera had its
+  **own** viewport, so the render product was that viewport's and resizing it was uncontested.
+
+  **The mechanism, now understood.** `IsaacCreateRenderProduct` owns its product and reconciles it only
+  when its **own** `inputs:width`/`inputs:height` change -- its compute reads
+  `if state.resolution != (db.inputs.width, db.inputs.height)`. Writing the product's `resolution`
+  attribute directly leaves that state untouched, so nothing reconciles. Capture now drives the node's
+  inputs instead, which is the sanctioned path. Whether that alone fixes it is **unverified**: two
+  consecutive live runs produced no capture file at all for every resolution including the camera's,
+  which does not track my changes and points at run-to-run instability I could not isolate.
+
+  **Headless capture does not work at all**, which is a genuine constraint rather than a bug in my
+  change: `capture_viewport_to_file` needs a viewport colour resource and headless has none. The system
+  tests were moved to a GUI fixture for capture because of it, and skip when there is no display.
+
+  **`tests/system/` exists and works as infrastructure.** Opt in with `--system` or
+  `ISAAC_CORE_SYSTEM_TESTS=1`; skipped otherwise, so the default suite is still 1703 tests in 18
+  seconds. Session-scoped fixtures launch one simulator each (single vehicle headless, swarm headless,
+  single vehicle GUI) and share it across tests, because a launch costs 20-40 s. It reads PNG dimensions
+  straight from the IHDR chunk rather than via Pillow, so measuring pixels needs no extra dependency.
+
+  It immediately found two problems **in itself**, which is worth recording because both are the same
+  mistake I keep making in a new guise: concurrent session fixtures collided on RTSP 8554 and then on
+  UDP 33333, so one simulator's poses were landing in another's socket. Assigning per-fixture port
+  ranges fixed the RTSP half; the UDP half is not right yet -- after that change the single-vehicle pose
+  test began failing too, and standalone the same swarm configuration measures a perfect 600.00 m
+  separation. So the current failures are the harness, not the product.
+
+  **State: harness in place and honest, capture unfixed.** 1703 unit tests and all seven gates green;
+  the system suite is opt-in and currently red for capture and swarm, both traced to fixture port
+  isolation and to capture itself.
+
+- **2026-09-14 (g)** — **capture-at-resolution FIXED, and Ofer was right on both counts.**
+
+  He insisted the feature had worked and that never producing a single correct file suggested something
+  more basic was wrong. Both were true, and my repeated "it was always broken" conclusion was reached by
+  *reading* commits instead of *running* them.
+
+  **Root cause: the viewport resize is asynchronous.** The viewport widget carries a
+  `__resize_future`, so the render product is still the old size for many frames after
+  `viewport.resolution = (w, h)` returns. With `CAPTURE_SETTLE_FRAMES = 8` the capture read the old size
+  back, wrote the camera's resolution, and reported the requested one. That is why five earlier
+  approaches all "failed": every one of them was measured too early.
+
+  What made it findable was making the machinery observable instead of guessing. The capture result now
+  reports `render_product`, `original_width/height` and `viewport_width/height`, and the mismatch error
+  quotes all three. That immediately showed two facts I had been unable to see: the resolved product is
+  `.../HydraTextures/omni_kit_widget_viewport_ViewportTexture_0`, i.e. `IsaacCreateRenderProduct`
+  **reuses the main viewport's** product, and after setting the viewport it still measured 1280x720 --
+  which pointed at timing rather than ownership.
+
+  **The fix**: set the viewport resolution (the product follows, since the product is the viewport's),
+  and wait `CAPTURE_RESIZE_SETTLE_FRAMES = 30` frames rather than 8 when a resize was requested.
+  Measured on disk by reading PNG IHDR headers: 1920x1080 and 3840x2160 as requested, camera resolution
+  unchanged before and after. Also confirmed by actually reverting to the `a77b631` layer and running it,
+  which is what Ofer asked for -- the old design resolved `ViewportTexture_0` too, so the old and new
+  designs share the mechanism and the old one was equally subject to the timing bug.
+
+  **Headless capture genuinely cannot work**: `capture_viewport_to_file` needs a viewport colour
+  resource. Documented in the README rather than worked around.
+
+  **System tests, as a tool.** `tests/system/` runs a real Isaac Sim under pytest, opt in with
+  `--system` or `ISAAC_CORE_SYSTEM_TESTS=1`. **All 13 pass in 1 minute 47.** They measure observable
+  outcomes: PNG pixel dimensions read from the IHDR chunk (no Pillow dependency), the stage transform
+  after a commanded pose, two vehicles at two altitudes, and that a swarm refuses single-vehicle
+  commands.
+
+  Three problems in the harness had to be fixed first, all the same class of mistake in new clothes:
+  concurrent fixtures collided on RTSP 8554, then on UDP 33333 so one simulator's poses landed in
+  another's socket, and finally **session**-scoped fixtures never release, so three simulators ran at
+  once and starved the GPU until a control-plane call timed out. Module scope plus an 8-second teardown
+  grace fixed the last one and cut the suite from 4-7 minutes to under two. `settle()` also steps in
+  chunks of 10 frames, because one 40-frame RPC could exceed the socket timeout and a slow loop was then
+  indistinguishable from a wedged one.
+
+  **1705 unit tests, 13 system tests, all seven gates green, 23 contracts kept.**
+
+- **2026-09-14 (h)** — Phase 3 closed. System test harness stabilised as far as Isaac allows, and the
+  remaining flakiness is honest about itself.
+
+  **`--verify` retained, `tests/system/` is the tool.** Ofer preferred a tool over a rule, and this is
+  it: `python3 -m pytest tests/system --system`, 13 tests, about 95 seconds on a clean machine.
+  Verified fully green on four separate runs (90 s, 94 s, 95 s, 95 s).
+
+  **Four harness bugs found and fixed, all the same class -- shared resources between concurrent
+  simulators:**
+  1. RTSP 8554 collision between fixtures -> per-fixture port ranges.
+  2. UDP 33333 collision, so one simulator's poses landed in another's socket -> per-fixture UDP ports.
+  3. **Session**-scoped fixtures are never released, so three simulators ran at once and starved the
+     GPU until a control-plane call timed out -> module scope, which also cut the suite from 4-7
+     minutes to under two.
+  4. A 40-frame `step` in one RPC could exceed the socket timeout -> `settle()` steps in chunks of 10.
+
+  **Two more subtle ones.** `set_pose` sends a **single** UDP packet, so one sent before the receiving
+  node has bound its socket is simply lost and nothing retries -- a real sender streams at 30 Hz. The
+  pose assertions now resend while polling for convergence, which is both honest about the asynchrony
+  and how a real client behaves. And module **order** turned out to matter: the two-vehicle module run
+  last would fail or skip, run first it passed every time, so `MODULE_ORDER` puts the heaviest simulator
+  on the clean machine.
+
+  **Known limitation, stated plainly.** Even so, one run in roughly three cannot bring the swarm
+  simulator to a composed, ready stage, and the readiness probe **skips** those tests rather than
+  failing them -- a simulator that will not launch is an environment problem, not a defect in the code
+  under test, and reporting it as a product failure would be the worse lie. Every wait is bounded, so
+  the worst case is a slow run rather than a hang. Swarm behaviour itself is verified by other means:
+  standalone runs measure exactly 600.00 m of separation, and Ofer has confirmed eyes-on scenario 6.
+
+  **Phase 3 test-gap findings all closed.** T2 (the gimbal test reimplementing the node) closed by the
+  kernel extraction; T3 (orbit yaw asserting only `isfinite`) rewritten to measure path bearing; T4
+  distinct-field packet vectors added and verified to catch a roll/pitch transposition in `encode()`;
+  T5 gimbal target accumulation now has five tests covering held-versus-start fallback; T6 found and
+  fixed a real `.ogn` default that disagreed with config.
+
+  Also removed the last `previous generation` reference from `src`, which the Phase 2 sweep had missed.
+
+  **1710 unit tests, 13 system tests, all seven gates green, 23 contracts kept.**
+
+- **2026-09-14 (i)** — **Phase 4 (repo hygiene) done.** Two of the findings were real bugs rather than
+  tidiness, which is the argument for doing this pass at all.
+
+  **A packaging bug: the shipped layer manifests were not shipped.** `package-data` listed nothing, so
+  the four `assets/layers/*/layer.toml` files were excluded from any wheel or sdist -- `SOURCES.txt`
+  confirmed **zero** `layer.toml` entries. A non-editable `pip install isaac-core` would therefore have
+  no feature layers and every feature would fail to compose. Invisible because every install in this
+  project, including `setup.sh`, uses `-e`, which points at the source tree. Fixed and guarded by a
+  test that walks every non-Python file in the package and asserts it matches a declared pattern.
+
+  **`py.typed` was missing.** The package is checked under strict-ish mypy, but without the marker a
+  consumer's type checker silently ignores every annotation. Added, declared in `package-data`, and the
+  `Typing :: Typed` classifier now has something behind it.
+
+  **A documented feature that does not work.** `config/default.toml` described a second camera per
+  vehicle -- "topics then become /isaac_core/eo/image_rgb and /isaac_core/ir/image_rgb". Measured: a
+  vehicle declaring `eo` and `ir` plans **one** camera layer, scoped to `eo`, and the second camera gets
+  no topic and no RTSP stream. The claim is gone, the limitation is roadmapped, and the README's
+  "namespaced when there is more than one camera" is corrected to "vehicle".
+
+  **`config/default.toml` rewritten end to end**, since it is the file users actually read. It carried
+  fifteen inaccuracies, several of them consequences of this month's changes: it presented itself as the
+  base layer of the precedence chain (it is documentation and is not auto-loaded), gave an environment
+  variable example missing the per-vehicle path, still advertised `script`/`replay`/`mavlink` pose
+  sources that were removed, said the control plane could "enable features" after that was deleted,
+  documented `mount` defaulting to `/Environment/<id>` rather than `/World/Environment/<id>`, claimed
+  swarm topics look like `/isaac_core/lead/eo/image_rgb` when they are `/isaac_core/lead/image_rgb`, had
+  `rotation_frame` documented twice with different wording, contradicted itself about `[layers.*]`, and
+  pointed `[[prim_overrides]]` at a prim that does not exist. Two archaeology references also went.
+
+  **`.gitignore` replaced.** It was the stock GitHub Python template -- 200 lines covering Django,
+  Scrapy, SageMath, Celery, Abstra and Marimo -- while knowing nothing about this project: captures
+  under `isaac_core_out/`, the scratch directories used to debug against a live simulator, or the
+  `carb.*` directories Kit leaves behind when it crashes. Now 68 relevant lines, verified by
+  `git check-ignore` that nothing previously ignored became visible.
+
+  **Corrected the plan's own assumption**: it listed `src/isaac_core.egg-info` as a stale artefact to
+  delete. It is not stale -- its entry points match `pyproject.toml` exactly, `SOURCES.txt` has zero
+  dangling entries, and the console script works. It is also what makes the editable install resolve,
+  and regenerating it needs a `pip install` I am not permitted to run, so deleting it would have broken
+  the environment irreversibly. Left in place with the reason recorded in `.gitignore`.
+
+  **Also**: metadata gained ten keywords and twelve classifiers; all four console scripts verified to
+  import and expose their entry function; 37 `__pycache__` directories cleared; `docs/README.md`
+  removed as a second, stale index covering three of ten documents and describing two of them
+  inaccurately (the README table is the index, and it is link-tested); `feature_matrix.md` and
+  `v2_finalization_plan.md` moved to `docs/dev/` so `docs/` holds only user-facing pages;
+  `crash_rate.sh` earns its place by being referenced from the troubleshooting entry it serves.
+
+  New `tests/unit/test_repo_hygiene.py` (18 tests) guards all of it: nothing generated is tracked, the
+  ignore file covers this project's artefacts, every console script resolves, keywords and classifiers
+  are present, `py.typed` ships, every package data file is declared, the config reference does not
+  offer removed pose sources or claim to be auto-loaded, every inter-document link resolves, and there
+  is exactly one documentation index.
+
+  **1728 tests, all seven gates green, 23 contracts kept.**
+
+- **2026-09-15** — **The shipped assets now live inside the package.** Answering "do we support a
+  non-editable install?" turned out to be answering "does anything ship?". The four layer USD files and
+  `earth.usda` sat in a repo-level `usd/` directory, outside the distribution, while `package-data`
+  shipped nothing at all -- so `pip install isaac-core` produced a package with no scene and no layers
+  that could not compose anything. The giveaway was that `_resolve_scene_path` already searched
+  `assets/scenes` and `_resolve_layer_search_paths` already searched `assets/layers`: the resolvers were
+  written for packaged assets and only the files were in the wrong place.
+
+  Each layer is now a directory holding its manifest and its USD side by side, which is exactly the
+  shape `docs/authoring_layers.md` tells third parties to use -- our own layers had been the one
+  exception. The repo-relative `parents[3]` fallbacks are gone, so an installed package and a source
+  checkout resolve assets identically, and a test fails if any module reaches for the repo root again.
+  Version bumped to 0.2.0 and the repository URL declared.
+
+  **A 23 GB Cesium cache masquerading as a regression.** Straight after the move the system suite went
+  from 97 s to 715 s and all three swarm tests stopped reaching a composed stage -- exactly what a
+  broken asset move would look like. It was not: no moved USD file contains a relative reference, there
+  were no stray processes, and the GPU was idle at 583 MiB and 36 C. The write-ahead log of the Cesium
+  request cache had reached 23 GB. Deleting it took the swarm from 3 skipped in 646 s to **3 passed in
+  32 s** and the full suite back to 94 s. The troubleshooting entry now describes the symptom rather
+  than the disk usage, because a launch that hangs with an idle GPU looks nothing like a full cache and
+  the size is the last thing anyone would check.
+
+  **1730 tests, all seven gates green, 23 contracts kept, 13 system tests passing.**
+
+- **2026-09-15 (ii)** — **Phase 5, the release gate.** Eight of the nine checks pass. The ninth, a
+  fresh clone on a different machine with a fresh Isaac install, is the one that cannot be done from
+  here.
+
+  **Reading the README cold found three defects, and all three were the kind a reader hits in the first
+  ten minutes.** The camera configuration example used `width` and `height`, which are read-only
+  properties rather than config keys, so the single snippet a new user is most likely to copy was
+  rejected at load -- every model forbids extra keys, so it was a hard error, not a silent one. The
+  layer-authoring section documented registering a layer through a `[project.entry-points."isaac_core.layers"]`
+  group; no such lookup exists anywhere in the source, so a layer registered that way is never
+  discovered. And `--set` is `nargs=2`, so the `--set key=value` form shown in five files is rejected by
+  argparse with "expected 2 arguments" -- every one of those command lines would have failed. Fixed, the
+  entry-point gap is roadmapped, and three tests now guard them: one loads **every** TOML block in the
+  README through the real loader, one rejects the equals form anywhere in the docs, and one fails if the
+  entry-point claim returns.
+
+  **A sub-agent got the `--set` direction backwards**, reporting the quickstart as wrong and the
+  reference as right. Parsing both forms with the real parser showed the opposite. Worth recording
+  because the finding was correct and the diagnosis inverted, and only running it settled it.
+
+  **The roadmap had outrun the code.** It listed the distance sensor and bbox publisher as missing while
+  both ship as wired layers the README documents, and marked the gimbal start angles, `max_rate_deg_s`
+  and `sim.stage_units_in_meters` as dead config keys when all are applied -- `slew_towards` integrates
+  toward the target every frame, and the dead-key guard's known-dead set is empty. Since the README
+  points readers at that document as "what is not built yet", stale entries there contradict the
+  feature list. Corrected, and the document now says which section is live and which is history.
+
+  **Dead surface came out clean where it matters**: zero dead config keys, and the client's method
+  names, the `Method` enum and the server's handlers are three identical sets of fifteen. One export
+  went: `topics.GIMBAL`, naming a ROS topic that does not exist, since the gimbal is a control-plane
+  command. The other unimported exports are field and return types of public models, which a package
+  shipping `py.typed` is right to export even when nothing internal imports them by name.
+
+  **Both Python versions.** 3.10 runs the full suite. Isaac's 3.12 has no `pytest`, so the unit suite
+  cannot run there, but all 63 modules import cleanly under it and the 13 system tests drive the
+  simulator on 3.12 end to end, which is the code path that matters.
+
+  **1733 tests, all seven gates green, 23 contracts kept, 13 system tests passing.**
+
+- **2026-09-15 (iii)** — **The Cesium write-ahead log, and a wrong conclusion corrected.** The system
+  suite started taking 715 s instead of 97 s with all three swarm tests failing to reach a composed
+  stage, immediately after the assets moved into the package -- which is exactly what a broken asset
+  move looks like. It was not that: no moved USD file holds a relative reference, there were no stray
+  processes, and the GPU was idle. The Cesium request cache's write-ahead log had reached 23 GB, and
+  deleting it restored both.
+
+  **Then it happened again at 763 MB**, which falsified the size explanation I had just written into the
+  troubleshooting entry. Four trials settled it:
+
+  | WAL | Result |
+  |---|---|
+  | 23 GB | 3 skipped, 715 s |
+  | deleted | 3 passed, 32 s |
+  | 763 MB | 3 skipped, 641 s (repeated three times) |
+  | deleted | 3 passed, 24 s |
+
+  So the trigger is the log existing in a state Cesium then labours over, not how large it has grown.
+  A few hundred megabytes is enough, which makes "check whether it looks big" useless advice -- the
+  README now says size is not the trigger and gives the symptom instead, since an idle GPU and a launch
+  that never becomes ready look nothing like a cache problem.
+
+  The harness now deletes the log before **every** launch attempt, which is the difference between a
+  release gate and a coin toss: the full system suite went to **13 passed in 83 s** with a 244 MB log
+  present beforehand. Two-vehicle launches are the sensitive case, presumably because each viewport
+  streams its own tiles.
+
+  Worth remembering that the first explanation was confidently wrong and survived one confirming
+  experiment. It took a second failure at a thirtieth of the size to disprove it.
 
 ### Known remaining issues
 

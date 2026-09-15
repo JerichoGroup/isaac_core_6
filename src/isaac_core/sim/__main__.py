@@ -1,16 +1,12 @@
-"""
-Entry point: ``<isaac_python> -m isaac_core.sim --config <path>``.
+"""Entry point: ``<isaac_python> -m isaac_core.sim --config <path>``.
 
-Sets the SimulationApp launch configuration BEFORE importing anything that
-triggers Kit initialisation. This replaces the old repo's
-``os.environ["LAUNCH_CONFIG"]`` trick (defect #11): the old approach mutated an
-environment variable and relied on import order, so ``from sim_app import
-Simulation`` had to come *after* the env was set. Here configuration is passed
-explicitly.
+Sets the SimulationApp launch configuration BEFORE importing anything that triggers Kit
+initialisation. Configuration is passed explicitly rather than through an environment
+variable, so nothing depends on import order.
 
 Run with::
 
-    /home/ofer/isaacsim/python.sh -m isaac_core.sim --config config/default.toml
+    $ISAAC_PATH/python.sh -m isaac_core.sim --config config/default.toml
 
 """
 
@@ -19,14 +15,20 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from isaac_core.config import IsaacCoreConfig
+    from isaac_core.sim.manifest import LayerManifest
+    from isaac_core.sim.planner import FeaturePlan
 
 logger = logging.getLogger(__name__)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """
-    Parse command-line arguments.
+    """Parse command-line arguments.
 
     Args:
         argv: Argument list (defaults to sys.argv[1:]).
@@ -60,15 +62,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _configure_logging(config: object) -> None:
-    """
-    Apply the resolved logging configuration.
+def _configure_logging(config: IsaacCoreConfig) -> None:
+    """Apply the resolved logging configuration.
 
     Args:
         config: The resolved :class:`~isaac_core.config.IsaacCoreConfig`.
 
     """
-    logging_config = config.logging  # type: ignore[attr-defined]
+    logging_config = config.logging
     level = getattr(logging, str(logging_config.level).upper(), logging.INFO)
     logging.getLogger("isaac_core").setLevel(level)
 
@@ -97,8 +98,7 @@ def _configure_logging(config: object) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """
-    Launch the simulation.
+    """Launch the simulation.
 
     This function is the sole entry point. It resolves config, plans features,
     then creates the runtime. The import of ``isaac_core.sim.runtime`` (which
@@ -134,12 +134,9 @@ def main(argv: list[str] | None = None) -> None:
     layer_paths = _resolve_layer_search_paths(config)
     manifests = discover_layers(layer_paths)
 
-    # Pre-plan with an empty inspector; real capabilities are checked after
-    # the stage opens. This gives us the layer list for mounting.
-    #
-    # Planned once per vehicle, not once overall: each vehicle mounts its own copy of the camera
-    # layer under its own id, and each copy must resolve its own UDP port and topic names. A
-    # single plan would give every vehicle the first vehicle's values.
+    # Pre-plan with an empty inspector to get the mount list; real capabilities are checked once the
+    # stage opens. Planned per vehicle, because a single plan would hand every vehicle the first
+    # vehicle's ports and topic names.
     pre_plan = _plan_all_vehicles(config, manifests)
 
     scene_path = _resolve_scene_path(config)
@@ -163,11 +160,10 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _plan_all_vehicles(
-    config: "IsaacCoreConfig",  # type: ignore[name-defined]  # noqa: F821
-    manifests: "Mapping[str, LayerManifest]",  # type: ignore[name-defined]  # noqa: F821
-) -> "FeaturePlan":  # type: ignore[name-defined]  # noqa: F821
-    """
-    Plan the feature layers for every configured vehicle and merge the result.
+    config: IsaacCoreConfig,
+    manifests: Mapping[str, LayerManifest],
+) -> FeaturePlan:
+    """Plan the feature layers for every configured vehicle and merge the result.
 
     Each vehicle gets its own pass so every planned layer records the instance and camera it
     belongs to, which is what lets the configurator resolve per-vehicle ports and topics. Skipped
@@ -181,8 +177,8 @@ def _plan_all_vehicles(
         One plan containing every vehicle's layers.
 
     """
-    from isaac_core.sim.capabilities import FakeStageInspector, probe  # noqa: PLC0415
-    from isaac_core.sim.planner import FeaturePlan, plan_features  # noqa: PLC0415
+    from isaac_core.sim.capabilities import FakeStageInspector, probe
+    from isaac_core.sim.planner import FeaturePlan, plan_features
 
     enabled: list[Any] = []
     skipped: list[Any] = []
@@ -207,9 +203,8 @@ def _plan_all_vehicles(
     return FeaturePlan(enabled=tuple(enabled), skipped=tuple(skipped))
 
 
-def _resolve_layer_search_paths(config: "IsaacCoreConfig") -> tuple[Path, ...]:  # type: ignore[name-defined]  # noqa: F821
-    """
-    Collect all layer search paths from config and built-in locations.
+def _resolve_layer_search_paths(config: IsaacCoreConfig) -> tuple[Path, ...]:
+    """Collect all layer search paths from config and built-in locations.
 
     Args:
         config: The resolved configuration.
@@ -224,22 +219,18 @@ def _resolve_layer_search_paths(config: "IsaacCoreConfig") -> tuple[Path, ...]: 
         if resolved.is_dir():
             paths.append(resolved)
 
-    # Built-in layers shipped with the package.
+    # Layers shipped inside the package: manifest and USD side by side, which is the same shape a
+    # third-party layer takes. There is no repo-relative fallback, so an installed package behaves
+    # exactly like a source checkout.
     builtin = Path(__file__).resolve().parent.parent / "assets" / "layers"
     if builtin.is_dir():
         paths.append(builtin)
 
-    # Also check <repo>/usd/layers if running from source.
-    repo_layers = Path(__file__).resolve().parents[3] / "usd" / "layers"
-    if repo_layers.is_dir():
-        paths.append(repo_layers)
-
     return tuple(paths)
 
 
-def _resolve_scene_path(config: "IsaacCoreConfig") -> Path:  # type: ignore[name-defined]  # noqa: F821
-    """
-    Resolve the scene name or path from config to an absolute file path.
+def _resolve_scene_path(config: IsaacCoreConfig) -> Path:
+    """Resolve the scene name or path from config to an absolute file path.
 
     Args:
         config: The resolved configuration.
@@ -254,7 +245,7 @@ def _resolve_scene_path(config: "IsaacCoreConfig") -> Path:  # type: ignore[name
     scene = config.sim.scene
     candidate = Path(scene).expanduser()
     # An absolute or relative path that points at a real file is used directly. Checking
-    # is_file() (not just is_absolute) means "./usd/scenes/foo.usda" resolves against the
+    # is_file() (not just is_absolute) means "./my_scenes/foo.usda" resolves against the
     # working directory, which is what a path with a slash or suffix obviously means.
     if candidate.is_file():
         return candidate.resolve()
@@ -267,17 +258,10 @@ def _resolve_scene_path(config: "IsaacCoreConfig") -> Path:  # type: ignore[name
             if path.is_file():
                 return path
 
-    # Built-in scenes.
+    # Scenes shipped inside the package.
     builtin = Path(__file__).resolve().parent.parent / "assets" / "scenes"
     for suffix in (".usda", ".usd", ""):
         path = builtin / f"{scene}{suffix}"
-        if path.is_file():
-            return path
-
-    # Repo-local scenes.
-    repo_scenes = Path(__file__).resolve().parents[3] / "usd" / "scenes"
-    for suffix in (".usda", ".usd", ""):
-        path = repo_scenes / f"{scene}{suffix}"
         if path.is_file():
             return path
 

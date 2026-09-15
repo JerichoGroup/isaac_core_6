@@ -99,7 +99,7 @@ def test_udp_transport_sends_multiple_packets() -> None:
 
         for _ in range(5):
             data, _ = receiver.recvfrom(1024)
-            assert len(data) == 51  # noqa: PLR2004
+            assert len(data) == 51
     finally:
         transport.close()
         receiver.close()

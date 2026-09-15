@@ -1,5 +1,4 @@
-"""
-Pure motion primitives operating on a :class:`~isaac_core.vehicle.state.VehicleState`.
+"""Pure motion primitives operating on a :class:`~isaac_core.vehicle.state.VehicleState`.
 
 Every function in this module is a generator that yields
 :class:`~isaac_core.contracts.pose.GeodeticPose` instances. There is **no I/O**:
@@ -23,9 +22,10 @@ import numpy as np
 from numpy.typing import NDArray
 from transforms3d.quaternions import mat2quat, quat2mat
 
+from isaac_core.contracts.angles import normalize_angle
 from isaac_core.contracts.frames import Frame, RotationFrame
 from isaac_core.contracts.pose import GeodeticPose, Lla, Rpy
-from isaac_core.geo.distance import EARTH_RADIUS_M, meters_to_latlon_offset
+from isaac_core.geo.distance import EARTH_RADIUS_M, geodesic_distance_m, meters_to_latlon_offset
 from isaac_core.geo.rotations import (
     compose_rotation,
     euler_to_matrix,
@@ -66,8 +66,7 @@ def move_to(
     rate_hz: float,
     limits: MotionLimits | None = None,
 ) -> Iterator[GeodeticPose]:
-    """
-    Yield poses that move the vehicle from its current position to a target.
+    """Yield poses that move the vehicle from its current position to a target.
 
     Linear interpolation in LLA space, preserving current orientation throughout.
     The number of yielded samples is exactly ``int(duration_s * rate_hz)``.
@@ -79,12 +78,28 @@ def move_to(
         target_alt_m: Target altitude in metres.
         duration_s: Duration of the move in seconds.
         rate_hz: Output rate in Hz.
-        limits: Optional motion limits (speed clamping applied to distance/duration).
+        limits: Optional motion limits. The implied speed is ``distance / duration``; if that
+            exceeds ``max_speed_mps`` the duration is extended so the move respects the limit
+            rather than teleporting.
 
     Yields:
         :class:`~isaac_core.contracts.pose.GeodeticPose` instances.
 
     """
+    if limits is not None:
+        # This parameter was accepted and ignored, so a caller passing a 1 m/s limit still got the
+        # full-distance move. Every sibling honours limits, so silently not honouring it here was the
+        # API lying rather than a documented exception.
+        distance_m = geodesic_distance_m(
+            Lla(lat_deg=state.lat_deg, lon_deg=state.lon_deg, alt_m=state.alt_m),
+            Lla(lat_deg=target_lat_deg, lon_deg=target_lon_deg, alt_m=target_alt_m),
+        )
+        if duration_s > 0.0:
+            implied_speed = distance_m / duration_s
+            clamped = abs(limits.clamp_speed(implied_speed))
+            if clamped > 0.0 and clamped < implied_speed:
+                duration_s = distance_m / clamped
+
     total_steps = int(duration_s * rate_hz)
     if total_steps == 0:
         return
@@ -113,12 +128,11 @@ def move_forward_backward(
     rate_hz: float,
     limits: MotionLimits | None = None,
 ) -> Iterator[GeodeticPose]:
-    """
-    Yield poses that move the vehicle along its current heading.
+    """Yield poses that move the vehicle along its current heading.
 
     Positive distance moves forward; negative moves backward. The heading
     (yaw) determines the direction of travel in the horizontal plane. This
-    matches the 2023 ``UdpBot.move_forward_backward`` geometry.
+    moves along the body-forward axis.
 
     Args:
         state: Current vehicle state.
@@ -171,11 +185,10 @@ def move_right_left(
     rate_hz: float,
     limits: MotionLimits | None = None,
 ) -> Iterator[GeodeticPose]:
-    """
-    Yield poses that move the vehicle laterally relative to its heading.
+    """Yield poses that move the vehicle laterally relative to its heading.
 
     Positive distance moves right; negative moves left. This matches the
-    2023 ``UdpBot.move_right_left`` geometry.
+    the body-right axis.
 
     Args:
         state: Current vehicle state.
@@ -228,8 +241,7 @@ def move_up_down(
     rate_hz: float,
     limits: MotionLimits | None = None,
 ) -> Iterator[GeodeticPose]:
-    """
-    Yield poses that move the vehicle vertically.
+    """Yield poses that move the vehicle vertically.
 
     Positive distance moves up; negative moves down.
 
@@ -273,8 +285,7 @@ def _turn_interpolated(
     duration_s: float,
     rate_hz: float,
 ) -> Iterator[GeodeticPose]:
-    """
-    Yield poses that interpolate orientation from current to target using SLERP.
+    """Yield poses that interpolate orientation from current to target using SLERP.
 
     Position is held constant throughout.
 
@@ -315,8 +326,7 @@ def turn_roll(
     frame: RotationFrame = RotationFrame.WORLD,
     limits: MotionLimits | None = None,
 ) -> Iterator[GeodeticPose]:
-    """
-    Yield poses that rotate the vehicle about the roll axis.
+    """Yield poses that rotate the vehicle about the roll axis.
 
     Args:
         state: Current vehicle state.
@@ -348,8 +358,7 @@ def turn_pitch(
     frame: RotationFrame = RotationFrame.WORLD,
     limits: MotionLimits | None = None,
 ) -> Iterator[GeodeticPose]:
-    """
-    Yield poses that rotate the vehicle about the pitch axis.
+    """Yield poses that rotate the vehicle about the pitch axis.
 
     Args:
         state: Current vehicle state.
@@ -381,8 +390,7 @@ def turn_yaw(
     frame: RotationFrame = RotationFrame.WORLD,
     limits: MotionLimits | None = None,
 ) -> Iterator[GeodeticPose]:
-    """
-    Yield poses that rotate the vehicle about the yaw axis.
+    """Yield poses that rotate the vehicle about the yaw axis.
 
     Under ``WORLD`` frame, +yaw always turns about the world vertical,
     whatever the current attitude. Under ``BODY`` frame, +yaw turns about the
@@ -419,12 +427,11 @@ def turn_to_point(
     rate_hz: float,
     limits: MotionLimits | None = None,
 ) -> Iterator[GeodeticPose]:
-    """
-    Yield poses that rotate the vehicle to face a target point.
+    """Yield poses that rotate the vehicle to face a target point.
 
     Compute the yaw and pitch required to look at the target from the current
     position, then SLERP to that orientation. Roll is preserved. This matches
-    the 2023 ``UdpBot.turn_to_point`` geometry.
+    look-at geometry.
 
     Args:
         state: Current vehicle state.
@@ -459,6 +466,17 @@ def turn_to_point(
     # Preserve current roll
     roll_r, _pitch_r, _yaw_r = matrix_to_euler(state.rotation)
 
+    if limits is not None:
+        # Accepted and ignored before: a turn-rate limit had no effect on turn_to_point, while
+        # turn_yaw/turn_roll/turn_pitch all honour it.
+        _, _, current_yaw_r = matrix_to_euler(state.rotation)
+        sweep_r = abs(normalize_angle(yaw_r - current_yaw_r))
+        if duration_s > 0.0 and sweep_r > 0.0:
+            implied_rate = sweep_r / duration_s
+            clamped_rate = abs(limits.clamp_turn_rate_r(implied_rate))
+            if clamped_rate > 0.0 and clamped_rate < implied_rate:
+                duration_s = sweep_r / clamped_rate
+
     target_matrix = euler_to_matrix(roll_r, pitch_r, yaw_r)
     yield from _turn_interpolated(state, target_matrix, duration_s, rate_hz)
 
@@ -471,11 +489,10 @@ def steer(
     rate_hz: float,
     limits: MotionLimits | None = None,
 ) -> Iterator[GeodeticPose]:
-    """
-    Yield poses that drive in a circular arc (constant radius and speed).
+    """Yield poses that drive in a circular arc (constant radius and speed).
 
     Positive radius = turning right; negative radius = turning left;
-    zero radius = straight line. This matches the 2023 ``UdpBot.steer``
+    zero radius = straight line. This is the coordinated-turn
     geometry: per-step Euler integration of position and yaw.
 
     Args:

@@ -1,9 +1,7 @@
-"""
-ROS 2 topic naming and namespacing.
+"""ROS 2 topic naming and namespacing.
 
-Topic names are built here and nowhere else. The previous generation re-declared
-strings like ``/isaac_core/image_rgb`` in four separate places -- once per capture
-class, once in the simulator's constants, once in a script node -- so renaming a
+Topic names are built here and nowhere else. Re-declaring a string like
+``/isaac_core/image_rgb`` per consumer means renaming a
 topic meant finding every copy. Everything now derives from :class:`TopicResolver`.
 
 Namespacing collapses when there is only one of something, so the common
@@ -26,23 +24,21 @@ from typing import Final
 ROOT: Final = "/isaac_core"
 
 IMAGE_RGB: Final = "image_rgb"
-RAW_RGB: Final = "raw_rgb"
 GLOBAL_POSE: Final = "global_pose"
 DISTANCE_SENSOR: Final = "distance_sensor"
 BBOX: Final = "bbox"
-GIMBAL: Final = "gimbal"
-SAT: Final = "sat"
 
 # Default MAVROS topics, relative to a vehicle's MAVROS namespace.
-MAVROS_LLA: Final = "/mavros/global_position/global"
-MAVROS_ORIENTATION: Final = "/mavros/local_position/pose"
+# Paths below a vehicle's ``mavros_namespace``. The full topic is derived per vehicle, so the
+# leaf is the reusable part -- a hardcoded /mavros/... constant cannot serve a swarm.
+MAVROS_LLA_LEAF: Final = "global_position/global"
+MAVROS_ORIENTATION_LEAF: Final = "local_position/pose"
 
 _SEGMENT_RE: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def validate_segment(segment: str) -> str:
-    """
-    Check that a single topic path segment is a legal ROS 2 name token.
+    """Check that a single topic path segment is a legal ROS 2 name token.
 
     Args:
         segment: One segment, with no slashes.
@@ -66,8 +62,7 @@ def validate_segment(segment: str) -> str:
 
 
 def join(root: str, *segments: str | None) -> str:
-    """
-    Join a root and any number of segments into a topic name.
+    """Join a root and any number of segments into a topic name.
 
     Segments that are ``None`` are omitted, which is how namespace levels collapse
     for the single-vehicle and single-camera cases.
@@ -95,8 +90,7 @@ def join(root: str, *segments: str | None) -> str:
 
 @dataclass(frozen=True, slots=True)
 class TopicResolver:
-    """
-    Builds the topic names for one vehicle, and optionally one of its cameras.
+    """Builds the topic names for one vehicle, and optionally one of its cameras.
 
     Args:
         root: Namespace root. Rarely changed, but configurable for teams running
@@ -117,8 +111,7 @@ class TopicResolver:
         return join(self.root, self.vehicle, self.camera, leaf)
 
     def vehicle_scoped(self, leaf: str) -> str:
-        """
-        Return a topic scoped to the vehicle, ignoring any camera segment.
+        """Return a topic scoped to the vehicle, ignoring any camera segment.
 
         Used for per-vehicle rather than per-camera data -- pose, range, gimbal --
         which should not sit underneath a camera in the namespace.
@@ -133,14 +126,11 @@ class TopicResolver:
 __all__ = [
     "BBOX",
     "DISTANCE_SENSOR",
-    "GIMBAL",
     "GLOBAL_POSE",
     "IMAGE_RGB",
-    "MAVROS_LLA",
-    "MAVROS_ORIENTATION",
-    "RAW_RGB",
+    "MAVROS_LLA_LEAF",
+    "MAVROS_ORIENTATION_LEAF",
     "ROOT",
-    "SAT",
     "TopicResolver",
     "join",
     "validate_segment",

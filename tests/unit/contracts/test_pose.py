@@ -25,9 +25,6 @@ def test_pose_source_covers_every_planned_backend() -> None:
     assert {member.value for member in PoseSource} == {
         "udp",
         "ros",
-        "script",
-        "replay",
-        "mavlink",
     }
 
 

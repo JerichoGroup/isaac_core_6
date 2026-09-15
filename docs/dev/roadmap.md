@@ -1,5 +1,34 @@
 # Project status — isaac_core_6
 
+The first section is what is genuinely not built. Everything from *2023 parity* onward is a
+historical record of how V2 was planned and what each pass fixed, kept because it explains why
+things are shaped the way they are. Where those tables once said "missing" or "dead", they now say
+what closed them.
+
+## Registering a layer by entry point
+
+Discovery only scans directories: `assets.layer_search_paths` plus the layers shipped inside the
+package. There is no `importlib.metadata` lookup, so a layer cannot announce itself by declaring an
+entry point in its own `pyproject.toml` -- an installed layer package still has to hand over a
+directory path. The README used to document the entry-point form, which never worked.
+
+Worth doing because it is the one remaining place where installing a layer is not just installing a
+package, and it is a small change: read the entry-point group during discovery and treat each
+resolved directory as another search path.
+
+## More than one camera per vehicle
+
+`[vehicles.<id>.cameras.<id>]` accepts a second camera and the schema validates it, but only the
+first is composed: the planner produces one camera layer per **vehicle**, scoped to the first camera
+id, so a second camera publishes no image topic and gets no RTSP stream.
+
+Measured: a vehicle declaring `eo` and `ir` plans a single layer scoped to `eo`, and
+`compute_writes` emits `/isaac_core/eo/image_rgb` and nothing for `ir`.
+
+Either plan one camera layer per camera and give each its own topic and port, or reject a second
+camera at config load so it fails where the mistake is. Until then a second vehicle is the way to get
+a second camera, and `config/default.toml` says so rather than documenting the feature.
+
 ## Per-vehicle gimbal and frame capture
 
 `set_gimbal` and `capture_frame` act on a single vehicle. With more than one configured they now
@@ -177,9 +206,9 @@ Version 2.
 | VS Code autocomplete (`link_app.sh`) | Yes | Dropped | Isaac 6 installs differently; not needed with the type stubs approach |
 | Custom ROS 2 messages (Gimbal, Bbox, SAT) | Yes (`isaac_ros2_messages`) | Not needed for camera pipeline | Bbox/SAT layers will need their own msgs |
 | Monotonic frame id in image header | Attempted (broken: baked at init) | Not yet | `header.stamp` covers most of the need; C++ node likely required |
-| `--distance-sensor` → `/isaac_core/distance_sensor` (`sensor_msgs/Range`) | Yes | **Missing** | Needs USD layer + publisher; Isaac 6 has a native raycast sensor. Also `LASER_MIN/MAX_RANGE` config |
-| `--bbox-publisher` → `/isaac_core/bbox` (`FrameBboxes`) | Yes | **Missing** | Needs USD layer, custom msgs, per-object Globe Anchors |
-| `--sat` frame capture | Yes (ROS topic in) | **Missing**, and moving to the control plane (D20) | Capture is a *command*, not data, so it becomes `capture_frame(path, width, height)` in M5 — with a requested resolution, which 2023 could not do |
+| `--distance-sensor` → `/isaac_core/distance_sensor` (`sensor_msgs/Range`) | Yes | **Done** (`distance_sensor` layer) | Boresighted with the camera; `min_range_m`/`max_range_m` saturate rather than returning infinity |
+| `--bbox-publisher` → `/isaac_core/bbox` (`FrameBboxes`) | Yes | **Done** (`bbox` layer) | Occlusion-aware, parallel arrays, `isaac_core_ros2_msgs` vendored in `ros2/` |
+| `--sat` frame capture | Yes (ROS topic in) | **Done** as a control-plane command (D20) | Capture is a *command*, not data, so it becomes `capture_frame(path, width, height)` in M5 — with a requested resolution, which 2023 could not do |
 | `--image-rtp` → RTP video stream | Yes (custom sidecar) | Superseded by **native RTSP** (D21) | Isaac 6's own RTSP, wired into both camera graphs and always on — no flag, no sidecar. M4 |
 | Live gimbal control | Yes (ROS topic) | Moving to the **control plane** (D20), M3 | The ROS subscriber is removed; `set_gimbal` replaces it, and external callers use `Sim.attach()`. Config start angles and `max_rate_deg_s` become live at the same time |
 | Custom ROS 2 messages | Yes: `Gimbal`, `Bbox`, `FrameBboxes`, `SATOutput` | Vendoring **only `Bbox` + `FrameBboxes`** (M1) | We *import* `isaac_ros2_messages` but ship no definitions — it only resolves because the 2023 workspace is built on this machine. `Gimbal`/`SATOutput` are not vendored: both became control-plane commands (D20), so nothing would consume them (D23) |
@@ -414,8 +443,8 @@ The things Kiro cannot do. Ordered by the milestone that needs them, so nothing 
 
 | # | Task | Milestone | Blocks |
 |---|---|---|---|
-| 1 | **Distance sensor layer** — `usd/layers/distance_sensor/`. Kiro will first evaluate Isaac 6's native physics raycast sensor and hand you a precise build sheet | M2 | Range publishing |
-| 2 | **Bbox publisher layer** — `usd/layers/bbox_publisher/`, with a Cesium Globe Anchor per target object under `/World/bboxes` (this is where Globe Anchors genuinely belong) | M2 | Bbox publishing |
+| 1 | **Distance sensor layer** — `src/isaac_core/assets/layers/distance_sensor/`. Kiro will first evaluate Isaac 6's native physics raycast sensor and hand you a precise build sheet | M2 | Range publishing |
+| 2 | **Bbox publisher layer** — `src/isaac_core/assets/layers/bbox_publisher/`, with a Cesium Globe Anchor per target object under `/World/bboxes` (this is where Globe Anchors genuinely belong) | M2 | Bbox publishing |
 | 3 | **Remove the gimbal ROS subscriber** from `camera_udp.usda` and `camera_ros.usda` — the `ros2_subscriber` node wired to the gimbal offsets. Removing it also frees those inputs so config/commands can write them | M3 | Gimbal config + slew |
 | 4 | **Add the native RTSP node** to the image-publisher graph in both camera layers, once Kiro has identified the right node and settings | M4 | Streaming |
 
@@ -457,15 +486,15 @@ them. Two were reported by Ofer as "not working", which is how the audit started
 | `cesium.tilesets_root` | Fixed — default was `/tilesets`; the scene prim is at `/World/tilesets`, so `tileset_server_url` silently did nothing. Also corrected `BBOXES_ROOT`. |
 | `assets.hdri` (second pass) | Fixed — now repoints the scene's existing `DomeLight` instead of creating a second one |
 | `cesium.delete_cache_on_launch` (second pass) | Fixed — moved to before the app starts, so deleting no longer races Cesium's open handle (was causing intermittent `disk I/O error`) |
-| `sim.scene` relative path | Fixed — a path like `./usd/scenes/x.usda` now resolves against the working directory |
+| `sim.scene` relative path | Fixed — a relative path like `./my_scenes/x.usda` now resolves against the working directory |
 | `ros2.domain_id` | Fixed — `None` inherits `$ROS_DOMAIN_ID`; an explicit value is exported before the bridge starts |
 | `vehicles.*.cameras.*.publish_rate_hz` | Removed — was dead; re-add with a real implementation (see After version 1) |
 | `vehicles.*.cameras.*.raw_topic` | Removed — dead, no raw-image node exists |
-| `sim.stage_units_in_meters` | Dead |
-| `vehicles.*.gimbal.start_roll_deg` / `start_pitch_deg` / `start_yaw_deg` | Dead. The USD wires the node's offset inputs to a ROS subscriber, so a config value cannot reach a connected attribute. Needs a design decision, not a binding. |
-| `vehicles.*.gimbal.max_rate_deg_s` | Dead — no slew limiting is applied |
-| `vehicles.*.primary_camera` | Dead |
-| `ros2.use_sim_time` | Dead |
+| `sim.stage_units_in_meters` | Fixed — applied to the stage during composition |
+| `vehicles.*.gimbal.start_roll_deg` / `start_pitch_deg` / `start_yaw_deg` | Fixed — the ROS subscriber is gone, so the offsets are no longer connected attributes and the start angles seed the gimbal at launch |
+| `vehicles.*.gimbal.max_rate_deg_s` | Fixed — `slew_towards` integrates toward the target each frame, and the key is runtime-patchable |
+| `vehicles.*.primary_camera` | Removed from the schema |
+| `ros2.use_sim_time` | Removed from the schema |
 
 `test_no_dead_keys.py` guards against new dead keys and against leaving a fixed key on the
 known-dead list, so this table cannot silently rot.

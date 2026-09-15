@@ -1,19 +1,27 @@
 # =============================================================================
-# isaac_core default configuration
+# isaac_core configuration reference
 # =============================================================================
 #
-# This file is the complete configuration surface. Every value the simulation
-# runs on appears here, and a user config passed with `--config` can override any
-# of it. There is no second file to edit: layer manifests (layer.toml) declare
-# *wiring* -- which config key maps to which prim attribute -- and never values.
+# Copy this file, edit it, and pass it with `--config my.toml`. Every key the
+# simulator understands appears here with the reason it exists.
 #
-# Resolution order, later wins:
+# This file is DOCUMENTATION. It is not loaded automatically: the shipped
+# defaults live in the schema, and this file is kept in step with them by a test.
+# So an untouched run behaves exactly as described here, and passing this file
+# explicitly changes nothing -- except for the two keys noted as deliberately
+# different, `features.enabled` and the gimbal's `max_rate_deg_s`.
 #
-#   this file
-#     -> --config <file> / $ISAAC_CORE_CONFIG
-#       -> environment (ISAAC_CORE__CAMERAS__EO__FOV_DEG=90)
-#         -> CLI flags
-#           -> runtime patches over the control plane
+# Values are resolved from five places, later winning:
+#
+#   1. package defaults (the schema)
+#   2. a config file: `--config my.toml`, or $ISAAC_CORE_CONFIG
+#   3. environment variables, one per key, `__` for each level of nesting:
+#        ISAAC_CORE__VEHICLES__DRONE_0__CAMERAS__EO__FOV_DEG=90
+#   4. `--set` flags: `isaac-core run --set sim.headless true`
+#   5. a runtime patch over the control plane, for the few keys that allow it
+#
+# `--config` and $ISAAC_CORE_CONFIG are two ways of naming the same file, not two
+# separate layers; the flag wins if you use both.
 #
 # Inspect the result with `isaac-core config dump`, and find out which source won
 # a particular key with `isaac-core config explain <key>`.
@@ -24,31 +32,35 @@
 # [sim] -- simulator lifecycle
 # -----------------------------------------------------------------------------
 [sim]
-# Scene to open. A logical name resolved through [assets].search_paths, or an
+# Scene to open. A logical name resolved through [assets] search_paths, or an
 # absolute path to a .usd/.usda file.
 scene = "earth"
 
-# Run without a GUI window.
+# Run without a GUI window. Note that frame capture needs a window: headless has no
+# colour resource to read, so `capture_frame` only works with a GUI.
 headless = false
 
-# Prim path the main viewport looks through when running with a GUI. `{instance}` is
-# replaced with the vehicle id. Without this the window keeps Kit's default perspective
-# camera, so the aircraft camera can be tracking correctly while the view appears frozen.
-# Set to "" to leave the viewport alone.
+# Prim path the main viewport looks through. `{instance}` is replaced with the vehicle id.
+# Without this the window keeps Kit's default perspective camera, so the aircraft camera can
+# be tracking correctly while the view appears frozen. Set to "" to leave the viewport alone.
+#
+# Every vehicle after the first also gets its own window, named after it. That is not only for
+# looking at: Cesium decides which terrain tiles to stream from the viewports that exist, so a
+# camera without one publishes an image with the ground missing under it.
 viewport_camera = "/World/Environment/{instance}/Xform/main_camera_01"
 
-# RTX render mode. This project wants a correct image, not a photoreal one, so it does not
-# use Isaac's "RealTimePathTracing" default. Also accepts "PathTracing",
-# "RealTimePathTracing" and "MinimalRendering" (alias "Minimal"). Matching is
-# case-insensitive; an unknown value is rejected at config load, not passed to Isaac.
-# "MinimalRendering" draws NO Cesium 3D Tiles terrain -- the scene loads healthy but empty
-# -- so it validates with a warning. Use "RaytracedLighting" to see terrain.
+# RTX render mode. This project wants a correct image, not a photoreal one, so it does not use
+# Isaac's "RealTimePathTracing" default. Also accepts "PathTracing", "RealTimePathTracing" and
+# "MinimalRendering" (alias "Minimal"). Matching is case-insensitive; an unknown value is
+# rejected at config load rather than passed to Isaac.
+# "MinimalRendering" draws NO Cesium 3D Tiles terrain -- the scene loads healthy but empty --
+# so it validates with a warning. Use "RaytracedLighting" to see terrain.
 renderer = "RaytracedLighting"
 
 # Kit experience to launch. A bare filename resolves against Isaac's apps directory; an
 # absolute path is used as given; "" accepts Isaac's own default. Isaac defaults to the
-# minimal `isaacsim.exp.base.python.kit`, which behaves differently from the editor the team
-# authors USD in -- using the full app keeps the two consistent.
+# minimal `isaacsim.exp.base.python.kit`, which behaves differently from the editor USD is
+# authored in -- using the full app keeps the two consistent.
 experience = "isaacsim.exp.full.kit"
 
 # Extensions enabled by Kit at startup, via `--enable`, rather than afterwards.
@@ -59,10 +71,10 @@ experience = "isaacsim.exp.full.kit"
 boot_extensions = ["cesium.usd.plugins", "cesium.omniverse"]
 
 # Extra folders Kit searches for extensions, each passed as `--ext-folder`.
-# Isaac's headless python experience does not search Omniverse's user extension registry,
-# where anything installed through the GUI's extension manager lives -- Cesium included.
-# Without this a CesiumTilesetPrim loads as valid USD that draws nothing, so you get a
-# blank scene with no error. Missing paths are skipped, so this default is portable.
+# Isaac's python experience does not search Omniverse's user extension registry, where
+# anything installed through the GUI's extension manager lives -- Cesium included. Without
+# this a CesiumTilesetPrim loads as valid USD that draws nothing, so you get a blank scene
+# with no error. Missing paths are skipped, so this default is portable across machines.
 extension_search_paths = ["~/.local/share/ov/data/exts/v2"]
 
 # What to do when a requested feature's stage requirements are not met.
@@ -70,57 +82,70 @@ extension_search_paths = ["~/.local/share/ov/data/exts/v2"]
 # true:  fail immediately (good for CI).
 strict_features = false
 
+# Physics step, in seconds. 1/60. The pose pipeline is kinematic -- poses are written straight
+# to the prim -- so this matters only if you add something that needs physics.
 physics_dt = 0.016666666666666666
-# Metres per stage unit. The whole pipeline assumes 1 unit == 1 metre (ENU translates are
-# metres); the compositor applies this via UsdGeom.SetStageMetersPerUnit and warns loudly if
-# it is not 1.0 or if it conflicts with the scene's own declaration.
+
+# Metres per stage unit. The whole pipeline assumes 1 unit == 1 metre, because ENU translates
+# are metres. The compositor applies this via UsdGeom.SetStageMetersPerUnit and warns loudly
+# if it is not 1.0, or if it conflicts with the scene's own declaration.
 stage_units_in_meters = 1.0
 
 
 # -----------------------------------------------------------------------------
 # [sim.control_plane] -- JSON-RPC command channel
 # -----------------------------------------------------------------------------
-# Low-rate commands only: query state, patch config, enable features, capture a
-# frame. Pose and sensor data never travel over this.
+# Low-rate commands only: read state and the live pose, patch a runtime-mutable key, aim the
+# gimbal, capture a frame, pause and step. Pose input and sensor data never travel over this.
 #
-# SECURITY: this channel can write files and mutate the running simulation.
-# Binding to anything other than a loopback address REQUIRES a token, and
-# `capture_frame` paths are confined under output_root.
+# SECURITY: this channel can write files and mutate the running simulation. Binding to
+# anything other than a loopback address REQUIRES a token, and `capture_frame` paths are
+# confined under output_root.
 [sim.control_plane]
-# Disable for a batch render, or when bisecting a crash: one fewer background
-# thread touching Kit's event loop.
+# Disable for a batch render, or when bisecting a crash: one fewer background thread touching
+# Kit's event loop.
 enabled = true
 host = "127.0.0.1"
 port = 8760
+
+# Required only when `host` is not a loopback address. Compared in constant time.
 token = ""
+
+# Where `capture_frame` may write. Paths are resolved against this and confined to it, so a
+# path escaping it is rejected rather than followed.
 output_root = "~/isaac_core_out"
 
 
 # -----------------------------------------------------------------------------
-# [assets] -- where scenes, layers and heavy binaries are found
+# [assets] -- where scenes and layers are found
 # -----------------------------------------------------------------------------
 [assets]
-# Extra directories searched for scenes, ahead of the packaged ones. Also
-# settable with $ISAAC_CORE_ASSET_PATH.
+# Extra directories searched for scenes, ahead of the packaged ones. Also settable with
+# $ISAAC_CORE_ASSET_PATH.
 search_paths = []
 
-# Extra directories scanned for feature layers (each subdirectory containing a
-# layer.toml). This is how a project adds its own features without forking or
-# editing this repo.
+# Extra directories scanned for feature layers, each subdirectory containing a layer.toml.
+# This is how a project adds its own features without forking or editing this repo. See
+# docs/authoring_layers.md.
 layer_search_paths = []
 
-# Optional sky HDRI. Large binaries are not shipped in the package; if this
-# cannot be resolved the scene falls back to a default dome light rather than
-# failing.
+# Optional sky HDRI. Large binaries are not shipped in the package; if this cannot be resolved
+# the scene falls back to a default dome light rather than failing.
 # hdri = "sunflowers_puresky_4k.exr"
 
 
 # -----------------------------------------------------------------------------
-# [geo] -- georeferencing and rotation conventions
+# [geo] -- georeferencing
 # -----------------------------------------------------------------------------
 [geo]
-# Local ENU tangent plane anchor. Cesium georeferences the terrain to the same
-# point, so this must match the scene.
+# Local ENU tangent-plane anchor. A pose at exactly this lat/lon sits at stage origin, and
+# stage Z is `altitude - alt_m`.
+#
+# This MUST match the scene's CesiumGeoreference, or the terrain and the aircraft are
+# georeferenced to different places. A disagreement over one metre is reported at startup with
+# both values and how to fix it.
+#
+# Use the same altitude datum here as your poses use. What matters is that they agree.
 enu_reference = { lat_deg = 32.22481, lon_deg = 35.25621, alt_m = 516.7 }
 
 
@@ -128,155 +153,185 @@ enu_reference = { lat_deg = 32.22481, lon_deg = 35.25621, alt_m = 516.7 }
 # [cesium] -- 3D Tiles terrain
 # -----------------------------------------------------------------------------
 [cesium]
-# Tileset server. Deliberately has NO default: the previous generation baked an
-# internal IP into consts.py and nine times into earth.usda. Set it here, in your
-# own config, or with $ISAAC_CORE__CESIUM__TILESET_SERVER_URL.
+# Tileset server. Deliberately has NO default, so nothing bakes one site's address into the
+# package. Set it here, in your own config, or with $ISAAC_CORE__CESIUM__TILESET_SERVER_URL.
+# An unreachable URL is valid USD that draws nothing, silently -- so if you see no ground,
+# check this first.
 # tileset_server_url = "http://tiles.your-lan:8088"
 
-tilesets_root = "/tilesets"
+# Where the tileset prims live in the scene. Must match the scene: pointing this at a path
+# that does not exist makes the URL override and every tunable below silently do nothing.
+tilesets_root = "/World/tilesets"
 
-# Long sessions can grow ~/.cache/ov/cesium-request-cache.sqlite-wal to hundreds
-# of gigabytes, after which Isaac Sim fails to start. Enable to clear it on launch.
-delete_cache_on_launch = true
+# Long sessions grow ~/.cache/ov/cesium-request-cache.sqlite-wal, eventually to the point
+# where Isaac Sim will not start. Enabling this clears it on launch -- at the cost of
+# re-streaming every tile, which is exactly the condition that produces the worst hitching.
+delete_cache_on_launch = false
 
 
 # -----------------------------------------------------------------------------
 # [features] -- which feature layers to compose onto the scene
 # -----------------------------------------------------------------------------
 [features]
-enabled = ["camera_udp", "distance_sensor"]
+# The camera layer is implied by each vehicle's `pose_source`, so it does not need listing --
+# it is here to be explicit about what a default run gives you.
+#
+# `distance_sensor` and `bbox` both ship and work; add them when you want them. They are off
+# by default so a first run publishes exactly what the README walkthrough describes, and so
+# `bbox` does not require the custom message package before anything works at all.
+enabled = ["camera_udp"]
 
 
 # -----------------------------------------------------------------------------
-# [vehicles] -- one entry per aircraft. Default is a single vehicle.
+# [vehicles] -- one entry per aircraft
 # -----------------------------------------------------------------------------
-# With exactly one vehicle, topic namespacing collapses and you get the familiar
-# flat names (/isaac_core/image_rgb). Add a second and every vehicle's topics
-# become namespaced automatically (/isaac_core/lead/eo/image_rgb).
+# With exactly one vehicle, topic namespacing collapses and you get the flat names
+# (/isaac_core/image_rgb). Add a second and every vehicle's topics become namespaced
+# automatically (/isaac_core/lead/image_rgb), each gets its own UDP port and RTSP port, and
+# each mounts its own copy of the camera layer.
 [vehicles.drone_0]
-# udp     -- pose packets on a UDP port; physics does not matter, place it anywhere
-# ros     -- NavSatFix + PoseStamped, typically MAVROS over ArduCopter SITL
-# script  -- driven directly over the control plane
-# replay  -- played back from a recorded track
-# mavlink -- MAVLink consumed without MAVROS
+# What the simulator listens to for this vehicle's pose. Exactly two are implemented:
+#   udp -- the 51-byte packet on a UDP port. No ROS 2 needed.
+#   ros -- NavSatFix + PoseStamped, as published by MAVROS.
+# Anything else converts on your side of the wire: `isaac-core-mavlink` turns MAVLink into the
+# UDP packet, and the devkit's UdpPoseTransport lets your own code send one.
 pose_source = "udp"
 
 # Defaults to 33333 + vehicle index. Set explicitly to pin it.
 # udp_port = 33333
 
-# For pose_source = "ros". Defaults derive from mavros_namespace.
+# For pose_source = "ros". The topic names default to derivations of mavros_namespace, so a
+# swarm works without spelling out two topics per aircraft.
 # mavros_namespace = "/mavros"
 # lla_topic = "/mavros/global_position/global"
 # orientation_topic = "/mavros/local_position/pose"
 
-# Mount point in the stage. Defaults to /Environment/<vehicle_id>.
-# mount = "/Environment/drone_0"
+# Mount point in the stage. Defaults to /World/Environment/<vehicle_id>.
+# mount = "/World/Environment/drone_0"
 
-# Frame for roll/pitch/yaw *movement commands* on the airframe.
-# world -- extrinsic, about fixed world axes (R_delta @ R_current)
-# body  -- intrinsic, about the vehicle's own axes (R_current @ R_delta)
-# How roll, pitch and yaw compose for this vehicle.
-#   "world" - aerospace yaw-pitch-roll: yaw is about world up, so heading holds
-#             regardless of attitude. Pitched straight down, changing yaw spins the
-#             view about its centre instead of moving where the nose points.
-#   "body"  - roll, then pitch about the rolled axis, then yaw about the pitched axis.
-#             Yaw therefore behaves like a body-axis rotation.
+# How roll, pitch and yaw compose for the AIRFRAME.
+#   "world" -- aerospace yaw-pitch-roll: yaw is about world up, so heading holds regardless of
+#              attitude. Pitched straight down, changing yaw spins the view about its centre
+#              rather than moving where the nose points.
+#   "body"  -- roll, then pitch about the rolled axis, then yaw about the pitched axis.
 rotation_frame = "world"
 
 
 # -----------------------------------------------------------------------------
-# [vehicles.<id>.gimbal]
+# [vehicles.<id>.gimbal] -- aim the camera independently of the airframe
 # -----------------------------------------------------------------------------
 [vehicles.drone_0.gimbal]
+# Where the camera points at launch, as offsets on top of the airframe attitude.
+# +pitch aims the camera up, +roll drops the right side of the image, +yaw swings it right.
 start_roll_deg = 0.0
 start_pitch_deg = 0.0
 start_yaw_deg = 0.0
 
-# Slew rate limit. Omit for instantaneous snapping, which is what the previous
-# generation did unconditionally.
+# Slew rate limit, in degrees per second. Omit, or set 0, for an instant snap.
+# `set_gimbal` returns when the target is accepted, not when the camera arrives, so with a
+# limit the move takes simulated time -- poll `get_pose()` to watch it get there.
 max_rate_deg_s = 60.0
 
-# A gimbal is bolted to the airframe, so body frame is the physical default.
+# A gimbal is bolted to the airframe, so the body frame is the physical default. Changing this
+# is almost certainly a mistake.
 rotation_frame = "body"
 
 
 # -----------------------------------------------------------------------------
-# [vehicles.<id>.cameras.<id>] -- one or many cameras per vehicle
+# [vehicles.<id>.cameras.<id>] -- the vehicle's camera
 # -----------------------------------------------------------------------------
+# One camera per vehicle is what ships. Declaring a second is accepted by the schema but only
+# the first is composed, so it would publish nothing -- see docs/dev/roadmap.md. Use a second
+# vehicle if you need a second camera.
 [vehicles.drone_0.cameras.eo]
+# Pixel dimensions of the published image and the RTSP stream. `capture_frame` can write a
+# still at a different resolution without changing this.
 resolution = [1280, 720]
+
+# Horizontal field of view. Ignored for an axis whose aperture is pinned below.
 fov_deg = 78.1
+
+# Native RTSP stream, always on. With one vehicle the mount path defaults to /stream; with
+# more it is namespaced per vehicle (/lead/stream). Each simultaneous stream needs its own
+# port, so ports are allocated as rtsp_port + vehicle index unless pinned here.
+# rtsp_port = 8554
+# rtsp_mount_path = "/stream"
+
 focal_length_mm = 22.7885
 
-# Lens focus distance in scene units (metres, since stage_units_in_meters = 1.0). Only has a
-# visible effect once f_stop is non-zero; with depth of field off, everything is in focus.
+# Lens focus distance in scene units, which are metres. Only has a visible effect once f_stop
+# is non-zero; with depth of field off, everything is in focus.
 focus_distance = 400.0
 
 # Lens f-number. IMPORTANT: 0 means depth of field is OFF -- the everything-in-focus pinhole
-# image this project has always produced, and the default here. It does NOT mean a wide-open
-# aperture. Set a positive value together with focus_distance to get a photographic blur.
+# image, and the default. It does NOT mean a wide-open aperture. Set a positive value together
+# with focus_distance to get a photographic blur.
 f_stop = 0.0
 
-# Direct sensor-aperture override in millimetres. Leave unset (the default) to derive the
-# aperture from fov_deg + focal_length_mm, which is the historical behaviour. Set either axis
-# to pin it, in which case fov_deg is IGNORED for that axis -- setting both an explicit
-# aperture and a non-default fov_deg is a mistake the configurator warns about, naming which
-# value won. The vertical axis, when left unset, follows the horizontal aperture and the
-# resolution aspect ratio so the image is not stretched.
+# Direct sensor-aperture override in millimetres. Leave unset to derive the aperture from
+# fov_deg + focal_length_mm. Setting either axis pins it, in which case fov_deg is IGNORED for
+# that axis -- setting both an explicit aperture and a non-default fov_deg is a mistake the
+# configurator warns about, naming which value won. The vertical axis, left unset, follows the
+# horizontal aperture and the resolution aspect ratio so the image is not stretched.
 # horizontal_aperture_mm = 36.0
 # vertical_aperture_mm = 20.25
 
-# Topics default to the namespaced convention; override to publish elsewhere.
+# Publish somewhere other than the derived name.
 # image_topic = "/isaac_core/image_rgb"
 
-# A second camera on the same aircraft. Uncomment to enable; topics then become
-# /isaac_core/eo/image_rgb and /isaac_core/ir/image_rgb.
-# [vehicles.drone_0.cameras.ir]
-# resolution = [640, 512]
-# fov_deg = 25.0
+
+# -----------------------------------------------------------------------------
+# [layers.<layer_id>] -- settings belonging to a feature layer
+# -----------------------------------------------------------------------------
+# No layer that ships reads this namespace: the settings that matter live under
+# [vehicles.<id>.*], so the distance sensor's range is
+# [vehicles.drone_0.distance_sensor] max_range_m, not [layers.distance_sensor].
+#
+# It is kept for layers you author yourself. Declare whatever keys your own layer.toml binds
+# with `config = "layers.<your_id>.<key>"`, and they resolve the same way. Nothing validates
+# the contents, so a misspelling here is silently ignored.
 
 
 # -----------------------------------------------------------------------------
-# [layers.<layer_id>] -- per-layer settings
+# [vehicles.<id>.distance_sensor] -- laser rangefinder, when the layer is enabled
 # -----------------------------------------------------------------------------
-# Every feature layer owns the namespace [layers.<its_id>] and declares its own
-# schema, so a third-party layer dropped into layer_search_paths extends this
-# config with zero changes to isaac_core.
-[layers.distance_sensor]
-min_range_m = 0.2
-max_range_m = 180.0
-# topic = "/isaac_core/distance_sensor"
-
-[layers.bbox_publisher]
-root_prim = "/bboxes"
-# topic = "/isaac_core/bbox"
-
-[layers.sat]
-# topic = "/isaac_core/sat"
+# Add "distance_sensor" to [features] enabled to switch it on. It is boresighted with the
+# camera by construction, so the reading matches the centre of frame.
+#
+# Set max_range_m to something that can actually reach the ground: a 100 m range flown at
+# 1000 m reports "no detection" forever while looking perfectly healthy. Readings beyond the
+# rated limits saturate at them rather than reporting infinity.
+#
+# [vehicles.drone_0.distance_sensor]
+# min_range_m = 0.2
+# max_range_m = 5000.0
 
 
 # -----------------------------------------------------------------------------
-# [ros2]
+# [ros2] -- DDS settings for the bridge
 # -----------------------------------------------------------------------------
 [ros2]
-domain_id = 13
-# NOTE: there is no `use_sim_time` key. It is a consumer-side rclpy node parameter (a node
-# reads /clock instead of the wall clock), but this project runs no rclpy nodes inside Isaac
-# and the C++ bridge's ROS2Context node exposes no such input. Our publishers already stamp
-# every message with real simulation time via IsaacReadSimulationTime -> SecondsToRosStamp,
-# so the setting was redundant by construction. Removed rather than faked.
+# Left unset on purpose: that inherits $ROS_DOMAIN_ID from the environment (0 if unset), which
+# is what a ROS user expects. Pin it only to force a domain regardless of the environment.
+# A hardcoded default here looked authoritative but never reached the bridge.
+# domain_id = 13
+#
+# There is no `use_sim_time` key. It is a consumer-side rclpy node parameter -- a node reading
+# /clock instead of the wall clock -- but this project runs no rclpy nodes inside Isaac, and
+# the C++ bridge's ROS2Context node exposes no such input. Our publishers already stamp every
+# message with simulation time via IsaacReadSimulationTime -> SecondsToRosStamp, so the
+# setting would have been redundant. Omitted rather than faked.
 
 
 # -----------------------------------------------------------------------------
 # [sidecar] -- services that cannot run inside Isaac's interpreter
 # -----------------------------------------------------------------------------
-# Supervised as a peer process, not forked by the simulator. Started by the
-# devkit alongside the sim.
+# Supervised as a peer process rather than forked by the simulator.
 [sidecar]
 enabled = false
 
 # No services ship today. Video streaming used to live here and now does not: Isaac's native
-# RTSP publishes straight from the camera graph, so no out-of-process helper is needed for it.
+# RTSP publishes straight from the camera graph, so no out-of-process helper is needed.
 #
 # The mechanism is kept deliberately, for work that genuinely cannot run inside Isaac's
 # interpreter -- anything needing rclpy, for instance, which is built for Python 3.10 while
@@ -290,15 +345,17 @@ enabled = false
 # [logging]
 # -----------------------------------------------------------------------------
 [logging]
+# Level for isaac_core's own loggers.
 level = "info"
 
-# Forward Isaac Sim's own (very verbose) stdout.
-# Let Kit's own logging through. False cuts a launch from roughly 3,400 lines to 600 by
-# filtering the Python loggers listed below; our own output is never filtered.
+# Let Kit's own logging through to the terminal. False cuts a launch from roughly 3,400 lines
+# to 600 by quieting the Python loggers listed below. Our own output is never filtered either
+# way, so a startup failure still reports itself.
 isaac_logs = false
 
-# Python loggers dropped below WARNING when isaac_logs is false. These set their own
-# level while loading, so they are filtered at the handler rather than by level.
+# Python loggers dropped to WARNING when isaac_logs is false. Named explicitly because each
+# sets its own level while loading, so raising the root logger does not reach them.
+# `ogn_registration` alone accounted for 2,721 lines of a 3,400-line launch.
 quiet_loggers = [
   "ogn_registration",
   "AutoNode",
@@ -315,12 +372,13 @@ quiet_loggers = [
 # -----------------------------------------------------------------------------
 # [[prim_overrides]] -- escape hatch
 # -----------------------------------------------------------------------------
-# Raw prim attribute writes, applied after everything else. For the case where a
-# layer author did not expose a knob you need, so you are never blocked waiting
-# on us. The tidier fix is copying the layer directory into your own
-# layer_search_paths and editing its manifest.
+# Raw prim attribute writes, applied after everything else, for when a layer author did not
+# expose a knob you need. The tidier fix is copying the layer directory into your own
+# layer_search_paths and editing its manifest, but this means you are never blocked.
+#
+# A write to a prim that does not exist is reported at startup rather than ignored.
 #
 # [[prim_overrides]]
-# prim = "/Environment/drone_0/ROS2CameraImageExport/cameraHelperDepth"
+# prim = "/World/Environment/drone_0/CameraImageExport/ros2_camera_helper"
 # attribute = "inputs:enabled"
 # value = false

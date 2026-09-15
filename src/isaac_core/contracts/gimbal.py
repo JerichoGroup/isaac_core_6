@@ -1,5 +1,4 @@
-"""
-Gimbal angle state and slew-rate limiting, independent of any physics engine.
+"""Gimbal angle state and slew-rate limiting, independent of any physics engine.
 
 The OmniGraph node owns writing the resulting orientation onto the gimbal prim; everything
 about *how far the gimbal is allowed to move this tick* lives here so it can be tested without
@@ -22,8 +21,7 @@ from isaac_core.contracts.angles import normalize_angle
 
 @dataclass(frozen=True, slots=True)
 class GimbalAngles:
-    """
-    A gimbal orientation as roll, pitch and yaw in radians.
+    """A gimbal orientation as roll, pitch and yaw in radians.
 
     Radians are used internally because that is what every rotation utility in the stack
     expects. Config and user-facing APIs speak degrees; convert at the edges with
@@ -69,8 +67,7 @@ GimbalLimits = tuple[AxisLimit, AxisLimit, AxisLimit]
 
 
 def _step_axis(current_r: float, target_r: float, max_step_r: float | None) -> float:
-    """
-    Move one axis toward its target along the shortest angular path.
+    """Move one axis toward its target along the shortest angular path.
 
     Args:
         current_r: Current angle in radians.
@@ -103,8 +100,7 @@ def slew_towards(
     max_rate_r_s: float,
     dt_s: float,
 ) -> GimbalAngles:
-    """
-    Move a gimbal toward a target orientation, rate-limited per axis.
+    """Move a gimbal toward a target orientation, rate-limited per axis.
 
     Each axis is limited independently and travels the shortest angular path, so crossing the
     +/-pi seam takes the short way round. Outputs are normalised to ``[-pi, pi]``.
@@ -141,8 +137,7 @@ def slew_towards(
 
 
 def _clamp_axis(value_r: float, limit: AxisLimit) -> float:
-    """
-    Clamp one axis to its mechanical stops.
+    """Clamp one axis to its mechanical stops.
 
     Args:
         value_r: Angle in radians.
@@ -170,8 +165,7 @@ def _clamp_axis(value_r: float, limit: AxisLimit) -> float:
 
 
 def clamp_angles(angles: GimbalAngles, limits: GimbalLimits) -> GimbalAngles:
-    """
-    Clamp gimbal angles to per-axis mechanical stops.
+    """Clamp gimbal angles to per-axis mechanical stops.
 
     Each axis carries an optional ``(min_r, max_r)`` pair; ``None`` on either side leaves that
     direction unconstrained, which models a gimbal free to spin one way but stopped the other.

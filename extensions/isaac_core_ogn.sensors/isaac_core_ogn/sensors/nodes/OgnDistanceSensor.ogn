@@ -35,7 +35,7 @@
             },
             "min_range_m": {
                 "type": "float",
-                "description": "Rated minimum measurable distance in metres. A closer hit reports -inf",
+                "description": "Rated minimum measurable distance in metres. A closer hit saturates at this value",
                 "default": 0.2,
                 "metadata": {
                     "uiName": "Min Range (m)"
@@ -43,8 +43,8 @@
             },
             "max_range_m": {
                 "type": "float",
-                "description": "Rated maximum measurable distance in metres. A farther hit, or no hit, reports +inf",
-                "default": 100.0,
+                "description": "Rated maximum measurable distance in metres. A farther hit, or no hit, saturates at this value",
+                "default": 5000.0,
                 "metadata": {
                     "uiName": "Max Range (m)"
                 }
@@ -53,7 +53,7 @@
         "outputs": {
             "range_m": {
                 "type": "float",
-                "description": "Distance to the first hit in metres, or +inf / -inf per sensor_msgs/Range convention. Wire to the publisher's range input Float, not double, to match sensor_msgs/Range's float32 fields.",
+                "description": "Distance to the first hit in metres, saturating at min_range_m / max_range_m rather than reporting unbounded values, because int() of one raises. Wire to the publisher's range input Float, not double, to match sensor_msgs/Range's float32 fields.",
                 "default": 0.0,
                 "metadata": {
                     "uiName": "Range (m)"
@@ -70,14 +70,14 @@
             "max_range_out": {
                 "type": "float",
                 "description": "Pass-through of max_range_m, so the publisher's max_range comes from the same source of truth Float, not double, to match sensor_msgs/Range's float32 fields.",
-                "default": 100.0,
+                "default": 5000.0,
                 "metadata": {
                     "uiName": "Max Range Out"
                 }
             },
             "hit": {
                 "type": "bool",
-                "description": "Whether the ray struck anything within max_range_m. Useful for debugging without interpreting the infinities",
+                "description": "Whether the ray struck anything within max_range_m. Useful for telling a real max-range reading from a saturated one",
                 "default": false,
                 "metadata": {
                     "uiName": "Hit"

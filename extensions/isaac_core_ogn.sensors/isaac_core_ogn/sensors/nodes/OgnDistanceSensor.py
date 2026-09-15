@@ -1,5 +1,4 @@
-"""
-OmniGraph node: raycast from a prim and report the distance to the first hit.
+"""OmniGraph node: raycast from a prim and report the distance to the first hit.
 
 Shaped to feed Isaac's generic ``isaacsim.ros2.bridge.ROS2Publisher`` configured for
 ``sensor_msgs/Range``: wire ``range_m``, ``min_range_out`` and ``max_range_out`` to the
@@ -21,15 +20,14 @@ import importlib
 import carb
 from isaac_core_ogn.sensors.ogn.OgnDistanceSensorDatabase import OgnDistanceSensorDatabase
 
-from isaac_core.contracts.rangefinder import resolve_range
+from isaac_core.contracts.rangefinder import boresight_direction, resolve_range
 
 # Prefix for all log messages from this node.
 _LOG_PREFIX = "SIM | RANGE |"
 
 
 def _camera_prim_path(db: OgnDistanceSensorDatabase) -> str | None:
-    """
-    Return the camera path this sensor ranges along, or ``None``.
+    """Return the camera path this sensor ranges along, or ``None``.
 
     A plain token rather than a USD relationship: the camera lives in a different layer, so the
     GUI's relationship picker cannot see it, and the compositor writes this from config instead.
@@ -55,8 +53,7 @@ _SEQUENCES: dict[str, int] = {}
 
 
 def _raycast_interface() -> object | None:
-    """
-    Return the render raycast query interface, or ``None`` if unavailable.
+    """Return the render raycast query interface, or ``None`` if unavailable.
 
     Deliberately the **render** raycast rather than PhysX. PhysX only hits collision geometry,
     and Cesium 3D Tiles terrain has none -- it is rendered geometry with no colliders -- so a
@@ -73,7 +70,7 @@ def _raycast_interface() -> object | None:
         return None
     try:
         return module.acquire_raycast_query_interface()
-    except Exception:  # noqa: BLE001 - carb raises bare errors when the interface is absent
+    except Exception:
         return None
 
 
@@ -84,8 +81,7 @@ def _cast(
     min_range: float,
     max_range: float,
 ) -> tuple[bool | None, float]:
-    """
-    Submit this frame's ray and read the latest ready result.
+    """Submit this frame's ray and read the latest ready result.
 
     The result is whatever the renderer has finished, so it can lag the submitted ray by a
     frame. That is inherent to an asynchronous query and is why a sequence is used: it holds the
@@ -128,13 +124,32 @@ def _cast(
     return True, float(result.hit_t)
 
 
+def _report_no_detection(db: OgnDistanceSensorDatabase, max_range: float) -> bool:
+    """Write a saturated "nothing seen" reading and return ``True`` to keep the graph running.
+
+    A bad configuration or a missing prim must not fail the graph: one bad tick would otherwise stop
+    the simulation. Saturating at the rated maximum rather than reporting zero matters because zero
+    reads as "touching the ground".
+
+    Args:
+        db: OmniGraph node database.
+        max_range: The sensor's rated maximum, reported as the range.
+
+    Returns:
+        ``True`` always.
+
+    """
+    db.outputs.range_m = max_range
+    db.outputs.hit = False
+    return True
+
+
 class OgnDistanceSensor:
     """OmniGraph node: PhysX raycast distance sensor."""
 
     @staticmethod
     def compute(db: OgnDistanceSensorDatabase) -> bool:
-        """
-        Cast a ray from the sensor prim and write the resulting range.
+        """Cast a ray from the sensor prim and write the resulting range.
 
         Args:
             db: OmniGraph node database.
@@ -145,7 +160,7 @@ class OgnDistanceSensor:
             cannot stop the simulation -- consistent with the other nodes here.
 
         """
-        import importlib  # noqa: PLC0415
+        import importlib
 
         min_range = float(db.inputs.min_range_m)
         max_range = float(db.inputs.max_range_m)
@@ -157,9 +172,7 @@ class OgnDistanceSensor:
         prim_path = _camera_prim_path(db)
         if prim_path is None:
             carb.log_warn(f"{_LOG_PREFIX} cameraPath is unset or not absolute; reporting no detection")
-            db.outputs.range_m = max_range
-            db.outputs.hit = False
-            return True
+            return _report_no_detection(db, max_range)
 
         omni_usd = importlib.import_module("omni.usd")
         usd_geom = importlib.import_module("pxr.UsdGeom")
@@ -169,9 +182,7 @@ class OgnDistanceSensor:
         prim = stage.GetPrimAtPath(prim_path) if stage is not None else None
         if prim is None or not prim.IsValid():
             carb.log_warn(f"{_LOG_PREFIX} camera prim {prim_path} is not valid")
-            db.outputs.range_m = max_range
-            db.outputs.hit = False
-            return True
+            return _report_no_detection(db, max_range)
 
         transform = usd_geom.Xformable(prim).ComputeLocalToWorldTransform(usd_mod.TimeCode.Default())
         origin = transform.ExtractTranslation()
@@ -180,21 +191,17 @@ class OgnDistanceSensor:
         # own local orientation (0.5, 0.5, -0.5, -0.5) while a plain Xform is identity. Reading the
         # axis off the camera makes the boresight structural: it cannot drift out of alignment.
         rotation = transform.ExtractRotationMatrix()
-        direction = -rotation.GetRow(2)
+        direction = boresight_direction(tuple(tuple(rotation.GetRow(i)) for i in range(3)))
 
         hit, distance = _cast(db, origin, direction, min_range, max_range)
         if hit is None:
-            db.outputs.range_m = max_range
-            db.outputs.hit = False
-            return True
+            return _report_no_detection(db, max_range)
 
         try:
             db.outputs.range_m = resolve_range(hit, distance, min_range, max_range)
         except ValueError as exc:
             carb.log_warn(f"{_LOG_PREFIX} {exc}")
-            db.outputs.range_m = max_range
-            db.outputs.hit = False
-            return True
+            return _report_no_detection(db, max_range)
 
         db.outputs.hit = hit
         return True

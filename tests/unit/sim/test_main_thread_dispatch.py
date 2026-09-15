@@ -1,5 +1,4 @@
-"""
-Tests for the runtime's main-thread task dispatcher.
+"""Tests for the runtime's main-thread task dispatcher.
 
 USD, Fabric and the Kit application are not thread-safe. Handlers that touch them must
 hand the work to the step loop instead of running it on the control server's thread.
@@ -30,7 +29,7 @@ class _FakeRuntime(SimulationRuntime):
         """Initialise only the fields the dispatcher touches."""
         import queue
 
-        from isaac_core.sim.runtime import _MainThreadTask  # noqa: PLC0415
+        from isaac_core.sim.runtime import _MainThreadTask
 
         self._main_thread_tasks: queue.Queue[_MainThreadTask] = queue.Queue()
         self._loop_thread_id: int | None = None
@@ -148,7 +147,7 @@ def _swallow(runtime: _FakeRuntime, call: "Callable[[], Any]") -> object:
     """Run a task and return its exception rather than propagating it."""
     try:
         return runtime._on_main_thread(call)
-    except BaseException as exc:  # noqa: BLE001
+    except BaseException as exc:
         return exc
 
 

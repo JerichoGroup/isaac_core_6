@@ -1,5 +1,4 @@
-"""
-Typed exceptions for JSON-RPC error responses.
+"""Typed exceptions for JSON-RPC error responses.
 
 Each exception carries the standard JSON-RPC error code and maps cleanly to the
 wire format defined in ``messages.RpcErrorData``. Round-trip fidelity is tested:
@@ -23,8 +22,7 @@ AUTH_ERROR_CODE: Final = -32000
 
 
 class RpcError(Exception):
-    """
-    Base for all JSON-RPC errors that travel over the wire.
+    """Base for all JSON-RPC errors that travel over the wire.
 
     Subclasses define the ``code`` class variable. Handlers may raise any subclass
     and the server will encode it into a proper JSON-RPC error response.
@@ -32,9 +30,8 @@ class RpcError(Exception):
 
     code: int = INTERNAL_ERROR_CODE
 
-    def __init__(self, message: str = "", data: Any = None) -> None:  # noqa: ANN401
-        """
-        Initialise an RPC error.
+    def __init__(self, message: str = "", data: Any = None) -> None:
+        """Initialise an RPC error.
 
         Args:
             message: Human-readable error description.
@@ -51,9 +48,8 @@ class ParseError(RpcError):
 
     code: int = PARSE_ERROR_CODE
 
-    def __init__(self, message: str = "Parse error", data: Any = None) -> None:  # noqa: ANN401
-        """
-        Initialise a parse error.
+    def __init__(self, message: str = "Parse error", data: Any = None) -> None:
+        """Initialise a parse error.
 
         Args:
             message: Description.
@@ -68,9 +64,8 @@ class InvalidRequestError(RpcError):
 
     code: int = INVALID_REQUEST_CODE
 
-    def __init__(self, message: str = "Invalid request", data: Any = None) -> None:  # noqa: ANN401
-        """
-        Initialise an invalid-request error.
+    def __init__(self, message: str = "Invalid request", data: Any = None) -> None:
+        """Initialise an invalid-request error.
 
         Args:
             message: Description.
@@ -85,9 +80,8 @@ class MethodNotFoundError(RpcError):
 
     code: int = METHOD_NOT_FOUND_CODE
 
-    def __init__(self, message: str = "Method not found", data: Any = None) -> None:  # noqa: ANN401
-        """
-        Initialise a method-not-found error.
+    def __init__(self, message: str = "Method not found", data: Any = None) -> None:
+        """Initialise a method-not-found error.
 
         Args:
             message: Description.
@@ -102,9 +96,8 @@ class InvalidParamsError(RpcError):
 
     code: int = INVALID_PARAMS_CODE
 
-    def __init__(self, message: str = "Invalid params", data: Any = None) -> None:  # noqa: ANN401
-        """
-        Initialise an invalid-params error.
+    def __init__(self, message: str = "Invalid params", data: Any = None) -> None:
+        """Initialise an invalid-params error.
 
         Args:
             message: Description.
@@ -119,9 +112,8 @@ class InternalError(RpcError):
 
     code: int = INTERNAL_ERROR_CODE
 
-    def __init__(self, message: str = "Internal error", data: Any = None) -> None:  # noqa: ANN401
-        """
-        Initialise an internal error.
+    def __init__(self, message: str = "Internal error", data: Any = None) -> None:
+        """Initialise an internal error.
 
         Args:
             message: Description.
@@ -136,9 +128,8 @@ class AuthError(RpcError):
 
     code: int = AUTH_ERROR_CODE
 
-    def __init__(self, message: str = "Authentication required", data: Any = None) -> None:  # noqa: ANN401
-        """
-        Initialise an authentication error.
+    def __init__(self, message: str = "Authentication required", data: Any = None) -> None:
+        """Initialise an authentication error.
 
         Args:
             message: Description.
@@ -159,9 +150,8 @@ _CODE_TO_CLASS: Final[dict[int, type[RpcError]]] = {
 }
 
 
-def error_from_code(code: int, message: str, data: Any = None) -> RpcError:  # noqa: ANN401
-    """
-    Reconstruct a typed exception from a wire error code.
+def error_from_code(code: int, message: str, data: Any = None) -> RpcError:
+    """Reconstruct a typed exception from a wire error code.
 
     Args:
         code: JSON-RPC error code.

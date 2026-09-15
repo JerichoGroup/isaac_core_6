@@ -11,7 +11,7 @@ set -uo pipefail
 TRIALS="${1:-10}"
 LABEL="${2:-run}"
 CONFIG=/tmp/cfg_run.toml
-ISAAC=/home/ofer/isaacsim/python.sh
+ISAAC="${ISAACSIM_PATH:-$HOME/isaacsim}/python.sh"
 WINDOW="${3:-45}"
 
 kill_sims() {

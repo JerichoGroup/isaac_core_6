@@ -1,5 +1,4 @@
-"""
-Tests for the ``apply_stage_units`` composer helper.
+"""Tests for the ``apply_stage_units`` composer helper.
 
 The whole pipeline assumes 1 stage unit == 1 metre, so the helper must both write the
 configured value and warn loudly when it is asked to deviate or when it conflicts with the
@@ -45,9 +44,8 @@ def fake_usdgeom(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @contextlib.contextmanager
-def _captured_warnings() -> Any:  # noqa: ANN401
-    """
-    Capture warnings from the composer logger.
+def _captured_warnings() -> Any:
+    """Capture warnings from the composer logger.
 
     ``caplog`` does not see this project's warnings, so attach a handler directly to the
     named logger and yield the raw records for the test to inspect.

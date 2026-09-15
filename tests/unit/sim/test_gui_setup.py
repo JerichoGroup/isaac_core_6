@@ -1,5 +1,4 @@
-"""
-Tests for the two settings that make a GUI run show anything useful.
+"""Tests for the two settings that make a GUI run show anything useful.
 
 Both failures they guard against are silent. A `CesiumTilesetPrim` without the Cesium
 extension is perfectly valid USD that draws nothing, and a viewport left on Kit's default
@@ -10,10 +9,13 @@ symptom in both cases is "blank screen, camera does not respond", with no error 
 from __future__ import annotations
 
 from pathlib import Path
+import types
+from unittest import mock
 
 import pytest
 
 from isaac_core.config import IsaacCoreConfig
+import isaac_core.sim.runtime as runtime_module
 from isaac_core.sim.runtime import SimulationRuntime
 
 
@@ -132,8 +134,11 @@ def test_an_empty_viewport_camera_leaves_the_viewport_alone() -> None:
 
 
 def test_log_arguments_are_omitted_when_isaac_logs_is_wanted() -> None:
+    # Asserts on the log arguments specifically, not the whole list: other startup arguments
+    # legitimately appear here too, such as the startup viewport's name.
     config = IsaacCoreConfig(sim={"extension_search_paths": (), "boot_extensions": ()}, logging={"isaac_logs": True})
-    assert _BareRuntime(config)._kit_startup_args() == []
+    args = _BareRuntime(config)._kit_startup_args()
+    assert not [arg for arg in args if arg.startswith("--/log/")]
 
 
 def test_log_level_arguments_are_added_by_default() -> None:
@@ -153,7 +158,7 @@ def test_domain_id_none_leaves_the_environment_untouched(monkeypatch: pytest.Mon
 
 
 def test_explicit_domain_id_is_exported(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Ofer's ask: a config value must actually reach the bridge, which reads the env var.
+    # A config value must actually reach the bridge, which reads the env var.
     monkeypatch.setenv("ROS_DOMAIN_ID", "7")
     config = IsaacCoreConfig(ros2={"domain_id": 42})
     _BareRuntime(config)._apply_ros_domain()
@@ -163,7 +168,7 @@ def test_explicit_domain_id_is_exported(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_domain_id_mismatch_with_env_warns(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Ofer's ask: if config sets a domain that disagrees with $ROS_DOMAIN_ID, say so rather
+    # If config sets a domain that disagrees with $ROS_DOMAIN_ID, say so rather
     # than overriding silently.
     import logging
 
@@ -198,3 +203,82 @@ def test_domain_id_matching_env_does_not_warn(monkeypatch: pytest.MonkeyPatch) -
     finally:
         logger.removeHandler(handler)
     assert not [r for r in records if "overrides ROS_DOMAIN_ID" in r.getMessage()]
+
+
+def test_every_vehicle_beyond_the_first_gets_its_own_viewport() -> None:
+    # Guards a real regression: switching to offscreen render products left a single viewport, and
+    # Cesium for Omniverse chooses which tiles to stream by iterating get_viewport_window_instances().
+    # A camera with no viewport therefore rendered only tiles some other camera had pulled in, so the
+    # second vehicle's image had missing ground while still publishing normally.
+    config = IsaacCoreConfig(
+        vehicles={
+            "lead": {"cameras": {"eo": {"resolution": (1280, 720)}}},
+            "wing": {"cameras": {"eo": {"resolution": (640, 480)}}},
+        },
+    )
+    runtime = SimulationRuntime.__new__(SimulationRuntime)
+    runtime._config = config
+    created: list[dict[str, object]] = []
+
+    class _Utils:
+        @staticmethod
+        def create_viewport_window(**kwargs: object) -> object:
+            created.append(kwargs)
+            return object()
+
+    class _Prim:
+        @staticmethod
+        def IsValid() -> bool:
+            return True
+
+    class _Stage:
+        @staticmethod
+        def GetPrimAtPath(_path: str) -> _Prim:
+            return _Prim()
+
+    fake_usd = types.SimpleNamespace(get_context=lambda: types.SimpleNamespace(get_stage=lambda: _Stage()))
+    with mock.patch.object(runtime_module.importlib, "import_module", return_value=fake_usd):
+        runtime._open_extra_vehicle_viewports(_Utils(), "/World/Environment/{instance}/Xform/main_camera_01")
+
+    assert len(created) == 1, "only the vehicles after the first need their own window"
+    assert created[0]["name"] == "wing"
+    assert created[0]["camera_path"] == "/World/Environment/wing/Xform/main_camera_01"
+    # Matching the camera resolution is what lets Isaac reuse one render product for both.
+    assert (created[0]["width"], created[0]["height"]) == (640, 480)
+
+
+def test_a_single_vehicle_opens_no_extra_viewport() -> None:
+    config = IsaacCoreConfig(vehicles={"drone_0": {"cameras": {"eo": {}}}})
+    runtime = SimulationRuntime.__new__(SimulationRuntime)
+    runtime._config = config
+    calls: list[object] = []
+
+    class _Utils:
+        @staticmethod
+        def create_viewport_window(**kwargs: object) -> object:
+            calls.append(kwargs)
+            return object()
+
+    runtime._open_extra_vehicle_viewports(_Utils(), "/World/Environment/{instance}/Xform/main_camera_01")
+    assert calls == []
+
+
+def test_the_startup_viewport_is_never_renamed() -> None:
+    # Guards a shipped regression: renaming Kit's startup window after the first
+    # vehicle broke omni.kit.viewport_widgets_manager, which looks the window up by the literal string
+    # "Viewport" and then calls .get_frame() on the None it gets back -- an AttributeError on every
+    # launch. Cosmetic consistency is not worth a startup error.
+    for config in (
+        IsaacCoreConfig(vehicles={"lead": {"cameras": {"eo": {}}}, "wing": {"cameras": {"eo": {}}}}),
+        IsaacCoreConfig(vehicles={"drone_0": {"cameras": {"eo": {}}}}),
+        IsaacCoreConfig(sim={"headless": True}, vehicles={"lead": {"cameras": {"eo": {}}}}),
+    ):
+        runtime = SimulationRuntime.__new__(SimulationRuntime)
+        runtime._config = config
+        assert runtime._default_viewport_name_args() == []
+
+
+def test_no_kit_startup_argument_renames_the_viewport_window() -> None:
+    config = IsaacCoreConfig(vehicles={"drone_0": {"cameras": {"eo": {}}}})
+    args = _BareRuntime(config)._kit_startup_args()
+    assert not [arg for arg in args if "windowName" in arg]

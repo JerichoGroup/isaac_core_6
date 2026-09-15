@@ -2,6 +2,7 @@
 
 import random
 import struct
+from typing import Final
 
 import pytest
 
@@ -235,7 +236,7 @@ def test_decode_raises_checksum_error_on_corrupted_payload_byte() -> None:
 
 def test_fuzz_decode_never_raises_unexpected_exceptions() -> None:
     # Feed 1000 random byte strings of random lengths up to 200.
-    rng = random.Random(42)  # noqa: S311
+    rng = random.Random(42)
     for _ in range(1000):
         length = rng.randint(0, 200)
         data = bytes(rng.getrandbits(8) for _ in range(length))
@@ -249,7 +250,7 @@ def test_fuzz_decode_never_raises_unexpected_exceptions() -> None:
 
 def test_fuzz_decode_with_correct_length_random_content() -> None:
     # 51-byte random inputs -- exercises header/checksum/payload branches.
-    rng = random.Random(99)  # noqa: S311
+    rng = random.Random(99)
     for _ in range(500):
         data = bytes(rng.getrandbits(8) for _ in range(PACKET_SIZE))
         try:
@@ -349,3 +350,132 @@ def test_hold_decoder_consecutive_good_packets_update() -> None:
         result = dec.decode(encode(pose))
         assert result == pose
     assert dec.failure_count == 0
+
+
+def _packet_with(
+    lat: float = 32.2, lon: float = 35.2, alt: float = 900.0, roll: float = 0.0, pitch: float = 0.0, yaw: float = 0.0
+) -> bytes:
+    """Build a structurally valid packet (header + checksum) carrying arbitrary field values."""
+    payload = struct.pack(PAYLOAD_FORMAT, lat, lon, alt, roll, pitch, yaw)
+    chk = 0
+    for byte in payload:
+        chk ^= byte
+    return bytes(HEADER) + payload + bytes([chk])
+
+
+@pytest.mark.parametrize(
+    ("label", "kwargs"),
+    [
+        ("lat out of range", {"lat": 200.0}),
+        ("lat NaN", {"lat": float("nan")}),
+        ("lon out of range", {"lon": 999.0}),
+        ("alt infinite", {"alt": float("inf")}),
+        ("roll NaN", {"roll": float("nan")}),
+        ("yaw infinite", {"yaw": float("inf")}),
+    ],
+)
+def test_decode_rejects_nonfinite_and_out_of_range_as_packet_error(label: str, kwargs: dict[str, float]) -> None:
+    # Guards a real bug: these values reached Lla/Rpy, whose __post_init__ raises ValueError.
+    # ValueError is not a PosePacketError, so HoldLastGoodDecoder did not catch it and a single
+    # glitched or hostile UDP packet crashed the receive loop.
+    with pytest.raises(PosePacketError):
+        decode(_packet_with(**kwargs))
+
+
+@pytest.mark.parametrize(
+    ("label", "kwargs"),
+    [
+        ("lat out of range", {"lat": 200.0}),
+        ("lat NaN", {"lat": float("nan")}),
+        ("alt infinite", {"alt": float("inf")}),
+        ("yaw NaN", {"yaw": float("nan")}),
+    ],
+)
+def test_hold_last_good_survives_semantically_invalid_packets(label: str, kwargs: dict[str, float]) -> None:
+    # The documented guarantee is that ANY bad packet holds the last good pose. That has to include
+    # a packet whose header and checksum are perfectly valid but whose payload is nonsense.
+    decoder = HoldLastGoodDecoder()
+    good = encode(
+        GeodeticPose(
+            position=Lla(lat_deg=32.2, lon_deg=35.2, alt_m=900.0),
+            orientation=Rpy(roll_r=0.0, pitch_r=0.0, yaw_r=0.0, frame=Frame.NED),
+        )
+    )
+    assert decoder.decode(good) is not None
+    held = decoder.decode(_packet_with(**kwargs))
+    assert held is not None
+    assert held.position.lat_deg == pytest.approx(32.2)
+    assert held.position.alt_m == pytest.approx(900.0)
+    assert decoder.failure_count == 1
+
+
+# Captured from this encoder, with every field distinct so a transposition cannot survive. The single
+# 2023-captured vector elsewhere in this file anchors the format to the external sender; these anchor
+# the FIELD ORDER, which a symmetric pose cannot: if lat and lon, or roll and pitch, were swapped in
+# PAYLOAD_FORMAT or FIELD_ORDER, a pose with equal values would still round-trip perfectly.
+_DISTINCT_FIELD_VECTORS: Final = [
+    (
+        "all six fields distinct",
+        (12.345678, -45.678901, 1234.5, 0.111111, 0.222222, 0.333333),
+        bytes.fromhex(
+            "acdcb4e4f1b4fcb02840611c5c3ae6d646c000000000004a9340b3d1393fc571bc3fb3d1393fc571cc3f465d6bef5355d53f06"
+        ),
+    ),
+    (
+        "a lat/lon swap would show here",
+        (10.0, 20.0, 30.0, 0.4, 0.5, 0.6),
+        bytes.fromhex(
+            "acdc000000000000244000000000000034400000000000003e409a9999999999d93f000000000000e03f333333333333e33f88"
+        ),
+    ),
+    (
+        "negative in every field",
+        (-1.5, -2.5, -3.5, -0.25, -0.5, -0.75),
+        bytes.fromhex(
+            "acdc000000000000f8bf00000000000004c00000000000000cc0000000000000d0bf000000000000e0bf000000000000e8bf28"
+        ),
+    ),
+    (
+        "roll pitch yaw ascending",
+        (32.0, 35.0, 900.0, 0.1, 0.2, 0.3),
+        bytes.fromhex(
+            "acdc000000000000404000000000008041400000000000208c409a9999999999b93f9a9999999999c93f333333333333d33ff1"
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "fields", "expected"), _DISTINCT_FIELD_VECTORS, ids=[v[0] for v in _DISTINCT_FIELD_VECTORS]
+)
+def test_encoding_is_byte_stable_for_distinct_field_values(
+    label: str, fields: tuple[float, ...], expected: bytes
+) -> None:
+    lat, lon, alt, roll, pitch, yaw = fields
+    raw = encode(
+        GeodeticPose(
+            position=Lla(lat_deg=lat, lon_deg=lon, alt_m=alt),
+            orientation=Rpy(roll_r=roll, pitch_r=pitch, yaw_r=yaw, frame=Frame.NED),
+        )
+    )
+    assert raw == expected, label
+
+
+@pytest.mark.parametrize(
+    ("label", "fields", "expected"), _DISTINCT_FIELD_VECTORS, ids=[v[0] for v in _DISTINCT_FIELD_VECTORS]
+)
+def test_decoding_recovers_every_distinct_field(label: str, fields: tuple[float, ...], expected: bytes) -> None:
+    lat, lon, alt, roll, pitch, yaw = fields
+    pose = decode(expected)
+    assert pose.position.lat_deg == pytest.approx(lat)
+    assert pose.position.lon_deg == pytest.approx(lon)
+    assert pose.position.alt_m == pytest.approx(alt)
+    assert pose.orientation.roll_r == pytest.approx(roll)
+    assert pose.orientation.pitch_r == pytest.approx(pitch)
+    assert pose.orientation.yaw_r == pytest.approx(yaw)
+
+
+def test_the_distinct_field_vectors_really_are_distinct() -> None:
+    # A guard on the guard: vectors with repeated values would not catch a transposition at all.
+    for label, fields, _ in _DISTINCT_FIELD_VECTORS:
+        assert len(set(fields)) == len(fields), f"{label} repeats a value, so a swap could hide"

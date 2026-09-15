@@ -1,5 +1,4 @@
-"""
-Lock down the gimbal's observable behaviour: where the camera actually ends up pointing.
+"""Lock down the gimbal's observable behaviour: where the camera actually ends up pointing.
 
 Asserts on the camera's world-space look direction rather than on Euler numbers or matrix
 multiplication order. That distinction is the whole point: the composition *formula* looked correct
@@ -20,25 +19,26 @@ import numpy as np
 import pytest
 
 from isaac_core.contracts.frames import Frame, RotationFrame
-from isaac_core.contracts.pose import Rpy
+from isaac_core.contracts.pose import Lla, Rpy
+from isaac_core.geo.enu import EnuConverter
+from isaac_core.geo.pose_pipeline import compose_local_pose
 from isaac_core.geo.rotations import (
-    compose_rotation,
-    euler_to_matrix,
-    euler_to_quaternion,
-    matrix_to_euler,
     ned_to_enu,
 )
 
-# The camera's authored local orientation from usd/layers/camera_*/: quatd (w, x, y, z).
+# The camera's authored local orientation from the shipped camera layers: quatd (w, x, y, z).
 CAMERA_LOCAL_QUAT = (0.5, 0.5, -0.5, -0.5)
 
 # Tolerance in degrees. Generous because the chain runs through a quaternion round-trip.
 TOL_DEG = 0.01
 
 
+# Any reference works: the look direction does not depend on where the aircraft is.
+_REFERENCE = (32.22481, 35.25621, 516.7)
+
+
 def _quat_to_matrix(w: float, x: float, y: float, z: float) -> np.ndarray:
-    """
-    Convert a (w, x, y, z) quaternion to a row-vector rotation matrix.
+    """Convert a (w, x, y, z) quaternion to a row-vector rotation matrix.
 
     Args:
         w: Real part.
@@ -64,11 +64,11 @@ def _camera_axes(
     offset_pitch_deg: float = 0.0,
     offset_yaw_deg: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Return the camera's world look and up vectors for a gimbal offset, level north-bound flight.
+    """Return the camera's world look and up vectors for a gimbal offset, level north-bound flight.
 
-    Mirrors exactly what ``OgnGlobalPositionToLocalPosition`` computes, so a change to the node's
-    convention breaks this test.
+    Drives the SAME kernel the OmniGraph node calls, rather than reimplementing it: this test used to
+    carry a copy of the node's composition, so the node and the test could drift apart while both
+    stayed green. The quaternion is read back in Isaac's storage order, exactly as the node writes it.
 
     Args:
         offset_roll_deg: Commanded gimbal roll in degrees.
@@ -80,20 +80,16 @@ def _camera_axes(
 
     """
     enu = ned_to_enu(Rpy(roll_r=0.0, pitch_r=0.0, yaw_r=0.0, frame=Frame.NED))
-    drone = euler_to_matrix(enu.roll_r, enu.pitch_r, enu.yaw_r, frame=RotationFrame.WORLD)
-
-    # Body-relative, with the airframe's pitch/yaw sign flips -- the node's convention.
-    offset = euler_to_matrix(
-        math.radians(offset_roll_deg),
-        -math.radians(offset_pitch_deg),
-        -math.radians(offset_yaw_deg),
-        frame=RotationFrame.BODY,
+    pose = compose_local_pose(
+        converter=EnuConverter(*_REFERENCE),
+        position=Lla(lat_deg=_REFERENCE[0], lon_deg=_REFERENCE[1], alt_m=_REFERENCE[2] + 1000.0),
+        attitude_r=(enu.roll_r, enu.pitch_r, enu.yaw_r),
+        rotation_frame=RotationFrame.WORLD,
+        gimbal_offset_deg=(offset_roll_deg, offset_pitch_deg, offset_yaw_deg),
     )
-    composed = compose_rotation(drone, offset, RotationFrame.BODY)
-
-    roll_r, pitch_r, yaw_r = matrix_to_euler(composed, frame=RotationFrame.WORLD)
-    quat = euler_to_quaternion(roll_r, pitch_r, yaw_r, frame=RotationFrame.WORLD)
-    xform = _quat_to_matrix(*quat)
+    # Isaac order is (x, y, z, w); _quat_to_matrix takes (w, x, y, z).
+    qx, qy, qz, qw = pose.quaternion_xyzw
+    xform = _quat_to_matrix(qw, qx, qy, qz)
     camera = _quat_to_matrix(*CAMERA_LOCAL_QUAT)
 
     look = np.array([0.0, 0.0, -1.0]) @ camera @ xform

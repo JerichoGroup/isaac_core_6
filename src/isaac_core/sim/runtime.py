@@ -1,5 +1,4 @@
-"""
-Simulation runtime: app lifecycle, step loop and control-plane handlers.
+"""Simulation runtime: app lifecycle, step loop and control-plane handlers.
 
 This is the thinnest possible shell over Isaac Sim's application lifecycle. It
 owns ONLY:
@@ -8,7 +7,8 @@ owns ONLY:
 - The physics step loop.
 - Starting the control server and registering handlers.
 
-It must NOT mention any feature by name -- that is defect #13 from the old repo.
+It must NOT mention any feature by name: features are composed from manifests, and naming one
+here would put feature knowledge in the runtime.
 Features are composed via the layer system; the runtime iterates the plan, never
 branches on a feature id.
 
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 from isaac_core.config import IsaacCoreConfig
 from isaac_core.contracts import packet as packet_spec
 from isaac_core.contracts.gimbal import GimbalAngles, slew_towards
+from isaac_core.contracts.pose import MAX_LAT_DEG, MAX_LON_DEG, MIN_LAT_DEG, MIN_LON_DEG
 from isaac_core.contracts.prims import render
 from isaac_core.control import ControlServer, InvalidParamsError
 from isaac_core.sim.planner import FeaturePlan
@@ -47,6 +48,11 @@ logger = logging.getLogger(__name__)
 # Frames pumped after changing the capture resolution, so the renderer converges at the new size.
 CAPTURE_SETTLE_FRAMES = 8
 
+# Frames to wait when a capture also changes the resolution. A viewport resize is asynchronous --
+# the widget carries a `__resize_future` -- so the render product is still the old size for several
+# frames afterwards, and 8 was not enough.
+CAPTURE_RESIZE_SETTLE_FRAMES = 30
+
 # Frames to wait for an asynchronous capture to write its file before giving up on confirming it.
 CAPTURE_WAIT_FRAMES = 120
 
@@ -54,54 +60,33 @@ CAPTURE_WAIT_FRAMES = 120
 # across several frames, but bounded so a stalled renderer cannot hang a script forever.
 CAPTURE_TIMEOUT_S: float = 20.0
 
-# Config paths that something re-reads while the simulator runs, and so can be patched safely.
-# Anything applied once at composition time is deliberately absent: patching it would change the
-# config object while the stage kept the old value.
+# The camera layers' render-product node. A rename here without the USD silently disables
+# capture-at-resolution; a test asserts this name against the shipped layers.
+RENDER_PRODUCT_NODE_NAME = "isaac_create_render_product"
+
+# Patchable at runtime because something re-reads them. Anything applied once at composition time
+# is deliberately absent: patching it would change config while the stage kept the old value.
 PATCHABLE_CONFIG_KEYS: frozenset[str] = frozenset({"gimbal.max_rate_deg_s"})
 
-# How long a control-plane handler waits for the step loop to run its task.
-#
-# Generous because a single frame can take a while on a cold stage, but bounded so a
-# wedged step loop surfaces as a clear error rather than a hung client.
+# Bounded so a wedged step loop surfaces as an error rather than a hung client.
 MAIN_THREAD_TASK_TIMEOUT_S: float = 10.0
 
-# Frames to pump after enabling extensions, before touching the stage.
-#
-# This is the fix for an intermittent startup segfault that killed roughly half of all
-# launches. Measured on this install, opening or creating a stage immediately after
-# enabling `isaacsim.ros2.bridge` crashed 4 of 6 runs inside Kit's parallel graph executor
-# (`omni.graph.core` -> `omni.graph.image.core` -> `omni.kit.exec.core` -> TBB). Pumping
-# frames first before any stage operation crashed 0 of 6. The bridge evidently needs a few
-# update cycles to finish registering its render-stage hooks, and a stage arriving mid-way
-# through that races it.
-#
-# Cheap insurance: 60 frames is well under a second of wall clock at startup.
+# Pumped before any stage operation. Opening a stage straight after enabling the ROS 2 bridge
+# segfaulted 4 of 6 launches inside Kit's graph executor; with these frames first, 0 of 6.
 EXTENSION_WARMUP_FRAMES: int = 60
 
-# Frames to pump after the base scene opens and again after feature layers mount.
-#
-# Same reasoning at smaller scale: layers can carry graphs that OmniGraph evaluates in the
-# render pipeline, and mounting one before the renderer has produced a frame is the same
-# class of race.
+# Same race at smaller scale: a layer's graphs need a rendered frame before the next mount.
 STAGE_SETTLE_FRAMES: int = 30
 
-# File descriptor of the stream the pre-Kit banners are written to.
-#
-# The launcher banners come out of plain Python ``print()`` calls in Isaac's
-# ``SimulationApp.__init__`` ("Starting kit application with the following args: ...") and out
-# of Kit's own C++ startup writing to the process's stdout. Neither obeys a log level or the
-# ``--/app/enableStdoutOutput=false`` setting, because both happen before or beneath our
-# logging configuration. Redirecting this descriptor -- 1, POSIX stdout -- around the
-# construction of ``SimulationApp`` is the only lever that catches them. Only stdout is
-# touched: our own logging and every Python traceback go to stderr (fd 2), so a crash during
-# construction still surfaces in full.
+# POSIX stdout. Isaac's pre-Kit banners are raw print() and C++ writes that obey no log level, so
+# redirecting this descriptor around SimulationApp construction is the only way to silence them.
+# Only stdout: our logging and tracebacks go to stderr, so a crash still surfaces in full.
 STDOUT_FILENO: int = 1
 
 
 @dataclass
 class _MainThreadTask:
-    """
-    A callable queued for execution on the thread that owns the step loop.
+    """A callable queued for execution on the thread that owns the step loop.
 
     USD, Fabric and the Kit application are not thread-safe. Reading a prim or calling
     ``update_app()`` directly from the control server's thread races the step loop: it
@@ -116,13 +101,9 @@ class _MainThreadTask:
     error: BaseException | None = None
 
 
-# Kit extensions the composed stages need. The base isaacsim.exp.base.python app
-# enables none of these, and without them OmniGraph reports "Could not find node type
-# interface" for every node and the graphs quietly do nothing.
-#
-# Ours provide the pose maths and UDP ingestion; isaacsim.ros2.bridge provides every
-# ROS 2 publisher/subscriber (it is C++, which is why it works at all -- see
-# docs/ros2_and_python.md).
+# Without these, OmniGraph reports "Could not find node type interface" for every node and the
+# graphs quietly do nothing. isaacsim.ros2.bridge is C++, which is why ROS works at all inside
+# Isaac's interpreter -- see docs/ros2_and_python.md.
 REQUIRED_EXTENSIONS: tuple[str, ...] = (
     "omni.graph.action",
     "omni.graph.nodes",
@@ -133,9 +114,8 @@ REQUIRED_EXTENSIONS: tuple[str, ...] = (
 )
 
 
-def _json_safe_usd(value: Any) -> Any:  # noqa: ANN401
-    """
-    Convert any read USD attribute value into a JSON-serialisable form.
+def _json_safe_usd(value: Any) -> Any:
+    """Convert any read USD attribute value into a JSON-serialisable form.
 
     Scalars (bool/int/float/str) pass through; Gf vectors and quaternions become lists;
     anything else is stringified. ``None`` stays ``None``.
@@ -154,9 +134,8 @@ def _json_safe_usd(value: Any) -> Any:  # noqa: ANN401
     return str(value)
 
 
-def _usd_value_to_list(value: Any) -> list[float] | None:  # noqa: ANN401
-    """
-    Convert a USD attribute value into a JSON-serialisable list of floats.
+def _usd_value_to_list(value: Any) -> list[float] | None:
+    """Convert a USD attribute value into a JSON-serialisable list of floats.
 
     ``Gf.Vec3d`` is iterable but ``Gf.Quatd`` is not -- it exposes ``GetReal()`` and
     ``GetImaginary()`` instead -- so a single ``[float(v) for v in ...]`` raises
@@ -194,6 +173,8 @@ class _CaptureRequest:
     original: tuple[int, int] = (0, 0)
     used: tuple[int, int] = (0, 0)
     render_product: str | None = None
+    viewport: Any = None
+    viewport_size: tuple[int, int] = (0, 0)
     result: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     done: threading.Event = field(default_factory=threading.Event)
@@ -209,8 +190,7 @@ class _GimbalTarget:
 
 
 def _as_mapping(params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-    """
-    Return JSON-RPC params as a mapping.
+    """Return JSON-RPC params as a mapping.
 
     Args:
         params: The raw params.
@@ -230,8 +210,7 @@ def _as_mapping(params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
 
 
 def _optional_positive_int(values: dict[str, Any], name: str) -> int | None:
-    """
-    Read an optional positive integer from params.
+    """Read an optional positive integer from params.
 
     Args:
         values: The params mapping.
@@ -255,33 +234,50 @@ def _optional_positive_int(values: dict[str, Any], name: str) -> int | None:
     return parsed
 
 
-def _optional_float(values: dict[str, Any], name: str, fallback: float) -> float:
-    """
-    Read a named float from params, falling back when absent.
+def _optional_float(
+    values: dict[str, Any],
+    name: str,
+    fallback: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    """Read a named float from params, falling back when absent.
 
     Args:
         values: The params mapping.
         name: Parameter name.
         fallback: Value to use when the parameter is absent.
+        minimum: Optional inclusive lower bound.
+        maximum: Optional inclusive upper bound.
 
     Returns:
         The parsed float.
 
     Raises:
-        InvalidParamsError: If present but not a number.
+        InvalidParamsError: If present but not a finite number, or outside the given bounds.
 
     """
     if name not in values or values[name] is None:
         return fallback
     try:
-        return float(values[name])
+        parsed = float(values[name])
     except (TypeError, ValueError) as exc:
         raise InvalidParamsError(f"{name} must be a number") from exc
+    # float("nan") and float("inf") both parse cleanly, so without this a NaN latitude reached the
+    # packet encoder and the stage. The config path has always range-checked lat/lon; this is the
+    # live RPC path, which did not.
+    if not math.isfinite(parsed):
+        raise InvalidParamsError(f"{name} must be finite, got {values[name]!r}")
+    if minimum is not None and parsed < minimum:
+        raise InvalidParamsError(f"{name} must be >= {minimum}, got {parsed}")
+    if maximum is not None and parsed > maximum:
+        raise InvalidParamsError(f"{name} must be <= {maximum}, got {parsed}")
+    return parsed
 
 
 def _claim_capture_output(target: Path) -> bool:
-    """
-    Move Isaac's suffixed capture file to the path the caller asked for.
+    """Move Isaac's suffixed capture file to the path the caller asked for.
 
     Kit names captures after the render variable, so a request for ``shot.png`` lands as
     ``shot_LdrColorSD.png``. Returning that name to the caller would break the obvious next step
@@ -309,8 +305,7 @@ def _claim_capture_output(target: Path) -> bool:
 
 
 def _encode_pose_packet(pose: dict[str, float]) -> bytes:
-    """
-    Build the 51-byte UDP pose packet for a pose given in degrees.
+    """Build the 51-byte UDP pose packet for a pose given in degrees.
 
     Uses the shared wire contract rather than a private layout, so this cannot drift from what the
     receiver expects. Angles are converted to the radians the wire carries -- the degrees/radians
@@ -337,8 +332,7 @@ def _encode_pose_packet(pose: dict[str, float]) -> bytes:
 
 
 class SimulationRuntime:
-    """
-    Isaac Sim application lifecycle and step loop.
+    """Isaac Sim application lifecycle and step loop.
 
     Designed as a context manager::
 
@@ -348,8 +342,7 @@ class SimulationRuntime:
     """
 
     def __init__(self, config: IsaacCoreConfig, plan: FeaturePlan) -> None:
-        """
-        Initialise the runtime.
+        """Initialise the runtime.
 
         The ``SimulationApp`` is NOT created here -- it is created in
         :meth:`start` so that callers have full control over when the heavy
@@ -402,8 +395,7 @@ class SimulationRuntime:
         return self._running
 
     def _apply_ros_domain(self) -> None:
-        """
-        Export ``ROS_DOMAIN_ID`` when the config sets one explicitly.
+        """Export ``ROS_DOMAIN_ID`` when the config sets one explicitly.
 
         The ROS 2 bridge's context node reads ``$ROS_DOMAIN_ID`` (``useDomainIDEnvVar`` is
         on by default), so exporting here before the bridge starts is what makes
@@ -425,8 +417,7 @@ class SimulationRuntime:
         logger.info("exported ROS_DOMAIN_ID=%d from config", domain_id)
 
     def start(self) -> None:
-        """
-        Create the SimulationApp, open the stage, and start the control server.
+        """Create the SimulationApp, open the stage, and start the control server.
 
         Call this AFTER the SimulationApp launch config has been set (in
         ``__main__``). The SimulationApp import triggers Kit initialisation.
@@ -434,11 +425,8 @@ class SimulationRuntime:
         self._apply_ros_domain()
 
         if self._config.cesium.delete_cache_on_launch:
-            # Must happen before the app starts: cesium.omniverse is a boot extension and
-            # opens the request-cache sqlite during Kit init. Deleting it afterwards, while
-            # Cesium holds it open, produced intermittent "disk I/O error" log spam. Doing
-            # it here, before the app exists, means the files are simply absent when Cesium
-            # first opens them and it recreates them cleanly.
+            # Before the app starts: Cesium opens the request-cache sqlite during Kit init, and
+            # deleting it while held open produced intermittent "disk I/O error" spam.
             from isaac_core.sim.composer import delete_cesium_cache
 
             delete_cesium_cache()
@@ -474,8 +462,7 @@ class SimulationRuntime:
             logger.info("control plane disabled by configuration")
 
     def _silence_warp_banner(self) -> None:
-        """
-        Set Warp's ``quiet`` flag before Warp initialises, when Isaac logs are off.
+        """Set Warp's ``quiet`` flag before Warp initialises, when Isaac logs are off.
 
         Warp prints a multi-line "Warp <version> initialized: ... Devices: ..." banner to
         stdout the first time it initialises, guarded solely by ``warp.config.quiet`` -- there
@@ -502,8 +489,7 @@ class SimulationRuntime:
 
     @contextlib.contextmanager
     def _suppressed_startup_stdout(self) -> "Iterator[None]":
-        """
-        Redirect POSIX stdout to the null device for the duration of the block.
+        """Redirect POSIX stdout to the null device for the duration of the block.
 
         This is the only lever that catches the launcher banners Isaac's ``SimulationApp``
         prints with plain ``print()`` and the lines Kit's C++ startup writes to the process's
@@ -533,8 +519,7 @@ class SimulationRuntime:
             os.close(null_fd)
 
     def _set_viewport_camera(self) -> None:
-        """
-        Point the main viewport at the configured camera, when running with a GUI.
+        """Point the main viewport at the configured camera, when running with a GUI.
 
         Skipped when headless, where there is no viewport to retarget, and skipped if the
         prim does not exist so a scene without that camera still runs.
@@ -543,7 +528,7 @@ class SimulationRuntime:
         if self._config.sim.headless or not template:
             return
 
-        instance = next(iter(self._config.vehicles))
+        instance = self._config.first_vehicle_id
         camera_path = template.replace("{instance}", instance)
 
         omni_usd = importlib.import_module("omni.usd")
@@ -565,9 +550,71 @@ class SimulationRuntime:
         viewport.camera_path = camera_path
         logger.info("viewport looking through %s", camera_path)
 
-    def _quiet_noisy_loggers(self) -> None:
+        self._open_extra_vehicle_viewports(viewport_utils, template)
+
+    def _open_extra_vehicle_viewports(self, viewport_utils: Any, template: str) -> None:
+        """Open one viewport window per additional vehicle, so Cesium streams their terrain.
+
+        Cesium for Omniverse decides which tiles to stream by iterating
+        ``get_viewport_window_instances()`` and reading each one's view and projection matrix. An
+        offscreen render product is invisible to it, so a camera without a viewport sees only the
+        tiles some *other* camera happened to pull in -- the image publishes, but the ground under it
+        is missing or stale.
+
+        The first vehicle uses the main viewport, so only the rest need windows. Isaac's
+        ``IsaacCreateRenderProduct`` reuses a render product that already targets the same camera at
+        the same resolution, so this does not add a second render pass per camera.
+
+        Args:
+            viewport_utils: The imported ``omni.kit.viewport.utility`` module.
+            template: The ``sim.viewport_camera`` template, with ``{instance}`` to substitute.
+
         """
-        Raise the level of Isaac's chattiest Python loggers.
+        extra = list(self._config.vehicles)[1:]
+        if not extra:
+            return
+        omni_usd = importlib.import_module("omni.usd")
+        stage = omni_usd.get_context().get_stage()
+        for vehicle_id in extra:
+            camera_path = template.replace("{instance}", vehicle_id)
+            if stage is None or not stage.GetPrimAtPath(camera_path).IsValid():
+                logger.warning("no camera at %s; %s gets no viewport", camera_path, vehicle_id)
+                continue
+            width, height = self._viewport_size_for(vehicle_id)
+            try:
+                viewport_utils.create_viewport_window(
+                    name=vehicle_id,
+                    width=width,
+                    height=height,
+                    camera_path=camera_path,
+                )
+            except Exception:
+                logger.exception("could not open a viewport for %s; its terrain may not stream", vehicle_id)
+                continue
+            logger.info("opened viewport %r looking through %s", vehicle_id, camera_path)
+
+    def _viewport_size_for(self, vehicle_id: str) -> tuple[int, int]:
+        """Return the pixel size to open a vehicle's viewport at.
+
+        Matching the camera's configured resolution is what lets Isaac reuse one render product for
+        both the viewport and the image topic.
+
+        Args:
+            vehicle_id: Key in ``vehicles``.
+
+        Returns:
+            ``(width, height)`` for the viewport window.
+
+        """
+        cameras = self._config.vehicles[vehicle_id].cameras
+        if not cameras:
+            return (1280, 720)
+        camera = cameras[next(iter(cameras))]
+        width, height = camera.resolution
+        return (int(width), int(height))
+
+    def _quiet_noisy_loggers(self) -> None:
+        """Raise the level of Isaac's chattiest Python loggers.
 
         Only takes effect if called after the extensions have loaded: each sets its own
         level on the way up, overwriting anything configured earlier. `ogn_registration`
@@ -580,8 +627,7 @@ class SimulationRuntime:
         logger.debug("quieted %d Isaac loggers", len(self._config.logging.quiet_loggers))
 
     def _resolve_experience(self) -> str:
-        """
-        Resolve the configured Kit experience to a path SimulationApp accepts.
+        """Resolve the configured Kit experience to a path SimulationApp accepts.
 
         Args:
             None.
@@ -617,8 +663,7 @@ class SimulationRuntime:
         return str(resolved)
 
     def _kit_startup_args(self) -> list[str]:
-        """
-        Build the Kit startup arguments: extension folders, boot enables and log levels.
+        """Build the Kit startup arguments: extension folders, boot enables and log levels.
 
         Only existing directories are included: a missing path is a machine difference,
         not an error, and passing a nonexistent folder makes Kit complain on every launch.
@@ -639,12 +684,30 @@ class SimulationRuntime:
         for extension in self._config.sim.boot_extensions:
             args.extend(["--enable", extension])
 
+        args.extend(self._default_viewport_name_args())
         args.extend(self._log_level_args())
         return args
 
-    def _log_level_args(self) -> list[str]:
+    def _default_viewport_name_args(self) -> list[str]:
+        """Return no viewport-name arguments: Kit's startup window must stay called "Viewport".
+
+        Renaming it after the first vehicle looked tidier -- every other window carries its vehicle
+        id -- but ``omni.kit.viewport_widgets_manager`` looks the window up by the literal string
+        "Viewport" (``manager.py``: ``get_active_viewport_window(window_name="Viewport")``). Renaming
+        it makes that return ``None`` and the extension dies during startup with
+        ``AttributeError: 'NoneType' object has no attribute 'get_frame'`` on every launch.
+
+        Kept as a function rather than deleted so the reason is recorded where someone would
+        otherwise re-add the argument.
+
+        Returns:
+            Always empty.
+
         """
-        Build Kit logging arguments honouring ``logging.isaac_logs``.
+        return []
+
+    def _log_level_args(self) -> list[str]:
+        """Build Kit logging arguments honouring ``logging.isaac_logs``.
 
         Kit's log level has to be set as a startup argument. Setting it later still leaves
         the thousands of lines it prints while loading extensions, which is exactly the
@@ -666,8 +729,7 @@ class SimulationRuntime:
         ]
 
     def _enable_required_extensions(self) -> None:
-        """
-        Enable the Kit extensions the composed stages depend on.
+        """Enable the Kit extensions the composed stages depend on.
 
         Without this, OmniGraph loads a stage and reports
         ``Could not find node type interface for ...`` for every node -- our own and
@@ -700,8 +762,7 @@ class SimulationRuntime:
         logger.debug("warmed up %d frames after enabling extensions", EXTENSION_WARMUP_FRAMES)
 
     def open_stage(self, scene_path: Path, layer_search_paths: tuple[Path, ...]) -> None:
-        """
-        Open the scene and compose feature layers.
+        """Open the scene and compose feature layers.
 
         Args:
             scene_path: Path to the base scene USD.
@@ -728,8 +789,7 @@ class SimulationRuntime:
         self._set_viewport_camera()
 
     def run(self) -> None:
-        """
-        Enter the simulation step loop.
+        """Enter the simulation step loop.
 
         Block until the application shuts down or :meth:`stop` is called.
 
@@ -741,7 +801,7 @@ class SimulationRuntime:
         Isaac's own standalone examples use.
 
         The loop deliberately runs while the *application* runs, not while the
-        timeline is playing. The previous generation gated on ``is_playing()``, so
+        timeline is playing. Gating on ``is_playing()`` would mean
         pausing terminated the process; here a pause leaves the loop turning and the
         control plane responsive, which is what makes remote ``pause``/``resume``
         useful.
@@ -772,9 +832,8 @@ class SimulationRuntime:
             self._running = False
             logger.info("simulation stopped")
 
-    def _pump(self, app_utils: Any, frames: int) -> None:  # noqa: ANN401
-        """
-        Advance the application a fixed number of frames.
+    def _pump(self, app_utils: Any, frames: int) -> None:
+        """Advance the application a fixed number of frames.
 
         Used to let subsystems finish initialising at points where a stage operation would
         otherwise race them -- see :data:`EXTENSION_WARMUP_FRAMES`.
@@ -796,16 +855,15 @@ class SimulationRuntime:
                 return
             try:
                 task.result = task.call()
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:
                 # Held and re-raised in the requesting thread: a handler bug must not
                 # take down the step loop, and the caller needs the real error.
                 task.error = exc
             finally:
                 task.done.set()
 
-    def _on_main_thread(self, call: "Callable[[], Any]") -> Any:  # noqa: ANN401
-        """
-        Run ``call`` on the step-loop thread and return its result.
+    def _on_main_thread(self, call: "Callable[[], Any]") -> Any:
+        """Run ``call`` on the step-loop thread and return its result.
 
         Args:
             call: Zero-argument callable touching USD, Fabric or the Kit application.
@@ -861,7 +919,6 @@ class SimulationRuntime:
         self._control_server.register("get_pose", self._handle_get_pose)
         self._control_server.register("set_gimbal", self._handle_set_gimbal)
         self._control_server.register("set_pose", self._handle_set_pose)
-        self._control_server.register("load_scene", self._handle_load_scene)
         self._control_server.register("get_state", self._handle_get_state)
         self._control_server.register("get_capabilities", self._handle_get_capabilities)
         self._control_server.register("get_config", self._handle_get_config)
@@ -871,8 +928,6 @@ class SimulationRuntime:
         self._control_server.register("capture_frame", self._handle_capture_frame)
         self._control_server.register("set_config", self._handle_set_config)
         self._control_server.register("reset", self._handle_reset)
-        self._control_server.register("enable_feature", self._handle_enable_feature)
-        self._control_server.register("disable_feature", self._handle_disable_feature)
         self._control_server.register("get_runtime_values", self._handle_get_runtime_values)
         self._control_server.register("read_prim_attribute", self._handle_read_prim_attribute)
         self._control_server.start()
@@ -881,9 +936,8 @@ class SimulationRuntime:
         """Respond to a ping request."""
         return "pong"
 
-    def _stage(self) -> Any:  # noqa: ANN401
-        """
-        Return the currently open USD stage, or ``None``.
+    def _stage(self) -> Any:
+        """Return the currently open USD stage, or ``None``.
 
         Returns:
             The stage, or ``None`` before one is open.
@@ -894,8 +948,7 @@ class SimulationRuntime:
 
     @property
     def _frame_dt_s(self) -> float:
-        """
-        Return the per-frame timestep used for slewing.
+        """Return the per-frame timestep used for slewing.
 
         Uses the configured physics dt rather than measured wall time so a commanded slew takes
         the same number of simulated seconds regardless of how fast the machine renders.
@@ -903,8 +956,7 @@ class SimulationRuntime:
         return float(self._config.sim.physics_dt)
 
     def _resolve_gimbal_prim(self) -> None:
-        """
-        Locate the prim carrying the gimbal offset inputs, once.
+        """Locate the prim carrying the gimbal offset inputs, once.
 
         Resolved from the first vehicle's mount rather than hardcoded, so a renamed vehicle still
         works. Left as ``None`` when the pose graph is absent, which simply makes ``set_gimbal``
@@ -912,7 +964,7 @@ class SimulationRuntime:
         """
         if self._gimbal_prim_path is not None:
             return
-        vehicle_id = next(iter(self._config.vehicles))
+        vehicle_id = self._config.first_vehicle_id
         mount = self._config.resolved_mount(vehicle_id)
         candidate = f"{mount}/PoseSync/global_position_to_local_position"
         stage = self._stage()
@@ -924,8 +976,7 @@ class SimulationRuntime:
             logger.debug("gimbal offsets resolved to %s", candidate)
 
     def _write_float_attribute(self, prim_path: str, attribute: str, value: float) -> None:
-        """
-        Write one float attribute on the simulation thread.
+        """Write one float attribute on the simulation thread.
 
         Args:
             prim_path: Absolute prim path.
@@ -944,9 +995,37 @@ class SimulationRuntime:
         if attr.IsValid():
             attr.Set(float(value))
 
-    def _handle_set_gimbal(self, params: dict[str, Any] | list[Any] | None) -> dict[str, float]:
+    def _require_single_vehicle(self, method: str) -> str:
+        """Return the only vehicle's id, or reject the call when several are configured.
+
+        The gimbal and frame capture act on the first configured vehicle. With a
+        swarm that silently aimed or photographed the *first* vehicle while reporting success, which
+        is worse than refusing: a script asking for ``wing`` got ``lead`` and no warning. Per-vehicle
+        gimbal state and camera selection are roadmapped; until then the call fails and says so.
+
+        Args:
+            method: The wire method name, for the error message.
+
+        Returns:
+            The single configured vehicle's id.
+
+        Raises:
+            InvalidParamsError: If more than one vehicle is configured.
+
         """
-        Aim the gimbal at a new attitude, slewing there if a rate limit is configured.
+        vehicles = list(self._config.vehicles)
+        if len(vehicles) > 1:
+            message = (
+                f"{method} supports a single vehicle only, but {len(vehicles)} are configured "
+                f"({', '.join(vehicles)}). It would have acted on {vehicles[0]!r} without saying so. "
+                f"Run one vehicle, or point the viewport with sim.viewport_camera and capture from "
+                f"the image topic instead. Per-vehicle support is tracked in docs/dev/roadmap.md."
+            )
+            raise InvalidParamsError(message)
+        return vehicles[0]
+
+    def _handle_set_gimbal(self, params: dict[str, Any] | list[Any] | None) -> dict[str, float]:
+        """Aim the gimbal at a new attitude, slewing there if a rate limit is configured.
 
         Only records the target. The prim writes happen on the simulation loop, which is the one
         thread allowed to touch USD -- so this handler never needs the main-thread task queue and
@@ -963,7 +1042,7 @@ class SimulationRuntime:
 
         """
         values = _as_mapping(params)
-        gimbal = self._config.vehicles[next(iter(self._config.vehicles))].gimbal
+        gimbal = self._config.vehicles[self._require_single_vehicle("set_gimbal")].gimbal
         held = self._gimbal_current.to_degrees() if self._gimbal_current is not None else None
         current = _GimbalTarget(
             roll_deg=held[0] if held else gimbal.start_roll_deg,
@@ -985,8 +1064,7 @@ class SimulationRuntime:
         return {"roll_deg": target.roll_deg, "pitch_deg": target.pitch_deg, "yaw_deg": target.yaw_deg}
 
     def _step_pending_play(self) -> None:
-        """
-        Press play if a reset asked for it on a previous frame.
+        """Press play if a reset asked for it on a previous frame.
 
         Separated from the reset handler because Kit ignores ``play()`` issued in the same frame as
         ``stop()``, which left a reset simulation stopped.
@@ -999,8 +1077,7 @@ class SimulationRuntime:
         logger.info("reset: timeline resumed")
 
     def _step_gimbal(self) -> None:
-        """
-        Move the gimbal one frame's worth toward its target.
+        """Move the gimbal one frame's worth toward its target.
 
         Called every frame from the simulation loop. Does nothing until a target has been
         commanded, so a run that never touches the gimbal pays nothing and leaves the config's
@@ -1016,13 +1093,12 @@ class SimulationRuntime:
         limit = self._gimbal_max_rate_deg_s()
         target_angles = GimbalAngles.from_degrees(target.roll_deg, target.pitch_deg, target.yaw_deg)
         if self._gimbal_current is None:
-            gimbal = self._config.vehicles[next(iter(self._config.vehicles))].gimbal
+            gimbal = self._config.vehicles[self._config.first_vehicle_id].gimbal
             self._gimbal_current = GimbalAngles.from_degrees(
                 gimbal.start_roll_deg, gimbal.start_pitch_deg, gimbal.start_yaw_deg
             )
         else:
-            # A rate of None means unlimited, matching the config default and the previous
-            # generation's unconditional snap.
+            # A rate of None means unlimited, matching the config default: the gimbal snaps.
             rate_r_s = math.radians(limit) if limit is not None else 0.0
             self._gimbal_current = slew_towards(self._gimbal_current, target_angles, rate_r_s, self._frame_dt_s)
 
@@ -1039,8 +1115,7 @@ class SimulationRuntime:
             logger.debug("gimbal reached target")
 
     def _handle_get_pose(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-        """
-        Return the live local transform of a vehicle's moved prim.
+        """Return the live local transform of a vehicle's moved prim.
 
         Reads what the pose graph has actually written, which is the only way to
         confirm from outside the process that UDP or ROS input is reaching the stage.
@@ -1064,8 +1139,7 @@ class SimulationRuntime:
         return result
 
     def _read_prim_transform(self, prim_path: str) -> dict[str, Any]:
-        """
-        Read a prim's translate and orient from the stage.
+        """Read a prim's translate and orient from the stage.
 
         Must run on the step-loop thread -- see :class:`_MainThreadTask`.
 
@@ -1093,8 +1167,7 @@ class SimulationRuntime:
         return transform
 
     def _handle_read_prim_attribute(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-        """
-        Read one live attribute value off a prim in the running stage.
+        """Read one live attribute value off a prim in the running stage.
 
         The general "read what is actually there" primitive: given a prim path and an
         attribute name, return the value currently on the stage, not what config asked for.
@@ -1115,8 +1188,7 @@ class SimulationRuntime:
         return {"prim": prim_path, "attribute": attribute, "value": value}
 
     def _handle_get_runtime_values(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-        """
-        Return the effective values actually applied on the running stage.
+        """Return the effective values actually applied on the running stage.
 
         Reads the real attribute values off the composed prims -- port, rotation frame,
         topic names, camera intrinsics, tileset URLs -- rather than echoing config, so an
@@ -1130,7 +1202,7 @@ class SimulationRuntime:
             A dict of live values, or an ``error`` entry.
 
         """
-        vehicle_id = next(iter(self._config.vehicles))
+        vehicle_id = self._config.first_vehicle_id
         if isinstance(params, dict) and "vehicle" in params:
             vehicle_id = str(params["vehicle"])
         mount = self._config.resolved_mount(vehicle_id)
@@ -1140,9 +1212,8 @@ class SimulationRuntime:
         )
         return values
 
-    def _read_attr(self, prim_path: str, attribute: str) -> Any:  # noqa: ANN401
-        """
-        Read a single attribute value from the stage, JSON-serialisable. Main-thread only.
+    def _read_attr(self, prim_path: str, attribute: str) -> Any:
+        """Read a single attribute value from the stage, JSON-serialisable. Main-thread only.
 
         Args:
             prim_path: Absolute prim path.
@@ -1163,8 +1234,7 @@ class SimulationRuntime:
         return _json_safe_usd(attr.Get()) if attr.IsValid() else None
 
     def _read_runtime_values(self, vehicle_id: str, mount: str, tilesets_root: str) -> dict[str, Any]:
-        """
-        Read the curated set of effective values off the stage. Main-thread only.
+        """Read the curated set of effective values off the stage. Main-thread only.
 
         Args:
             vehicle_id: The vehicle to report.
@@ -1180,7 +1250,7 @@ class SimulationRuntime:
         if stage is None:
             return {"error": "no stage open"}
 
-        def rd(prim_path: str, attribute: str) -> Any:  # noqa: ANN401
+        def rd(prim_path: str, attribute: str) -> Any:
             prim = stage.GetPrimAtPath(prim_path)
             if not prim.IsValid():
                 return None
@@ -1216,8 +1286,7 @@ class SimulationRuntime:
         return values
 
     def _handle_get_state(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-        """
-        Return the current simulation state.
+        """Return the current simulation state.
 
         ``ready`` is the field a client should wait on. The control plane starts listening
         *before* the stage is composed, so a connectable port means only "the process is alive":
@@ -1250,11 +1319,11 @@ class SimulationRuntime:
 
     def _handle_get_config(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
         """Return the current config as a dict."""
-        return self._config.model_dump(mode="json")  # type: ignore[no-any-return]
+        dumped: dict[str, Any] = self._config.model_dump(mode="json")
+        return dumped
 
     def _handle_pause(self, params: dict[str, Any] | list[Any] | None) -> str:
-        """
-        Pause the simulation.
+        """Pause the simulation.
 
         The pause goes through the step loop, not the control server's thread. ``pause`` is a
         thin wrapper over ``omni.timeline``, and a timeline transition fires Isaac's own
@@ -1276,8 +1345,7 @@ class SimulationRuntime:
         return "paused"
 
     def _handle_resume(self, params: dict[str, Any] | list[Any] | None) -> str:
-        """
-        Resume the simulation.
+        """Resume the simulation.
 
         Dispatched to the step loop for the same reason as :meth:`_handle_pause`: ``play``
         wraps ``omni.timeline`` and its transition invokes Isaac extension callbacks that need
@@ -1298,8 +1366,7 @@ class SimulationRuntime:
         return "resumed"
 
     def _handle_step(self, params: dict[str, Any] | list[Any] | None) -> str:
-        """
-        Advance the simulation by ``count`` frames.
+        """Advance the simulation by ``count`` frames.
 
         The frames are pumped inside a single queued main-thread task rather than spread across
         ``count`` loop iterations like the capture state machine. ``step`` is a synchronous
@@ -1330,8 +1397,8 @@ class SimulationRuntime:
             return "stepped"
         app_utils = self._app_utils
 
-        def _pump() -> None:
-            """Advance the simulation ``count`` frames on the loop thread."""
+        def _advance_frames() -> None:
+            """Advance the simulation ``count`` frames on the loop thread, timeline included."""
             timeline = importlib.import_module("omni.timeline").get_timeline_interface()
             # `update_app` renders a frame but does NOT advance a paused timeline, so stepping
             # while paused appeared to do nothing at all -- which is exactly when stepping is
@@ -1343,16 +1410,15 @@ class SimulationRuntime:
                     timeline.forward_one_frame()
                 app_utils.update_app()
 
-        self._on_main_thread(_pump)
+        self._on_main_thread(_advance_frames)
         return "stepped"
 
     def _handle_capture_frame(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-        """
-        Capture the camera's current frame to an image on disk.
+        """Capture the camera's current frame to an image on disk.
 
-        This is 2023's ``--sat``, moved off ROS because a capture is a *command*, not telemetry
-        (D20). ``width``/``height`` capture at a resolution independent of the viewport -- which
-        2023 could not do -- by resizing the render product for the shot and restoring it after.
+        A capture is a command rather than telemetry, so it lives here and not on a topic.
+        ``width``/``height`` capture at a resolution independent of the viewport by resizing the
+        render product for the shot and restoring it after.
 
         The work is driven by the simulation loop across several frames rather than done inline,
         because changing the resolution needs frames to converge and the capture itself writes
@@ -1367,12 +1433,13 @@ class SimulationRuntime:
             The absolute path written and the resolution actually captured.
 
         Raises:
-            InvalidParamsError: If ``path`` is missing, only one dimension is given, or a
-                dimension is not a positive integer.
+            InvalidParamsError: If ``path`` is missing, only one dimension is given, a
+                dimension is not a positive integer, or more than one vehicle is configured.
             RuntimeError: If the capture does not complete, or no viewport exists.
 
         """
-        from isaac_core.control.server import confine_path  # noqa: PLC0415
+        self._require_single_vehicle("capture_frame")
+        from isaac_core.control.server import confine_path
 
         values = _as_mapping(params)
         if "path" not in values:
@@ -1396,8 +1463,7 @@ class SimulationRuntime:
         return request.result
 
     def _step_capture(self) -> None:
-        """
-        Advance an in-flight capture by one frame.
+        """Advance an in-flight capture by one frame.
 
         Each state transition happens on a *different* loop iteration, which is what lets the
         renderer converge at a new resolution and the asynchronous file write land without ever
@@ -1408,15 +1474,38 @@ class SimulationRuntime:
             return
         try:
             self._advance_capture(request)
-        except Exception as exc:  # noqa: BLE001 - report to the caller rather than kill the loop
+        except Exception as exc:
             logger.exception("capture failed")
+            # The render product is shared with the image topic and the RTSP stream, and capture
+            # resizes it. Restoring here as well as on the success path stops a failed capture
+            # leaving every consumer at capture resolution until the next launch.
+            self._restore_capture_resolution(request)
             request.error = str(exc)
             self._capture_request = None
             request.done.set()
 
-    def _advance_capture(self, request: _CaptureRequest) -> None:
+    def _restore_capture_resolution(self, request: _CaptureRequest) -> None:
+        """Put the render product back to the resolution it had before a capture.
+
+        Called on the error path as well as on success, because the product is shared with the image
+        topic and the RTSP stream: a failed capture must not leave every consumer resized.
+
+        Args:
+            request: The capture whose resolution change should be undone.
+
         """
-        Run one step of the capture state machine.
+        if request.used == request.original:
+            return
+        try:
+            if request.viewport is not None:
+                self._set_viewport_resolution(request.viewport, request.original[0], request.original[1])
+            self._set_render_product_node_resolution(request.original[0], request.original[1])
+            self._set_render_product_resolution(request.render_product, request.original[0], request.original[1])
+        except Exception:
+            logger.exception("could not restore the resolution after a capture")
+
+    def _advance_capture(self, request: _CaptureRequest) -> None:
+        """Run one step of the capture state machine.
 
         Args:
             request: The in-flight capture.
@@ -1438,7 +1527,14 @@ class SimulationRuntime:
                 int(v) for v in viewport.resolution
             )
             request.original = (original[0], original[1])
+            request.viewport = viewport
             if request.width is not None and request.height is not None:
+                # The render product this resolves is owned by a VIEWPORT (measured: the old design
+                # resolved ViewportTexture_0, the new one the Replicator product for the camera the
+                # main viewport is aimed at). A viewport re-asserts its own size, so the product has to
+                # be asked through the viewport, and the node that owns it has to agree.
+                self._set_viewport_resolution(viewport, request.width, request.height)
+                self._set_render_product_node_resolution(request.width, request.height)
                 self._set_render_product_resolution(request.render_product, request.width, request.height)
             request.stage = "settle"
             request.frames = 0
@@ -1446,9 +1542,11 @@ class SimulationRuntime:
 
         viewport = self._capture_viewport(utility)
         if request.stage == "settle":
-            if request.frames >= CAPTURE_SETTLE_FRAMES:
+            resizing = request.width is not None and request.height is not None
+            if request.frames >= (CAPTURE_RESIZE_SETTLE_FRAMES if resizing else CAPTURE_SETTLE_FRAMES):
                 used = self._render_product_resolution(request.render_product) or request.original
                 request.used = (used[0], used[1])
+                request.viewport_size = self._viewport_resolution(request.viewport)
                 utility.capture_viewport_to_file(
                     viewport,
                     file_path=str(request.target),
@@ -1460,29 +1558,47 @@ class SimulationRuntime:
 
         if request.stage == "await_file":
             if _claim_capture_output(request.target) or request.frames >= CAPTURE_WAIT_FRAMES:
-                if request.used != request.original:
-                    self._set_render_product_resolution(
-                        request.render_product, request.original[0], request.original[1]
-                    )
+                self._restore_capture_resolution(request)
                 request.stage = "finish"
                 request.frames = 0
             return
 
         if not request.target.exists():
             request.error = f"capture produced no file at {request.target}"
+        elif (
+            request.width is not None and request.height is not None and request.used != (request.width, request.height)
+        ):
+            # Reporting the achieved size as though it were the requested one is worse than failing:
+            # a caller asking for 4K and silently receiving 720p has no way to notice. The render
+            # product is shared with the viewport, which puts its own resolution back, so the resize
+            # does not stick. Tracked in docs/dev/roadmap.md.
+            request.error = (
+                f"capture wrote {request.used[0]}x{request.used[1]} but {request.width}x{request.height} "
+                f"was requested. Capture at the camera's resolution by omitting width and height, or set "
+                f"the camera's resolution in config. Diagnostics: render product "
+                f"{request.render_product!r} measured {request.used[0]}x{request.used[1]}, viewport "
+                f"measured {request.viewport_size[0]}x{request.viewport_size[1]}."
+            )
         else:
             request.result = {
                 "path": str(request.target),
                 "width": request.used[0],
                 "height": request.used[1],
+                # Reported so a caller -- and a system test -- can see WHICH product was captured and
+                # what it measured before and after. Without this the only symptom of a failed resize
+                # was a number that looked plausible.
+                "render_product": request.render_product or "",
+                "original_width": request.original[0],
+                "original_height": request.original[1],
+                "viewport_width": request.viewport_size[0],
+                "viewport_height": request.viewport_size[1],
             }
             logger.info("captured %dx%d frame to %s", request.used[0], request.used[1], request.target)
         self._capture_request = None
         request.done.set()
 
     def _render_product_resolution(self, render_product: str | None) -> tuple[int, int] | None:
-        """
-        Read a render product's pixel resolution.
+        """Read a render product's pixel resolution.
 
         Args:
             render_product: The render product prim path, or ``None``.
@@ -1506,9 +1622,71 @@ class SimulationRuntime:
             return None
         return int(value[0]), int(value[1])
 
-    def _set_render_product_resolution(self, render_product: str | None, width: int, height: int) -> None:
+    def _set_viewport_resolution(self, viewport: Any, width: int, height: int) -> None:
+        """Ask a viewport to render at a given size.
+
+        Args:
+            viewport: The viewport API object.
+            width: Width in pixels.
+            height: Height in pixels.
+
         """
-        Resize a render product so a capture can be taken at an arbitrary resolution.
+        if viewport is None:
+            return
+        try:
+            viewport.resolution = (int(width), int(height))
+        except Exception:
+            logger.exception("could not set the viewport resolution to %dx%d", width, height)
+
+    def _viewport_resolution(self, viewport: Any) -> tuple[int, int]:
+        """Return a viewport's current pixel size, or ``(0, 0)`` when unavailable.
+
+        Args:
+            viewport: The viewport API object.
+
+        Returns:
+            ``(width, height)``.
+
+        """
+        if viewport is None:
+            return (0, 0)
+        try:
+            size = tuple(int(v) for v in viewport.resolution)
+        except Exception:
+            return (0, 0)
+        return (size[0], size[1])
+
+    def _render_product_node_path(self) -> str:
+        """Return the prim path of the node that owns this camera's render product."""
+        mount = self._config.resolved_mount(self._config.first_vehicle_id)
+        return f"{mount}/CameraImageExport/{RENDER_PRODUCT_NODE_NAME}"
+
+    def _set_render_product_node_resolution(self, width: int, height: int) -> None:
+        """Ask the render-product node to render at a given size.
+
+        The node reconciles its product when these inputs change, which is the only way the change
+        sticks: setting the product's ``resolution`` attribute directly leaves the node's own state
+        unchanged, so it never reconciles and the next frame is back at the configured size.
+
+        Args:
+            width: Width in pixels.
+            height: Height in pixels.
+
+        """
+        try:
+            og = importlib.import_module("omni.graph.core")
+        except ImportError:
+            return
+        node_path = self._render_product_node_path()
+        try:
+            node = og.Controller.node(node_path)
+            og.Controller.set(node.get_attribute("inputs:width"), int(width))
+            og.Controller.set(node.get_attribute("inputs:height"), int(height))
+        except Exception:
+            logger.exception("could not set %s to %dx%d", node_path, width, height)
+
+    def _set_render_product_resolution(self, render_product: str | None, width: int, height: int) -> None:
+        """Resize a render product so a capture can be taken at an arbitrary resolution.
 
         Resizing the render product rather than the viewport widget is what actually changes the
         captured image: the capture reads the render product, so changing only the widget left a
@@ -1535,14 +1713,16 @@ class SimulationRuntime:
             attr.Set(gf.Vec2i(int(width), int(height)))
 
     def _camera_render_product(self) -> str | None:
-        """
-        Return the camera layer's render product path, or ``None``.
+        """Return the camera layer's render product path, or ``None``.
 
         Read off the graph rather than guessed, because it is created at runtime by
-        ``isaac_get_viewport_render_product``. In headless mode the *active* viewport has no
-        colour resource to capture -- Kit reports "Capture of LdrColor was requested, but no valid
+        ``isaac_create_render_product``. In headless mode the *active* viewport has no colour
+        resource to capture -- Kit reports "Capture of LdrColor was requested, but no valid
         resource!" -- while this render product is the one actually rendering, since it is what
         feeds the image topic.
+
+        The node name must match the camera layers; ``tests/unit/sim/test_capture_frame.py``
+        asserts it against the shipped USD so a layer rename cannot silently disable capture.
 
         Returns:
             The render product path, or ``None`` when the camera graph is absent.
@@ -1552,20 +1732,19 @@ class SimulationRuntime:
             og = importlib.import_module("omni.graph.core")
         except ImportError:
             return None
-        vehicle_id = next(iter(self._config.vehicles))
+        vehicle_id = self._config.first_vehicle_id
         mount = self._config.resolved_mount(vehicle_id)
-        node_path = f"{mount}/CameraImageExport/isaac_get_viewport_render_product"
+        node_path = f"{mount}/CameraImageExport/{RENDER_PRODUCT_NODE_NAME}"
         try:
             node = og.Controller.node(node_path)
             value = og.Controller.get(node.get_attribute("outputs:renderProductPath"))
-        except Exception:  # noqa: BLE001 - OmniGraph raises bare errors for a missing node
+        except Exception:
             return None
         text = str(value).strip()
         return text or None
 
-    def _capture_viewport(self, utility: Any) -> Any:  # noqa: ANN401
-        """
-        Return the viewport showing the vehicle camera, or the active one.
+    def _capture_viewport(self, utility: Any) -> Any:
+        """Return the viewport showing the vehicle camera, or the active one.
 
         Args:
             utility: The imported ``omni.kit.viewport.utility`` module.
@@ -1576,48 +1755,19 @@ class SimulationRuntime:
         """
         wanted = self._config.sim.viewport_camera
         if wanted:
-            vehicle_id = next(iter(self._config.vehicles))
+            vehicle_id = self._config.first_vehicle_id
             wanted = render(wanted, instance=vehicle_id, mount=self._config.resolved_mount(vehicle_id))
             try:
                 for window in utility.get_viewport_window_instances() or ():
                     api = getattr(window, "viewport_api", None)
                     if api is not None and str(getattr(api, "camera_path", "")) == wanted:
                         return api
-            except Exception:  # noqa: BLE001 - the utility raises bare errors with no windows
+            except Exception:
                 pass
         return utility.get_active_viewport()
 
-    def _handle_load_scene(self, params: dict[str, Any] | list[Any] | None) -> str:
-        """
-        Swap the open scene at runtime.
-
-        Registered so the call fails with an explanation rather than "method not found", which
-        reads like a version mismatch between client and simulator.
-
-        Deferred deliberately, with a concrete reason: swapping the scene means closing a stage
-        that Cesium, the ROS bridge and several OmniGraph graphs all hold references to. Every
-        stage-lifecycle shortcut tried so far in this project has produced a silent abort rather
-        than an error -- the startup warm-up frames exist because of exactly that. Restarting the
-        process is currently the safe way to change scene.
-
-        Args:
-            params: Ignored.
-
-        Raises:
-            NotImplementedError: Always.
-
-        """
-        del params
-        message = (
-            "load_scene is not implemented: swapping the stage at runtime means closing one that "
-            "Cesium, the ROS bridge and the action graphs still reference, which aborts the "
-            "process rather than erroring. Restart the simulator with a different sim.scene."
-        )
-        raise NotImplementedError(message)
-
     def _handle_set_config(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-        """
-        Patch a runtime-mutable config value.
+        """Patch a runtime-mutable config value.
 
         The patchable set is an explicit allowlist, not a general deep-merge, and it is short by
         design. Most config is applied **once** at composition -- a binding writes it to a prim and
@@ -1638,7 +1788,12 @@ class SimulationRuntime:
         """
         values = _as_mapping(params)
         if "key" not in values or "value" not in values:
-            raise InvalidParamsError("set_config requires params.key and params.value")
+            allowed = ", ".join(sorted(PATCHABLE_CONFIG_KEYS))
+            message = (
+                "set_config takes params.key and params.value, for example "
+                f'{{"key": "gimbal.max_rate_deg_s", "value": 10.0}}. Patchable keys: {allowed}'
+            )
+            raise InvalidParamsError(message)
         key = str(values["key"])
         if key not in PATCHABLE_CONFIG_KEYS:
             allowed = ", ".join(sorted(PATCHABLE_CONFIG_KEYS))
@@ -1651,9 +1806,8 @@ class SimulationRuntime:
 
         return self._patch_config_key(key, values["value"])
 
-    def _patch_config_key(self, key: str, raw: Any) -> dict[str, Any]:  # noqa: ANN401
-        """
-        Apply one allowlisted config patch.
+    def _patch_config_key(self, key: str, raw: Any) -> dict[str, Any]:
+        """Apply one allowlisted config patch.
 
         Args:
             key: The dotted config path, already checked against the allowlist.
@@ -1666,7 +1820,7 @@ class SimulationRuntime:
             InvalidParamsError: If the value cannot be coerced to the field's type.
 
         """
-        vehicle_id = next(iter(self._config.vehicles))
+        vehicle_id = self._config.first_vehicle_id
         gimbal = self._config.vehicles[vehicle_id].gimbal
 
         if key == "gimbal.max_rate_deg_s":
@@ -1691,8 +1845,7 @@ class SimulationRuntime:
         raise InvalidParamsError(message)
 
     def _gimbal_max_rate_deg_s(self) -> float | None:
-        """
-        Return the effective gimbal slew limit, honouring a runtime patch.
+        """Return the effective gimbal slew limit, honouring a runtime patch.
 
         Returns:
             Degrees per second, or ``None`` for unlimited.
@@ -1701,11 +1854,10 @@ class SimulationRuntime:
         if "gimbal.max_rate_deg_s" in self._config_overrides:
             patched: float | None = self._config_overrides["gimbal.max_rate_deg_s"]
             return patched
-        return self._config.vehicles[next(iter(self._config.vehicles))].gimbal.max_rate_deg_s
+        return self._config.vehicles[self._config.first_vehicle_id].gimbal.max_rate_deg_s
 
     def _handle_reset(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-        """
-        Restart the timeline and clear commanded state.
+        """Restart the timeline and clear commanded state.
 
         Scope is deliberately narrow and stated plainly, because "reset" could mean three very
         different things. This resets **simulation time** to zero and drops any commanded gimbal
@@ -1743,8 +1895,7 @@ class SimulationRuntime:
         return {**result, "gimbal": "returned to configured start angles"}
 
     def _vehicle_from(self, values: dict[str, Any]) -> str:
-        """
-        Resolve which vehicle a request targets.
+        """Resolve which vehicle a request targets.
 
         Defaults to the first configured vehicle so single-vehicle callers need not name one, and
         rejects an unknown id by listing the real ones -- a typo would otherwise silently act on
@@ -1762,7 +1913,7 @@ class SimulationRuntime:
         """
         requested = values.get("vehicle")
         if requested is None:
-            return next(iter(self._config.vehicles))
+            return self._config.first_vehicle_id
         name = str(requested)
         if name not in self._config.vehicles:
             known = ", ".join(sorted(self._config.vehicles))
@@ -1771,8 +1922,7 @@ class SimulationRuntime:
         return name
 
     def _handle_set_pose(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-        """
-        Place the vehicle at a geodetic pose.
+        """Place the vehicle at a geodetic pose.
 
         Sends the pose through the **same UDP path a real sender uses** rather than writing the
         prim directly. Writing the prim looks simpler but does not work: the pose graph rewrites
@@ -1800,8 +1950,8 @@ class SimulationRuntime:
                 raise InvalidParamsError(f"set_pose requires params.{required}")
 
         pose = {
-            "lat_deg": _optional_float(values, "lat_deg", 0.0),
-            "lon_deg": _optional_float(values, "lon_deg", 0.0),
+            "lat_deg": _optional_float(values, "lat_deg", 0.0, minimum=MIN_LAT_DEG, maximum=MAX_LAT_DEG),
+            "lon_deg": _optional_float(values, "lon_deg", 0.0, minimum=MIN_LON_DEG, maximum=MAX_LON_DEG),
             "alt_m": _optional_float(values, "alt_m", 0.0),
             "roll_deg": _optional_float(values, "roll_deg", 0.0),
             "pitch_deg": _optional_float(values, "pitch_deg", 0.0),
@@ -1814,28 +1964,6 @@ class SimulationRuntime:
             sock.sendto(packet, ("127.0.0.1", port))
         logger.info("set_pose sent to udp port %d: %s", port, pose)
         return {"sent": pose, "udp_port": port, "vehicle": vehicle_id}
-
-    def _handle_enable_feature(self, params: dict[str, Any] | list[Any] | None) -> str:
-        """
-        Enable a feature layer on the running stage.
-
-        Registered so the call fails honestly. Toggling a layer at runtime means composing
-        or removing it on the live stage (mount, resolve bindings, settle), which is not
-        implemented yet -- features are selected at launch via config. See docs/roadmap.md.
-        """
-        raise NotImplementedError(
-            "runtime feature toggling is not implemented yet; enable features in config before launch"
-        )
-
-    def _handle_disable_feature(self, params: dict[str, Any] | list[Any] | None) -> str:
-        """
-        Disable a feature layer on the running stage.
-
-        Registered so the call fails honestly; see :meth:`_handle_enable_feature`.
-        """
-        raise NotImplementedError(
-            "runtime feature toggling is not implemented yet; disable features in config before launch"
-        )
 
 
 __all__ = [

@@ -1,11 +1,8 @@
-"""
-Stage composer: open the base scene, mount and reference feature layers.
+"""Stage composer: open the base scene, mount and reference feature layers.
 
 Open the base USD stage, then for each enabled layer in the plan create a mount
 prim and add the layer's USD file as a reference (relying on the layer's
-``defaultPrim`` being set to ``Root``). This replaces
-``Simulation._add_external_usds`` from the previous generation, which iterated a
-hardcoded dict.
+``defaultPrim`` being set to ``Root``). Layers come from the plan, not a hardcoded dict.
 
 All ``omni`` and ``pxr`` access is done through :func:`importlib.import_module`
 so that importing this module does NOT pull them in at the top level.
@@ -38,39 +35,38 @@ from isaac_core.sim.stage import UsdStageInspector
 logger = logging.getLogger(__name__)
 
 
-def _omni_usd() -> Any:  # noqa: ANN401
+def _omni_usd() -> Any:
     """Lazily import and return the omni.usd module."""
     return importlib.import_module("omni.usd")
 
 
-def _gf() -> Any:  # noqa: ANN401
+def _gf() -> Any:
     """Return the lazily imported ``pxr.Gf`` module."""
     return importlib.import_module("pxr.Gf")
 
 
-def _usd() -> Any:  # noqa: ANN401
+def _usd() -> Any:
     """Return the lazily imported ``pxr.Usd`` module."""
     return importlib.import_module("pxr.Usd")
 
 
-def _usdlux() -> Any:  # noqa: ANN401
+def _usdlux() -> Any:
     """Return the lazily imported ``pxr.UsdLux`` module."""
     return importlib.import_module("pxr.UsdLux")
 
 
-def _usdgeom() -> Any:  # noqa: ANN401
+def _usdgeom() -> Any:
     """Return the lazily imported ``pxr.UsdGeom`` module."""
     return importlib.import_module("pxr.UsdGeom")
 
 
-def _sdf() -> Any:  # noqa: ANN401
+def _sdf() -> Any:
     """Lazily import and return the pxr.Sdf module."""
     return importlib.import_module("pxr.Sdf")
 
 
 def mount_path_for_layer(planned: PlannedLayer, instance: str) -> str:
-    """
-    Derive the mount prim path for a planned layer.
+    """Derive the mount prim path for a planned layer.
 
     Args:
         planned: A planned layer from the feature plan.
@@ -87,8 +83,7 @@ def mount_path_for_layer(planned: PlannedLayer, instance: str) -> str:
 
 
 def layer_usd_path(planned: PlannedLayer, search_paths: tuple[Path, ...]) -> Path | None:
-    """
-    Resolve a layer's USD file to an absolute path.
+    """Resolve a layer's USD file to an absolute path.
 
     Search the configured layer search paths, then treat the manifest's ``usd``
     as relative to the manifest's own location if not found elsewhere.
@@ -115,9 +110,8 @@ def compose_stage(
     scene_path: Path,
     layer_search_paths: tuple[Path, ...],
     settle: "Callable[[], None] | None" = None,
-) -> Any:  # noqa: ANN401
-    """
-    Open the base scene, mount feature layers, and apply configuration.
+) -> Any:
+    """Open the base scene, mount feature layers, and apply configuration.
 
     This is the single entry point for stage composition. It:
 
@@ -173,7 +167,7 @@ def compose_stage(
 
     # Each planned layer carries the vehicle it was planned for; this is only the fallback for a
     # plan that predates per-vehicle planning.
-    instance = next(iter(config.vehicles))
+    instance = config.first_vehicle_id
     _mount_layers(stage, plan, layer_search_paths, instance)
 
     # And again, so the newly mounted graphs are fully resolved before physics starts.
@@ -219,8 +213,7 @@ _CESIUM_CACHE_GLOB = "cesium-request-cache.sqlite*"
 
 
 def delete_cesium_cache(cache_dir: Path = _CESIUM_CACHE_DIR) -> int:
-    """
-    Delete Cesium's request cache files.
+    """Delete Cesium's request cache files.
 
     Args:
         cache_dir: Directory holding the cache, overridable for testing.
@@ -249,9 +242,8 @@ def delete_cesium_cache(cache_dir: Path = _CESIUM_CACHE_DIR) -> int:
 _METERS_PER_UNIT_TOL: Final = 1e-9
 
 
-def apply_stage_units(stage: Any, meters_per_unit: float) -> bool:  # noqa: ANN401
-    """
-    Set the stage's metres-per-unit metadata from config.
+def apply_stage_units(stage: Any, meters_per_unit: float) -> bool:
+    """Set the stage's metres-per-unit metadata from config.
 
     The whole pipeline assumes one stage unit is one metre: the ENU translate values the
     pose graph writes are metres, and the camera intrinsics are authored in millimetres
@@ -297,9 +289,8 @@ def apply_stage_units(stage: Any, meters_per_unit: float) -> bool:  # noqa: ANN4
     return True
 
 
-def apply_hdri(stage: Any, hdri: str | None) -> bool:  # noqa: ANN401
-    """
-    Light the scene from an HDRI image.
+def apply_hdri(stage: Any, hdri: str | None) -> bool:
+    """Light the scene from an HDRI image.
 
     `assets.hdri` is a path to an ``.exr`` / ``.hdr`` latlong image. If the scene already
     has a dome light -- the shipped ``earth`` scene has one at
@@ -349,8 +340,7 @@ _CESIUM_URL_ATTR: Final = "cesium:url"
 
 
 def _parse_server_override(override: str) -> tuple[str, str, str] | None:
-    """
-    Split a server override into its scheme, network location and path prefix.
+    """Split a server override into its scheme, network location and path prefix.
 
     The override supplies only the server: scheme, host and (optional) port. A missing
     scheme is tolerated -- ``newhost:9000`` and ``//newhost:9000`` are parsed as a network
@@ -387,8 +377,7 @@ def _parse_server_override(override: str) -> tuple[str, str, str] | None:
 
 
 def _rewrite_url(original: str, scheme: str, netloc: str, path_prefix: str) -> str:
-    """
-    Swap the server of ``original`` while preserving its path, query and fragment.
+    """Swap the server of ``original`` while preserving its path, query and fragment.
 
     A relative or path-only original (no scheme and no host) is treated as a path under
     the new server, so it gains the override's scheme and host rather than being left
@@ -411,12 +400,11 @@ def _rewrite_url(original: str, scheme: str, netloc: str, path_prefix: str) -> s
 
 
 def apply_tileset_server_url(
-    stage: Any,  # noqa: ANN401
+    stage: Any,
     url: str | None,
     tilesets_root: str,
 ) -> int:
-    """
-    Repoint every Cesium tileset under ``tilesets_root`` at a different server.
+    """Repoint every Cesium tileset under ``tilesets_root`` at a different server.
 
     Lets a team member switch tile servers from config instead of hand-editing the scene
     in the GUI, which matters because the URL is otherwise baked into the USD. Only the
@@ -468,13 +456,12 @@ def apply_tileset_server_url(
 
 
 def _mount_layers(
-    stage: Any,  # noqa: ANN401
+    stage: Any,
     plan: FeaturePlan,
     layer_search_paths: tuple[Path, ...],
     instance: str,
 ) -> None:
-    """
-    Create mount prims and add layer references.
+    """Create mount prims and add layer references.
 
     Args:
         stage: The open stage.
@@ -500,9 +487,8 @@ def _mount_layers(
         _define_and_reference(stage, mount, usd_path)
 
 
-def _define_and_reference(stage: Any, mount_path: str, usd_path: Path) -> None:  # noqa: ANN401
-    """
-    Define a prim at ``mount_path`` and add a reference to the layer USD.
+def _define_and_reference(stage: Any, mount_path: str, usd_path: Path) -> None:
+    """Define a prim at ``mount_path`` and add a reference to the layer USD.
 
     Args:
         stage: The open stage.
@@ -517,9 +503,8 @@ def _define_and_reference(stage: Any, mount_path: str, usd_path: Path) -> None: 
     logger.debug("mounted %s -> %s", mount_path, usd_path)
 
 
-def _resolve_camera_prim(config: IsaacCoreConfig, stage: Any) -> str | None:  # noqa: ANN401
-    """
-    Determine the active camera prim path for bindings.
+def _resolve_camera_prim(config: IsaacCoreConfig, stage: Any) -> str | None:
+    """Determine the active camera prim path for bindings.
 
     Tries ``sim.viewport_camera`` first, because that is already the single place naming the
     vehicle's camera -- the runtime points the main viewport at it -- so a layer binding and the
@@ -542,7 +527,7 @@ def _resolve_camera_prim(config: IsaacCoreConfig, stage: Any) -> str | None:  # 
 
     """
     sdf = _sdf()
-    first_vehicle_id = next(iter(config.vehicles))
+    first_vehicle_id = config.first_vehicle_id
     mount = config.resolved_mount(first_vehicle_id)
 
     configured = config.sim.viewport_camera
@@ -575,9 +560,8 @@ _TILE_TUNING: Final = (
 )
 
 
-def apply_tile_tuning(stage: Any, cesium: Any, tilesets_root: str) -> int:  # noqa: ANN401
-    """
-    Write the configured Cesium tile-loading settings onto every tileset.
+def apply_tile_tuning(stage: Any, cesium: Any, tilesets_root: str) -> int:
+    """Write the configured Cesium tile-loading settings onto every tileset.
 
     Each setting is applied only when explicitly configured, so an untouched config leaves
     Cesium's own defaults in place rather than pinning them to values that would silently become
@@ -619,13 +603,12 @@ def apply_tile_tuning(stage: Any, cesium: Any, tilesets_root: str) -> int:  # no
     return written
 
 
-def apply_target_semantics(stage: Any, targets_root: str) -> int:  # noqa: ANN401
-    """
-    Give every child of the targets root a semantic label.
+def apply_target_semantics(stage: Any, targets_root: str) -> int:
+    """Give every child of the targets root a semantic label.
 
     Isaac's bounding-box annotators report only prims carrying a ``SemanticsAPI``, and they key
     off it entirely -- an unlabelled prim is invisible to them no matter how solid it looks on
-    screen. The 2023 scene labelled each target by hand in the GUI, which is easy to forget and
+    screen. Labelling by hand in the GUI is easy to forget and
     silently yields an empty detection list.
 
     Applied at composition time instead, so adding an object to the scene is all a user has to
@@ -660,7 +643,7 @@ def apply_target_semantics(stage: Any, targets_root: str) -> int:  # noqa: ANN40
             api = semantics.SemanticsAPI.Apply(prim, "Semantics")
             api.CreateSemanticTypeAttr().Set("class")
             api.CreateSemanticDataAttr().Set(prim.GetName())
-        except Exception as exc:  # noqa: BLE001 - USD raises Tf.ErrorException
+        except Exception as exc:
             logger.warning("could not label %s: %s", prim.GetPath(), exc)
             continue
         labelled += 1
@@ -669,9 +652,8 @@ def apply_target_semantics(stage: Any, targets_root: str) -> int:  # noqa: ANN40
     return labelled
 
 
-def _apply_stage_writes(stage: Any, writes: list[AttributeWrite]) -> None:  # noqa: ANN401
-    """
-    Apply computed attribute writes to the stage.
+def _apply_stage_writes(stage: Any, writes: list[AttributeWrite]) -> None:
+    """Apply computed attribute writes to the stage.
 
     Args:
         stage: The open stage.
@@ -694,7 +676,7 @@ def _apply_stage_writes(stage: Any, writes: list[AttributeWrite]) -> None:  # no
             continue
         try:
             attr.Set(_coerce_for_attribute(attr, w.value))
-        except Exception as exc:  # noqa: BLE001 - USD raises Tf.ErrorException
+        except Exception as exc:
             logger.warning("could not write %r to %s.%s: %s", w.value, w.prim, w.attribute, exc)
 
 
@@ -727,9 +709,8 @@ _GF_CONSTRUCTORS: Final[dict[str, str]] = {
 }
 
 
-def _coerce_for_attribute(attr: Any, value: Any) -> Any:  # noqa: ANN401
-    """
-    Convert a plain Python value into the type a USD attribute expects.
+def _coerce_for_attribute(attr: Any, value: Any) -> Any:
+    """Convert a plain Python value into the type a USD attribute expects.
 
     The configurator is deliberately pure and emits plain Python (floats, strings,
     lists), because that keeps it testable without USD. USD, however, rejects a list

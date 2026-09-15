@@ -1,5 +1,4 @@
-"""
-Contract tests: shipped layer manifests match the authored USD exactly.
+"""Contract tests: shipped layer manifests match the authored USD exactly.
 
 This is the single most valuable test file in this scope. It prevents a prim
 rename in the GUI from silently breaking configuration: every binding's prim
@@ -31,7 +30,7 @@ SHIPPED_LAYER_IDS: Final = ("camera_udp", "camera_ros")
 
 # Path to the authored USD layers (repo root / usd / layers /)
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
-_USD_LAYERS_DIR: Final = _REPO_ROOT / "usd" / "layers"
+_USD_LAYERS_DIR: Final = _REPO_ROOT / "src" / "isaac_core" / "assets" / "layers"
 
 # Representative mount used to render {mount} in prim templates.
 _REPRESENTATIVE_MOUNT: Final = "/Root"
@@ -57,8 +56,7 @@ _ATTR_RE: Final = re.compile(r"^\s*(?:custom\s+|uniform\s+)?(?:\w+\s+)+(\S+?)(?:
 
 
 def _parse_usd_structure(usd_text: str) -> dict[str, set[str]]:
-    """
-    Parse a .usda file and return a mapping of absolute prim paths to their attributes.
+    """Parse a .usda file and return a mapping of absolute prim paths to their attributes.
 
     This is a line-by-line parser sufficient for our contract tests. It tracks
     brace-delimited scope to build absolute paths.
@@ -134,8 +132,7 @@ def _parse_usd_structure(usd_text: str) -> dict[str, set[str]]:
 
 
 def _parse_usda_prims_and_attrs(usd_path: Path) -> dict[str, set[str]]:
-    """
-    Parse a USD file and return prim paths and their attributes.
+    """Parse a USD file and return prim paths and their attributes.
 
     Uses a simpler, more robust approach: scan for `def ... "Name"` lines to build
     a path, and collect any `inputs:*` / `outputs:*` / known camera attributes.

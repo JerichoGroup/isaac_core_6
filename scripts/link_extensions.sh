@@ -42,7 +42,7 @@ validate_isaac_dir() {
 if [[ -z "$ISAAC_PATH" ]]; then
     # Probe known locations
     CANDIDATES=(
-        "/home/ofer/isaacsim"
+        "$HOME/isaacsim"
         "/opt/isaacsim"
         "/opt/nvidia/isaac-sim"
         "/isaac-sim"

@@ -1,5 +1,4 @@
-"""
-Tests for gimbal angle state, slew-rate limiting and mechanical-stop clamping.
+"""Tests for gimbal angle state, slew-rate limiting and mechanical-stop clamping.
 
 The behaviours locked in here are the ones that go subtly wrong: crossing the +/-pi seam by
 the long way instead of the short one, a rate of zero freezing the gimbal instead of meaning

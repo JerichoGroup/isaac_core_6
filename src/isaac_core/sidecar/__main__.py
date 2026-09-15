@@ -1,5 +1,4 @@
-"""
-Entry point for the sidecar service host.
+"""Entry point for the sidecar service host.
 
 Usage::
 
@@ -25,8 +24,7 @@ logger = logging.getLogger("isaac_core.sidecar")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """
-    Parse command-line arguments.
+    """Parse command-line arguments.
 
     Args:
         argv: Argument list (defaults to ``sys.argv[1:]``).
@@ -49,8 +47,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """
-    Run the sidecar supervisor until interrupted.
+    """Run the sidecar supervisor until interrupted.
 
     Args:
         argv: Argument list (defaults to ``sys.argv[1:]``).
@@ -101,8 +98,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _setup_signal_handling() -> threading.Event:
-    """
-    Install SIGINT/SIGTERM handlers that set an event.
+    """Install SIGINT/SIGTERM handlers that set an event.
 
     Returns:
         An event that is set when a termination signal is received.
@@ -110,7 +106,7 @@ def _setup_signal_handling() -> threading.Event:
     """
     event = threading.Event()
 
-    def _handler(signum: int, frame: object) -> None:  # noqa: ARG001
+    def _handler(signum: int, _frame: object) -> None:
         event.set()
 
     signal.signal(signal.SIGINT, _handler)

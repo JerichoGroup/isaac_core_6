@@ -1,5 +1,4 @@
-"""
-Typed, layered configuration.
+"""Typed, layered configuration.
 
 One schema, and the two files that use it are the shipped ``config/default.toml``
 and whatever a user passes to ``--config``. Layer manifests are a different thing

@@ -1,5 +1,4 @@
-"""
-Host-side MAVLink pose bridge.
+"""Host-side MAVLink pose bridge.
 
 MAVLink cannot be decoded inside Isaac Sim: ``pymavlink`` is not available in
 Isaac's bundled Python 3.12, only on the host Python 3.10. So rather than teach the
@@ -21,7 +20,9 @@ handling in :mod:`isaac_core.devkit.recording`.
 
 from __future__ import annotations
 
+import argparse
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from isaac_core.contracts.frames import Frame
@@ -50,9 +51,8 @@ _POSITION_MSG = "GLOBAL_POSITION_INT"
 _ATTITUDE_MSG = "ATTITUDE"
 
 
-def _require_pymavlink() -> Any:  # noqa: ANN401
-    """
-    Import and return ``pymavlink.mavutil``, raising a clear error if unavailable.
+def _require_pymavlink() -> Any:
+    """Import and return ``pymavlink.mavutil``, raising a clear error if unavailable.
 
     Returns:
         The ``pymavlink.mavutil`` module.
@@ -62,7 +62,7 @@ def _require_pymavlink() -> Any:  # noqa: ANN401
 
     """
     try:
-        from pymavlink import mavutil  # noqa: PLC0415
+        from pymavlink import mavutil
     except ImportError:
         msg = (
             "pymavlink is not available. MavlinkPoseBridge requires pymavlink, which "
@@ -73,9 +73,8 @@ def _require_pymavlink() -> Any:  # noqa: ANN401
     return mavutil
 
 
-def connect(connection_string: str) -> Any:  # noqa: ANN401
-    """
-    Open a MAVLink connection, raising a clear error naming the endpoint on failure.
+def connect(connection_string: str) -> Any:
+    """Open a MAVLink connection, raising a clear error naming the endpoint on failure.
 
     Args:
         connection_string: A pymavlink connection string, e.g. ``udpin:0.0.0.0:14550``
@@ -97,8 +96,7 @@ def connect(connection_string: str) -> Any:  # noqa: ANN401
 
 
 class MavlinkPoseBridge:
-    """
-    Bridge a MAVLink pose stream to the simulator's UDP pose port.
+    """Bridge a MAVLink pose stream to the simulator's UDP pose port.
 
     Holds the most recent ``GLOBAL_POSITION_INT`` and ``ATTITUDE`` messages, combines
     them into a :class:`GeodeticPose`, and ships that pose through a
@@ -114,13 +112,12 @@ class MavlinkPoseBridge:
 
     def __init__(
         self,
-        connection: Any,  # noqa: ANN401
+        connection: Any,
         transport: PoseTransport,
         *,
         rate_hz: float = DEFAULT_SEND_RATE_HZ,
     ) -> None:
-        """
-        Initialise the bridge with an open connection and a transport.
+        """Initialise the bridge with an open connection and a transport.
 
         Args:
             connection: A duck-typed MAVLink connection exposing ``recv_match``.
@@ -151,8 +148,7 @@ class MavlinkPoseBridge:
         port: int = DEFAULT_POSE_UDP_PORT,
         rate_hz: float = DEFAULT_SEND_RATE_HZ,
     ) -> MavlinkPoseBridge:
-        """
-        Build a bridge that reads ``connection_string`` and sends UDP to ``host:port``.
+        """Build a bridge that reads ``connection_string`` and sends UDP to ``host:port``.
 
         Args:
             connection_string: A pymavlink connection string, e.g.
@@ -178,9 +174,8 @@ class MavlinkPoseBridge:
         """Return whether both a position and an attitude have been received."""
         return self._position is not None and self._attitude is not None
 
-    def _apply(self, message: Any) -> None:  # noqa: ANN401
-        """
-        Update the held state from one MAVLink message, ignoring unknown types.
+    def _apply(self, message: Any) -> None:
+        """Update the held state from one MAVLink message, ignoring unknown types.
 
         ``GLOBAL_POSITION_INT`` updates the held position (degE7 -> degrees, mm ->
         metres) and ``ATTITUDE`` updates the held orientation (already NED radians).
@@ -207,8 +202,7 @@ class MavlinkPoseBridge:
             )
 
     def current_pose(self) -> GeodeticPose | None:
-        """
-        Return the combined pose from the latest of each message, or ``None``.
+        """Return the combined pose from the latest of each message, or ``None``.
 
         Returns ``None`` until both a position and an attitude have arrived, which is
         the guard that prevents ever emitting the all-zero Atlantic pose.
@@ -222,8 +216,7 @@ class MavlinkPoseBridge:
         return GeodeticPose(position=self._position, orientation=self._attitude)
 
     def poll_once(self) -> GeodeticPose | None:
-        """
-        Drain all pending MAVLink messages, then return the current combined pose.
+        """Drain all pending MAVLink messages, then return the current combined pose.
 
         Reads every message currently available (non-blocking) so the held state
         reflects the most recent of each type, then returns the combined pose.
@@ -244,8 +237,7 @@ class MavlinkPoseBridge:
         self._running = False
 
     def run(self, *, sleep: Callable[[float], None] | None = None) -> int:
-        """
-        Read MAVLink and re-emit poses at the configured rate until stopped.
+        """Read MAVLink and re-emit poses at the configured rate until stopped.
 
         Uses an accumulating deadline (``next_time += dt``) to avoid drift, matching
         :func:`isaac_core.devkit.transport.pace`. A pose is sent only once a complete
@@ -259,7 +251,6 @@ class MavlinkPoseBridge:
             The number of poses sent before the loop stopped.
 
         """
-        import time  # noqa: PLC0415
 
         sleep_fn = sleep if sleep is not None else time.sleep
         dt = 1.0 / self._rate_hz
@@ -289,8 +280,7 @@ class MavlinkPoseBridge:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """
-    Run the MAVLink pose bridge from the command line.
+    """Run the MAVLink pose bridge from the command line.
 
     Args:
         argv: Argument vector for testing. Defaults to ``sys.argv[1:]``.
@@ -299,7 +289,6 @@ def main(argv: list[str] | None = None) -> int:
         A process exit code: ``0`` on clean stop, ``1`` on a handled error.
 
     """
-    import argparse  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(
         prog="isaac-core-mavlink",

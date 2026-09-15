@@ -1,5 +1,4 @@
-"""
-Guard against the Isaac Sim 4.5 / 6.0 API removals reappearing in code.
+"""Guard against the Isaac Sim 4.5 / 6.0 API removals reappearing in code.
 
 Two whole namespaces are gone, and both are easy to reintroduce because our Isaac
 imports are *lazy strings* handed to ``importlib.import_module`` -- invisible to ruff,

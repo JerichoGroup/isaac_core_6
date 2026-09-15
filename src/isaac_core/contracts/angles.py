@@ -4,8 +4,7 @@ import math
 
 
 def normalize_angle(radians: float) -> float:
-    """
-    Normalise an angle in radians to the range ``[-pi, pi]``.
+    """Normalise an angle in radians to the range ``[-pi, pi]``.
 
     Args:
         radians: Angle in radians, unbounded.

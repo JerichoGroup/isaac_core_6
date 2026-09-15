@@ -1,5 +1,4 @@
-"""
-User-facing API for scripting Isaac Sim sessions.
+"""User-facing API for scripting Isaac Sim sessions.
 
 This package is what an operator imports in their mission scripts. It provides:
 

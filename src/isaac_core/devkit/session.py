@@ -1,11 +1,9 @@
-"""
-Session management for scripting Isaac Sim.
+"""Session management for scripting Isaac Sim.
 
-Fixes defect #7 from the previous generation: the caller no longer needs a repo
-path. ``Sim.attach(host, port)`` connects to an already-running simulator using
-only the control-plane contract, and ``Sim.launch(...)`` + ``Sim.attach(...)``
-both return the SAME :class:`SimSession` type, so user scripts are identical
-regardless of how the sim was started.
+``Sim.attach(host, port)`` connects to an already-running simulator using only the
+control-plane contract, so it needs no filesystem knowledge and works against another
+machine. ``Sim.launch(...)`` and ``Sim.attach(...)`` return the SAME
+:class:`SimSession` type, so a script is identical regardless of how the sim started.
 
 Every operation goes through :class:`~isaac_core.control.ControlClient`; readiness
 uses the client's ``wait_until_ready``, NOT log scraping.
@@ -14,7 +12,11 @@ uses the client's ``wait_until_ready``, NOT log scraping.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
+import signal
+import subprocess
+import tempfile
 from typing import Any
 
 from isaac_core.contracts.ports import DEFAULT_CONTROL_PLANE_PORT
@@ -27,9 +29,8 @@ logger = logging.getLogger(__name__)
 _SHUTDOWN_TIMEOUT_S = 15.0
 
 
-def _default_launcher(command: list[str]) -> Any:  # noqa: ANN401
-    """
-    Spawn the simulator as a child process.
+def _default_launcher(command: list[str]) -> Any:
+    """Spawn the simulator as a child process.
 
     Injected rather than called directly so tests can drive :meth:`Sim.launch` without
     Isaac Sim present.
@@ -41,7 +42,6 @@ def _default_launcher(command: list[str]) -> Any:  # noqa: ANN401
         The spawned ``subprocess.Popen``.
 
     """
-    import subprocess  # noqa: PLC0415
 
     # New session, so the simulator gets its own process group. `python.sh` does not `exec` --
     # it runs the interpreter as a child -- so killing only the wrapper orphans Isaac Sim and
@@ -49,61 +49,14 @@ def _default_launcher(command: list[str]) -> Any:  # noqa: ANN401
     return subprocess.Popen(command, start_new_session=True)
 
 
-class _FeatureManager:
-    """
-    Proxy for enable/disable feature operations on the control plane.
-
-    Provides a clean ``features.enable("x")`` / ``features.disable("x")`` API
-    on :class:`SimSession`.
-    """
-
-    def __init__(self, client: ControlClient) -> None:
-        """
-        Initialise with a connected control client.
-
-        Args:
-            client: The control client to use for RPC calls.
-
-        """
-        self._client = client
-
-    def enable(self, feature_id: str) -> Any:  # noqa: ANN401
-        """
-        Enable a feature layer.
-
-        Args:
-            feature_id: The layer identifier to enable.
-
-        Returns:
-            The server's response.
-
-        """
-        return self._client.call(Method.ENABLE_FEATURE.value, {"feature_id": feature_id})
-
-    def disable(self, feature_id: str) -> Any:  # noqa: ANN401
-        """
-        Disable a feature layer.
-
-        Args:
-            feature_id: The layer identifier to disable.
-
-        Returns:
-            The server's response.
-
-        """
-        return self._client.call(Method.DISABLE_FEATURE.value, {"feature_id": feature_id})
-
-
 class _ConfigProxy:
-    """
-    Proxy for config inspection and patching via the control plane.
+    """Proxy for config inspection and patching via the control plane.
 
     Provides ``config.get()`` and ``config.patch(...)`` on :class:`SimSession`.
     """
 
     def __init__(self, client: ControlClient) -> None:
-        """
-        Initialise with a connected control client.
+        """Initialise with a connected control client.
 
         Args:
             client: The control client to use for RPC calls.
@@ -111,9 +64,8 @@ class _ConfigProxy:
         """
         self._client = client
 
-    def get(self) -> Any:  # noqa: ANN401
-        """
-        Retrieve the current configuration from the running sim.
+    def get(self) -> Any:
+        """Retrieve the current configuration from the running sim.
 
         Returns:
             The configuration dict from the server.
@@ -121,23 +73,29 @@ class _ConfigProxy:
         """
         return self._client.call(Method.GET_CONFIG.value)
 
-    def patch(self, **kwargs: Any) -> Any:  # noqa: ANN401
-        """
-        Apply a configuration patch at runtime.
+    def patch(self, key: str, value: Any) -> Any:
+        """Patch one runtime-mutable config key.
+
+        Takes the key and value explicitly because that is the wire contract. A ``**kwargs``
+        signature invited ``patch(gimbal_max_rate_deg_s=10.0)``, which the server rejects: the
+        dotted key cannot be spelled as a Python identifier.
+
+        Only a small allowlist is patchable, because most config is applied once when the stage is
+        composed. An unpatchable key is refused with the list of those that are.
 
         Args:
-            **kwargs: Configuration keys and values to patch.
+            key: Dotted config path, for example ``"gimbal.max_rate_deg_s"``.
+            value: The new value.
 
         Returns:
             The server's response.
 
         """
-        return self._client.call(Method.SET_CONFIG.value, kwargs)
+        return self._client.call(Method.SET_CONFIG.value, {"key": key, "value": value})
 
 
 class SimSession:
-    """
-    Handle to a running simulation, returned by both ``Sim.launch()`` and ``Sim.attach()``.
+    """Handle to a running simulation, returned by both ``Sim.launch()`` and ``Sim.attach()``.
 
     Exposes lifecycle control (pause, resume, step, reset), feature management,
     config patching, frame capture, and vehicle handles -- all routed through the
@@ -145,9 +103,8 @@ class SimSession:
     does not require it.
     """
 
-    def __init__(self, client: ControlClient, process: Any = None) -> None:  # noqa: ANN401
-        """
-        Initialise from an already-connected :class:`ControlClient`.
+    def __init__(self, client: ControlClient, process: Any = None) -> None:
+        """Initialise from an already-connected :class:`ControlClient`.
 
         Args:
             client: A connected control client.
@@ -157,7 +114,6 @@ class SimSession:
 
         """
         self._client = client
-        self._features = _FeatureManager(client)
         self._config = _ConfigProxy(client)
         # Set only by Sim.launch: a session that started the simulator is responsible for
         # stopping it, otherwise a script that raises leaves Isaac Sim running.
@@ -169,18 +125,12 @@ class SimSession:
         return self._client
 
     @property
-    def features(self) -> _FeatureManager:
-        """Access the feature enable/disable interface."""
-        return self._features
-
-    @property
     def config(self) -> _ConfigProxy:
         """Access the config get/patch interface."""
         return self._config
 
-    def state(self) -> Any:  # noqa: ANN401
-        """
-        Return the running simulation's state.
+    def state(self) -> Any:
+        """Return the running simulation's state.
 
         Returns:
             A dict describing the run, e.g. ``{"running": True, "scene": "earth",
@@ -195,9 +145,8 @@ class SimSession:
         roll_deg: float | None = None,
         pitch_deg: float | None = None,
         yaw_deg: float | None = None,
-    ) -> Any:  # noqa: ANN401
-        """
-        Aim the camera gimbal, slewing there if a rate limit is configured.
+    ) -> Any:
+        """Aim the camera gimbal, slewing there if a rate limit is configured.
 
         Returns as soon as the target is accepted, not when the gimbal arrives: with
         ``gimbal.max_rate_deg_s`` set the move takes real simulated time, and blocking the caller
@@ -228,9 +177,8 @@ class SimSession:
         roll_deg: float = 0.0,
         pitch_deg: float = 0.0,
         yaw_deg: float = 0.0,
-    ) -> Any:  # noqa: ANN401
-        """
-        Place the vehicle at a geodetic pose.
+    ) -> Any:
+        """Place the vehicle at a geodetic pose.
 
         Delivered through the same UDP path a real sender uses, so the usual rule applies: if
         something else is streaming poses to that port, the last packet wins and this one will be
@@ -266,9 +214,8 @@ class SimSession:
             },
         )
 
-    def get_pose(self, *, vehicle: str | None = None) -> Any:  # noqa: ANN401
-        """
-        Return the live prim transform of a vehicle's moved camera.
+    def get_pose(self, *, vehicle: str | None = None) -> Any:
+        """Return the live prim transform of a vehicle's moved camera.
 
         This reads what the pose graph has actually written to the stage -- the only way
         to confirm from outside the process that UDP or ROS pose input is reaching the
@@ -287,9 +234,8 @@ class SimSession:
         *,
         width: int | None = None,
         height: int | None = None,
-    ) -> Any:  # noqa: ANN401
-        """
-        Capture the camera's current frame to an image file.
+    ) -> Any:
+        """Capture the camera's current frame to an image file.
 
         Supplying ``width`` and ``height`` captures at that resolution regardless of the
         viewport's own size, so a high-resolution still can be taken from a small window; the
@@ -311,9 +257,8 @@ class SimSession:
             params["height"] = height
         return self._client.call(Method.CAPTURE_FRAME.value, params)
 
-    def pause(self) -> Any:  # noqa: ANN401
-        """
-        Pause the simulation.
+    def pause(self) -> Any:
+        """Pause the simulation.
 
         Returns:
             The server's response.
@@ -321,9 +266,8 @@ class SimSession:
         """
         return self._client.call(Method.PAUSE.value)
 
-    def resume(self) -> Any:  # noqa: ANN401
-        """
-        Resume a paused simulation.
+    def resume(self) -> Any:
+        """Resume a paused simulation.
 
         Returns:
             The server's response.
@@ -331,9 +275,8 @@ class SimSession:
         """
         return self._client.call(Method.RESUME.value)
 
-    def step(self, count: int = 1) -> Any:  # noqa: ANN401
-        """
-        Advance the simulation by ``count`` physics steps.
+    def step(self, count: int = 1) -> Any:
+        """Advance the simulation by ``count`` physics steps.
 
         Args:
             count: Number of steps to advance.
@@ -344,9 +287,8 @@ class SimSession:
         """
         return self._client.call(Method.STEP.value, {"count": count})
 
-    def reset(self) -> Any:  # noqa: ANN401
-        """
-        Reset the simulation to its initial state.
+    def reset(self) -> Any:
+        """Reset the simulation to its initial state.
 
         Returns:
             The server's response.
@@ -354,9 +296,8 @@ class SimSession:
         """
         return self._client.call(Method.RESET.value)
 
-    def get_capabilities(self) -> Any:  # noqa: ANN401
-        """
-        Query the simulator's stage capabilities.
+    def get_capabilities(self) -> Any:
+        """Query the simulator's stage capabilities.
 
         Returns:
             A dict of capabilities from the server.
@@ -365,8 +306,7 @@ class SimSession:
         return self._client.call(Method.GET_CAPABILITIES.value)
 
     def wait_until_ready(self, timeout_s: float = 120.0) -> None:
-        """
-        Block until the simulator is usable.
+        """Block until the simulator is usable.
 
         Args:
             timeout_s: Maximum time to wait.
@@ -378,8 +318,7 @@ class SimSession:
         self._client.wait_until_ready(timeout_s=timeout_s)
 
     def close(self) -> None:
-        """
-        Disconnect from the control server, and stop the simulator if we started it.
+        """Disconnect from the control server, and stop the simulator if we started it.
 
         A session from :meth:`Sim.attach` leaves the simulator alone -- it belongs to
         whoever launched it. A session from :meth:`Sim.launch` owns the process and
@@ -394,8 +333,7 @@ class SimSession:
         self._terminate_process_group()
 
     def _terminate_process_group(self) -> None:
-        """
-        Stop the simulator and every process it spawned.
+        """Stop the simulator and every process it spawned.
 
         Two facts make the obvious ``terminate()`` insufficient, and together they are why a
         finished script could leave a live Isaac Sim GUI behind:
@@ -406,8 +344,6 @@ class SimSession:
 
         So the whole process group is signalled, and SIGKILL follows if SIGTERM is ignored.
         """
-        import os  # noqa: PLC0415
-        import signal  # noqa: PLC0415
 
         if self._process is None:
             return
@@ -441,12 +377,12 @@ class SimSession:
         try:
             self._process.wait(timeout=_SHUTDOWN_TIMEOUT_S)
             return
-        except Exception:  # noqa: BLE001 - subprocess raises its own TimeoutExpired
+        except Exception:
             logger.warning("simulator ignored SIGTERM (expected); killing the process group")
         _signal(signal.SIGKILL)
         try:
             self._process.wait(timeout=_SHUTDOWN_TIMEOUT_S)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("simulator process group did not exit after SIGKILL")
 
     def __enter__(self) -> SimSession:
@@ -459,20 +395,17 @@ class SimSession:
 
 
 class Sim:
-    """
-    Facade for obtaining a :class:`SimSession`.
+    """Facade for obtaining a :class:`SimSession`.
 
     Provides two entry points:
 
     ``Sim.attach(host, port)``
-        Connect to an already-running simulator. Needs no filesystem knowledge at
-        all -- only the control-plane contract. This is the fix for defect #7.
+        Connect to an already-running simulator. Needs no filesystem knowledge at all --
+        only the control-plane contract -- so it works against a remote machine.
 
     ``Sim.launch(...)``
-        Start a new simulator instance and connect to it. Since the Isaac-side
-        runtime does not exist yet, this currently raises :class:`NotImplementedError`
-        for the actual process spawn. The design is in place: it resolves the Isaac
-        install, builds the launch command, and would then call ``wait_until_ready``.
+        Resolve the Isaac Sim install, start a simulator, and wait for it to answer.
+        The returned session owns the process and stops it on close.
     """
 
     @classmethod
@@ -484,8 +417,7 @@ class Sim:
         token: str | None = None,
         timeout_s: float = 30.0,
     ) -> SimSession:
-        """
-        Connect to an already-running simulator.
+        """Connect to an already-running simulator.
 
         Waits until the server is ready (accepts connections and responds to
         ``ping``), then returns a :class:`SimSession`. No filesystem path, no repo
@@ -519,10 +451,9 @@ class Sim:
         headless: bool = False,
         timeout_s: float = 120.0,
         overrides: dict[str, Any] | None = None,
-        launcher: Any = None,  # noqa: ANN401
+        launcher: Any = None,
     ) -> SimSession:
-        """
-        Launch a new simulator instance and connect to it.
+        """Launch a new simulator instance and connect to it.
 
         Resolves the Isaac install (validating it rather than trusting
         ``$ISAACSIM_PATH``), writes the fully resolved config to a temporary file, spawns
@@ -552,11 +483,10 @@ class Sim:
             TimeoutError: If the control plane does not answer within ``timeout_s``.
 
         """
-        import tempfile  # noqa: PLC0415
 
-        from isaac_core.config import load  # noqa: PLC0415
-        from isaac_core.config.loader import dump_toml  # noqa: PLC0415
-        from isaac_core.install import IsaacInstall  # noqa: PLC0415
+        from isaac_core.config import load
+        from isaac_core.config.loader import dump_toml
+        from isaac_core.install import IsaacInstall
 
         install = IsaacInstall.locate()
 

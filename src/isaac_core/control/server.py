@@ -1,5 +1,4 @@
-"""
-TCP server for the JSON-RPC control plane.
+"""TCP server for the JSON-RPC control plane.
 
 Binds a TCP socket, accepts connections, reads newline-delimited JSON-RPC
 requests, dispatches to registered handlers, and writes responses. Designed to
@@ -17,6 +16,7 @@ not hardcoded, so ``sim`` can supply Isaac-backed implementations later without
 this module importing Isaac.
 """
 
+import hmac
 import json
 import logging
 from pathlib import Path
@@ -44,13 +44,17 @@ logger = logging.getLogger(__name__)
 # Hosts considered loopback — token enforcement is skipped for these.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
+# Largest request line accepted from one connection. Requests are newline-delimited, so a client
+# that never sends a newline would otherwise grow this buffer without limit and OOM the process --
+# which is holding a GPU. No legitimate request comes close: the largest is a config patch.
+MAX_REQUEST_BYTES = 1 << 20
+
 # Handler signature: receives params dict/list/None, returns Any result.
 Handler = Callable[[dict[str, Any] | list[Any] | None], Any]
 
 
 def confine_path(requested: str, output_root: Path) -> Path:
-    """
-    Resolve a requested path and verify it lies under ``output_root``.
+    """Resolve a requested path and verify it lies under ``output_root``.
 
     Rejects absolute paths not under the root, ``..`` traversal, and any resolved
     path that escapes. This is a security boundary: getting it wrong is remote
@@ -86,8 +90,7 @@ def confine_path(requested: str, output_root: Path) -> Path:
 
 
 class ControlServer:
-    """
-    JSON-RPC 2.0 control server over TCP with newline-delimited messages.
+    """JSON-RPC 2.0 control server over TCP with newline-delimited messages.
 
     Lifecycle::
 
@@ -105,8 +108,7 @@ class ControlServer:
         *,
         bind_port: int | None = None,
     ) -> None:
-        """
-        Initialise the server.
+        """Initialise the server.
 
         Args:
             config: Control plane settings. Defaults to ``ControlPlaneConfig()``
@@ -126,8 +128,7 @@ class ControlServer:
 
     @property
     def port(self) -> int | None:
-        """
-        Return the port the server is actually bound to.
+        """Return the port the server is actually bound to.
 
         Useful when binding port 0 (ephemeral) for tests.
         """
@@ -139,8 +140,7 @@ class ControlServer:
         return self._config.host
 
     def register(self, method: str, handler: Handler) -> None:
-        """
-        Register a handler for a JSON-RPC method.
+        """Register a handler for a JSON-RPC method.
 
         Args:
             method: The method name (should be one of :class:`~messages.Method`).
@@ -150,8 +150,7 @@ class ControlServer:
         self._handlers[method] = handler
 
     def start(self) -> None:
-        """
-        Bind the socket and start serving in a background daemon thread.
+        """Bind the socket and start serving in a background daemon thread.
 
         The server is ready (accepting connections) by the time this returns.
         """
@@ -174,8 +173,7 @@ class ControlServer:
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
-        """
-        Signal the server to stop and wait for the thread to finish.
+        """Signal the server to stop and wait for the thread to finish.
 
         Args:
             timeout: Maximum seconds to wait for the thread to join.
@@ -195,8 +193,8 @@ class ControlServer:
 
     def _serve_loop(self) -> None:
         """Select loop: accept connections and read from clients."""
-        assert self._selector is not None  # noqa: S101
-        assert self._server_socket is not None  # noqa: S101
+        if self._selector is None or self._server_socket is None:
+            raise RuntimeError("control server is not running")
 
         try:
             while not self._stop_event.is_set():
@@ -218,16 +216,19 @@ class ControlServer:
 
     def _accept_connection(self) -> None:
         """Accept a new client and register it with the selector."""
-        assert self._server_socket is not None  # noqa: S101
-        assert self._selector is not None  # noqa: S101
+        if self._server_socket is None or self._selector is None:
+            raise RuntimeError("control server is not running")
         conn, _addr = self._server_socket.accept()
         conn.setblocking(False)
         self._selector.register(conn, selectors.EVENT_READ, data=b"")
 
     def _handle_client_data(self, key: selectors.SelectorKey) -> None:
         """Read available data from a client, processing complete lines."""
-        assert self._selector is not None  # noqa: S101
-        sock: socket.socket = key.fileobj  # type: ignore[assignment]
+        if self._selector is None:
+            raise RuntimeError("control server is not running")
+        sock = key.fileobj
+        if not isinstance(sock, socket.socket):
+            return
         try:
             data = sock.recv(65536)
         except (ConnectionResetError, OSError):
@@ -239,6 +240,16 @@ class ControlServer:
             return
 
         buffer: bytes = key.data + data
+
+        if len(buffer) > MAX_REQUEST_BYTES and b"\n" not in buffer:
+            logger.warning(
+                "dropping a connection that sent %d bytes with no newline (limit %d)",
+                len(buffer),
+                MAX_REQUEST_BYTES,
+            )
+            self._selector.unregister(sock)
+            sock.close()
+            return
 
         while b"\n" in buffer:
             line, buffer = buffer.split(b"\n", 1)
@@ -266,7 +277,10 @@ class ControlServer:
 
         # Authenticate if non-loopback.
         if self._config.host not in _LOOPBACK_HOSTS:
-            if not request.token or request.token != self._config.token:
+            expected = self._config.token or ""
+            # compare_digest, not !=: a byte-wise comparison leaks the token's length and content
+            # through timing, on exactly the non-loopback path the token exists to protect.
+            if not request.token or not hmac.compare_digest(request.token, expected):
                 err = RpcErrorData.from_exception(AuthError("invalid or missing token"))
                 return RpcResponse.error_response(err, request_id)
 
@@ -282,7 +296,7 @@ class ControlServer:
         except RpcError as exc:
             err = RpcErrorData.from_exception(exc)
             return RpcResponse.error_response(err, request_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("unhandled exception in handler for %r", request.method)
             err = RpcErrorData.from_unhandled(exc)
             return RpcResponse.error_response(err, request_id)

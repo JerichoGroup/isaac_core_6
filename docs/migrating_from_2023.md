@@ -23,7 +23,7 @@ resolved through a fixed precedence chain, and validated at load.
 ./run_sim.sh --camera-udp --bbox
 
 # now
-isaac-core run --set features.enabled='["camera_udp","bbox"]'
+isaac-core run --set features.enabled '["camera_udp","bbox"]'
 ```
 
 `isaac-core config dump` shows the fully resolved result and `isaac-core config explain <key>` says

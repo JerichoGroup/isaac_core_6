@@ -1,5 +1,4 @@
-"""
-Tests for the two filesystem-facing composer helpers Ofer found broken.
+"""Tests for the two filesystem-facing composer helpers that were reported broken.
 
 `delete_cesium_cache` is fully testable without Isaac. `apply_hdri` needs pxr for the real
 path, so only its guard clauses (empty path, missing file) are covered here; the dome-light

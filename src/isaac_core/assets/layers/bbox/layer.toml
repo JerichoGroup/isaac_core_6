@@ -1,7 +1,7 @@
 # Bounding-box publishing feature layer.
 #
 # Projects every object under the targets root into camera pixel space and publishes one
-# FrameBboxes message per frame. Prim paths must match docs/usd_build_sheet.md Task C exactly.
+# FrameBboxes message per frame. Prim paths must match docs/dev/usd_build_sheet.md Task C exactly.
 id = "bbox"
 usd = "bbox.usda"
 

@@ -1,5 +1,4 @@
-"""
-Contract tests for Kit extension packaging metadata.
+"""Contract tests for Kit extension packaging metadata.
 
 These cover the parts of an extension that are declaration rather than code: the
 ``[package]`` block, the icon asset, and the docs entry. Kit reads all of it, but

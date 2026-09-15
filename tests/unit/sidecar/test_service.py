@@ -182,7 +182,7 @@ def test_restart_cap_is_honoured() -> None:
 
     def _start_but_stay_unhealthy() -> None:
         original_start()
-        svc._healthy = False  # noqa: SLF001
+        svc._healthy = False
 
     svc.start = _start_but_stay_unhealthy  # type: ignore[method-assign]
     svc.set_unhealthy()

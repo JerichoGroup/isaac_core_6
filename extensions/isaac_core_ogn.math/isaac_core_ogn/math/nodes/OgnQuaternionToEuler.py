@@ -1,5 +1,4 @@
-"""
-OmniGraph node: convert a quaternion to intrinsic-XYZ Euler angles in radians.
+"""OmniGraph node: convert a quaternion to intrinsic-XYZ Euler angles in radians.
 
 Thin adapter over :func:`isaac_core.geo.quaternion_to_euler`, which is unit tested
 without Isaac Sim. This module contains no maths of its own.
@@ -28,8 +27,7 @@ class OgnQuaternionToEuler:
 
     @staticmethod
     def compute(db: OgnQuaternionToEulerDatabase) -> bool:
-        """
-        Convert the input quaternion to Euler angles and write every output form.
+        """Convert the input quaternion to Euler angles and write every output form.
 
         Args:
             db: OmniGraph node database.

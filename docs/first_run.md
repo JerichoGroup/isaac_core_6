@@ -38,7 +38,7 @@ If you get nothing or a 404, fix it before launching — an unreachable tileset 
 runs perfectly and shows no ground, with no error anywhere. Set it with:
 
 ```bash
-isaac-core run --set cesium.tileset_server_url=http://your-server:8088
+isaac-core run --set cesium.tileset_server_url http://your-server:8088
 ```
 
 Without any tile server you can still fly and still get an image topic and RTSP stream; there will
@@ -152,7 +152,7 @@ pgrep -af 'isaac_core.sim' && kill -9 <pid>
 
 ## Where to go next
 
-- Turn on more features: `--set features.enabled='["camera_udp","distance_sensor","bbox"]'`
+- Turn on more features: `--set features.enabled '["camera_udp","distance_sensor","bbox"]'`
 - Drive it from your own script instead of the test sender: see
   [Scripting with the devkit](../README.md#scripting-with-the-devkit).
 - Add a sensor of your own: [authoring_layers.md](authoring_layers.md).

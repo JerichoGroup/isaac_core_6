@@ -1,5 +1,4 @@
-"""
-Interpretation of a raw raycast hit as a ``sensor_msgs/Range`` reading.
+"""Interpretation of a raw raycast hit as a ``sensor_msgs/Range`` reading.
 
 Pure logic with no Isaac Sim dependency, so the boundary rules -- nothing detected, closer than
 the sensor can measure, beyond its reach -- are testable in isolation and live in exactly one
@@ -21,6 +20,7 @@ Use :func:`is_saturated` when a consumer needs to know it is looking at a clampe
 import math
 
 __all__ = [
+    "boresight_direction",
     "clamp_to_band",
     "is_saturated",
     "is_valid_reading",
@@ -34,8 +34,7 @@ def resolve_range(
     min_range_m: float,
     max_range_m: float,
 ) -> float:
-    """
-    Turn a raw raycast result into a publishable range in metres.
+    """Turn a raw raycast result into a publishable range in metres.
 
     Args:
         hit: Whether the ray struck anything.
@@ -69,8 +68,7 @@ def resolve_range(
 
 
 def clamp_to_band(distance_m: float, min_range_m: float, max_range_m: float) -> float:
-    """
-    Clamp a measured distance into the sensor's rated band.
+    """Clamp a measured distance into the sensor's rated band.
 
     Args:
         distance_m: Measured distance in metres.
@@ -85,8 +83,7 @@ def clamp_to_band(distance_m: float, min_range_m: float, max_range_m: float) -> 
 
 
 def is_saturated(range_m: float, min_range_m: float, max_range_m: float) -> bool:
-    """
-    Report whether a reading is sitting on a band edge.
+    """Report whether a reading is sitting on a band edge.
 
     A reading at an edge is either a genuine measurement at that exact distance or a clamped
     out-of-band one; they are indistinguishable by design. Consumers that must not act on a
@@ -105,8 +102,7 @@ def is_saturated(range_m: float, min_range_m: float, max_range_m: float) -> bool
 
 
 def is_valid_reading(range_m: float, min_range_m: float, max_range_m: float) -> bool:
-    """
-    Report whether a reading is strictly inside the rated band.
+    """Report whether a reading is strictly inside the rated band.
 
     Args:
         range_m: The published range.
@@ -118,3 +114,30 @@ def is_valid_reading(range_m: float, min_range_m: float, max_range_m: float) -> 
 
     """
     return math.isfinite(range_m) and not is_saturated(range_m, min_range_m, max_range_m)
+
+
+def boresight_direction(
+    rotation_rows: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ],
+) -> tuple[float, float, float]:
+    """Return the direction a USD camera looks, given its world rotation matrix rows.
+
+    A USD camera looks along its own local **-Z**, so the direction is the negated third row of its
+    world rotation. Deriving it from the *camera's* transform rather than a sibling prim's is what
+    makes a boresighted sensor structurally aligned: a plain Xform is identity while the camera
+    carries its own local orientation, so casting along the Xform's -Z was permanently 90 degrees off
+    the view.
+
+    Args:
+        rotation_rows: The three rows of the camera's world rotation matrix.
+
+    Returns:
+        A direction vector along the camera's view axis. Not normalised: a rotation matrix's rows are
+        already unit length.
+
+    """
+    _, _, third = rotation_rows
+    return (-third[0], -third[1], -third[2])

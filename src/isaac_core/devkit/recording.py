@@ -1,11 +1,8 @@
-"""
-Generic topic recorder replacing the four copy-paste capture classes.
+"""Generic topic recorder.
 
-Fixes defect #8: ``VideoCapture``, ``PoseCapture``, ``DistanceCapture`` and
-``BboxCapture`` were ~95% identical, differing only in message type, topic and
-serialiser. This module provides ONE generic :class:`TopicRecorder` parameterised
-by those three things, plus thin factory functions that preserve the ergonomic
-call sites.
+One :class:`TopicRecorder` parameterised by message type, topic and serialiser, rather
+than a class per capture kind -- they differ only in those three things. Thin factory
+functions keep the call sites ergonomic.
 
 **Import safety**: ``rclpy``, ``cv_bridge`` and ``cv2`` are NOT importable on a
 machine without ROS 2. They are imported lazily inside the functions that actually
@@ -18,7 +15,9 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 import logging
 from pathlib import Path
+import pickle
 import statistics
+import threading
 from typing import Any, Generic, TypeVar
 
 from isaac_core.contracts import topics
@@ -40,9 +39,8 @@ _FALLBACK_FPS = 1.0
 _MIN_FRAMES_FOR_RATE = 2
 
 
-def _stamp_to_ns(stamp: Any) -> int:  # noqa: ANN401
-    """
-    Convert a ROS 2 ``builtin_interfaces/Time`` stamp to integer nanoseconds.
+def _stamp_to_ns(stamp: Any) -> int:
+    """Convert a ROS 2 ``builtin_interfaces/Time`` stamp to integer nanoseconds.
 
     Args:
         stamp: An object exposing ``sec`` and ``nanosec`` integer fields.
@@ -55,8 +53,7 @@ def _stamp_to_ns(stamp: Any) -> int:  # noqa: ANN401
 
 
 def measured_fps(stamps_ns: Sequence[int]) -> float:
-    """
-    Derive the true average frame rate (Hz) from per-frame timestamps.
+    """Derive the true average frame rate (Hz) from per-frame timestamps.
 
     This is the heart of D22's "derive timing, never ask the user for an fps". The
     median inter-frame interval is used rather than the mean so a single dropped frame
@@ -82,8 +79,7 @@ def measured_fps(stamps_ns: Sequence[int]) -> float:
 
 
 def presentation_times_s(stamps_ns: Sequence[int]) -> list[float]:
-    """
-    Convert absolute timestamps to presentation times in seconds from the first frame.
+    """Convert absolute timestamps to presentation times in seconds from the first frame.
 
     The first frame sits at ``0.0``; every later frame is offset by its real elapsed
     time. These are the exact per-frame times a variable-frame-rate muxer would need,
@@ -111,9 +107,8 @@ def presentation_times_s(stamps_ns: Sequence[int]) -> list[float]:
     return times
 
 
-def _require_rclpy() -> Any:  # noqa: ANN401
-    """
-    Import and return rclpy, raising a clear error if unavailable.
+def _require_rclpy() -> Any:
+    """Import and return rclpy, raising a clear error if unavailable.
 
     Returns:
         The rclpy module.
@@ -123,7 +118,7 @@ def _require_rclpy() -> Any:  # noqa: ANN401
 
     """
     try:
-        import rclpy  # noqa: PLC0415
+        import rclpy
     except ImportError:
         msg = (
             "rclpy is not available. TopicRecorder requires a sourced ROS 2 "
@@ -135,8 +130,7 @@ def _require_rclpy() -> Any:  # noqa: ANN401
 
 
 class TopicRecorder(Generic[MsgT]):
-    """
-    Generic recorder for a single ROS 2 topic.
+    """Generic recorder for a single ROS 2 topic.
 
     Replaces the old copy-paste ``VideoCapture``/``PoseCapture``/``DistanceCapture``/
     ``BboxCapture`` classes with one parameterised implementation. The message type,
@@ -171,8 +165,7 @@ class TopicRecorder(Generic[MsgT]):
         node_name: str | None = None,
         qos_depth: int = 10,
     ) -> None:
-        """
-        Initialise the recorder.
+        """Initialise the recorder.
 
         Args:
             topic: ROS 2 topic to subscribe to.
@@ -213,8 +206,7 @@ class TopicRecorder(Generic[MsgT]):
         return self._recording
 
     def start(self) -> None:
-        """
-        Create the rclpy node and subscription, and begin recording.
+        """Create the rclpy node and subscription, and begin recording.
 
         Raises:
             ImportError: If rclpy is not available.
@@ -222,7 +214,7 @@ class TopicRecorder(Generic[MsgT]):
         """
         rclpy = _require_rclpy()
 
-        from rclpy.qos import (  # noqa: PLC0415
+        from rclpy.qos import (
             HistoryPolicy,
             QoSProfile,
             ReliabilityPolicy,
@@ -262,8 +254,7 @@ class TopicRecorder(Generic[MsgT]):
         logger.info("stopped recording on %s (%d frames)", self._topic, len(self._frames))
 
     def spin(self) -> None:
-        """
-        Start spinning the node in a background daemon thread.
+        """Start spinning the node in a background daemon thread.
 
         Raises:
             ImportError: If rclpy is not available.
@@ -276,9 +267,7 @@ class TopicRecorder(Generic[MsgT]):
 
         _require_rclpy()
 
-        import threading  # noqa: PLC0415
-
-        from rclpy.executors import SingleThreadedExecutor  # noqa: PLC0415
+        from rclpy.executors import SingleThreadedExecutor
 
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
@@ -291,8 +280,7 @@ class TopicRecorder(Generic[MsgT]):
         self._spin_thread.start()
 
     def save_to(self, path: str | Path) -> Path:
-        """
-        Persist the recorded frames using the serialiser's output format.
+        """Persist the recorded frames using the serialiser's output format.
 
         Writes a pickle file keyed by frame index, matching the old capture classes'
         format for backward compatibility with existing analysis scripts.
@@ -304,7 +292,6 @@ class TopicRecorder(Generic[MsgT]):
             The resolved output path.
 
         """
-        import pickle  # noqa: PLC0415
 
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -314,10 +301,9 @@ class TopicRecorder(Generic[MsgT]):
         return out
 
     def save_video(self, path: str | Path, *, fps_override: float | None = None) -> Path:
-        """
-        Write the recorded image frames to an mp4 at their true measured rate.
+        """Write the recorded image frames to an mp4 at their true measured rate.
 
-        This exists because 2023's capture asked the user for an fps and wrote a
+        The fps is derived rather than asked for, because a supplied value writes a
         constant-rate mp4, but Isaac Sim renders at a variable ~30-50 fps, so every
         recording played partly too fast and partly too slow. Each frame here carries
         the real ``header.stamp`` captured at receive time (see :func:`video_recorder`),
@@ -345,7 +331,7 @@ class TopicRecorder(Generic[MsgT]):
             RuntimeError: If no frames were recorded (nothing to write).
 
         """
-        import cv2  # noqa: PLC0415
+        import cv2
 
         frames = [self._frames[i] for i in sorted(self._frames)]
         if not frames:
@@ -365,6 +351,16 @@ class TopicRecorder(Generic[MsgT]):
         height, width = first.shape[0], first.shape[1]
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(str(out), fourcc, fps, (width, height))
+        if not writer.isOpened():
+            # VideoWriter returns an object even when the codec or backend is unavailable, then
+            # silently drops every frame and leaves an empty file behind a "wrote N frames" log.
+            writer.release()
+            msg = (
+                f"OpenCV could not open a writer for {out} with the mp4v codec. The frames were "
+                "recorded but no video was written. Install a build of opencv-python with mp4v "
+                "support, or save the poses and remux with ffmpeg."
+            )
+            raise RuntimeError(msg)
         try:
             for f in frames:
                 writer.write(f["image"])
@@ -409,8 +405,7 @@ def video_recorder(
     *,
     node_name: str = "video_recorder",
 ) -> TopicRecorder[Any]:
-    """
-    Create a recorder for RGB image messages.
+    """Create a recorder for RGB image messages.
 
     The serialiser converts sensor_msgs/Image to a numpy array via cv_bridge and
     captures the message's ``header.stamp`` as integer nanoseconds. That timestamp is
@@ -427,8 +422,8 @@ def video_recorder(
 
     """
 
-    def _serialise_image(msg: Any, frame_index: int) -> dict[str, Any]:  # noqa: ANN401
-        from cv_bridge import CvBridge  # noqa: PLC0415
+    def _serialise_image(msg: Any, frame_index: int) -> dict[str, Any]:
+        from cv_bridge import CvBridge
 
         bridge = CvBridge()
         return {
@@ -450,8 +445,7 @@ def pose_recorder(
     *,
     node_name: str = "pose_recorder",
 ) -> TopicRecorder[Any]:
-    """
-    Create a recorder for GeoPoseStamped messages.
+    """Create a recorder for GeoPoseStamped messages.
 
     Args:
         topic: The pose topic to subscribe to.
@@ -462,7 +456,7 @@ def pose_recorder(
 
     """
 
-    def _serialise_pose(msg: Any, frame_index: int) -> dict[str, Any]:  # noqa: ANN401
+    def _serialise_pose(msg: Any, frame_index: int) -> dict[str, Any]:
         pos = msg.pose.position
         orient = msg.pose.orientation
         return {
@@ -489,8 +483,7 @@ def range_recorder(
     *,
     node_name: str = "range_recorder",
 ) -> TopicRecorder[Any]:
-    """
-    Create a recorder for Range messages.
+    """Create a recorder for Range messages.
 
     Args:
         topic: The range sensor topic.
@@ -501,7 +494,7 @@ def range_recorder(
 
     """
 
-    def _serialise_range(msg: Any, frame_index: int) -> dict[str, Any]:  # noqa: ANN401
+    def _serialise_range(msg: Any, frame_index: int) -> dict[str, Any]:
         return {
             "frame": frame_index,
             "range_m": msg.range,
@@ -538,9 +531,8 @@ _BBOX_ARRAY_FIELDS = (
 )
 
 
-def _scalar(value: Any) -> Any:  # noqa: ANN401
-    """
-    Convert a numpy scalar from a ROS array field into a plain Python value.
+def _scalar(value: Any) -> Any:
+    """Convert a numpy scalar from a ROS array field into a plain Python value.
 
     ROS array fields deserialise to numpy arrays, whose elements are numpy scalars that the
     json module cannot encode. Recording silently failing at write time is worse than a
@@ -562,8 +554,7 @@ def bbox_recorder(
     *,
     node_name: str = "bbox_recorder",
 ) -> TopicRecorder[Any]:
-    """
-    Create a recorder for bounding box messages.
+    """Create a recorder for bounding box messages.
 
     Args:
         topic: The bounding box topic.
@@ -574,7 +565,7 @@ def bbox_recorder(
 
     """
 
-    def _serialise_bbox(msg: Any, frame_index: int) -> dict[str, Any]:  # noqa: ANN401
+    def _serialise_bbox(msg: Any, frame_index: int) -> dict[str, Any]:
         # FrameBboxes carries parallel arrays rather than a Bbox[], so a detection is a slice
         # across every array. Recorded back as one dict per detection, which is what a reader
         # actually wants, and re-zips them here rather than making every consumer do it.
@@ -597,30 +588,30 @@ def bbox_recorder(
 # --------------------------------------------------------------------------- #
 
 
-def _lazy_image_type() -> Any:  # noqa: ANN401
+def _lazy_image_type() -> Any:
     """Import and return sensor_msgs.msg.Image."""
-    from sensor_msgs.msg import Image  # noqa: PLC0415
+    from sensor_msgs.msg import Image
 
     return Image
 
 
-def _lazy_geopose_type() -> Any:  # noqa: ANN401
+def _lazy_geopose_type() -> Any:
     """Import and return geographic_msgs.msg.GeoPoseStamped."""
-    from geographic_msgs.msg import GeoPoseStamped  # noqa: PLC0415
+    from geographic_msgs.msg import GeoPoseStamped
 
     return GeoPoseStamped
 
 
-def _lazy_range_type() -> Any:  # noqa: ANN401
+def _lazy_range_type() -> Any:
     """Import and return sensor_msgs.msg.Range."""
-    from sensor_msgs.msg import Range  # noqa: PLC0415
+    from sensor_msgs.msg import Range
 
     return Range
 
 
-def _lazy_framebboxes_type() -> Any:  # noqa: ANN401
+def _lazy_framebboxes_type() -> Any:
     """Import and return the FrameBboxes message type."""
-    from isaac_core_ros2_msgs.msg import FrameBboxes  # noqa: PLC0415
+    from isaac_core_ros2_msgs.msg import FrameBboxes
 
     return FrameBboxes
 

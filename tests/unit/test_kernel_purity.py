@@ -1,5 +1,4 @@
-"""
-Verify kernel packages import with no Isaac Sim and no ROS 2 present.
+"""Verify kernel packages import with no Isaac Sim and no ROS 2 present.
 
 The whole layering exists to guarantee this property: the kernel (contracts,
 config, geo, protocol) is pure Python, usable in CI without a GPU, without

@@ -1,5 +1,4 @@
-"""
-Trajectory generators: deterministic, pure iterators that yield geodetic poses.
+"""Trajectory generators: deterministic, pure iterators that yield geodetic poses.
 
 A :class:`Trajectory` is a protocol with a ``poses(rate_hz)`` method returning
 an :class:`~collections.abc.Iterator` of
@@ -31,8 +30,7 @@ from isaac_core.geo.distance import geodesic_distance_m, meters_to_latlon_offset
 
 @runtime_checkable
 class Trajectory(Protocol):
-    """
-    Protocol for a deterministic trajectory generator.
+    """Protocol for a deterministic trajectory generator.
 
     A trajectory has a known duration and yields exactly
     ``int(duration_s * rate_hz)`` poses when iterated. Implementations must be
@@ -45,8 +43,7 @@ class Trajectory(Protocol):
         ...  # pragma: no cover
 
     def poses(self, rate_hz: float) -> Iterator[GeodeticPose]:
-        """
-        Yield poses at the given rate.
+        """Yield poses at the given rate.
 
         The number of yielded poses is exactly ``int(duration_s * rate_hz)``.
 
@@ -62,8 +59,7 @@ class Trajectory(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class HoldTrajectory:
-    """
-    Yield a single fixed pose indefinitely.
+    """Yield a single fixed pose indefinitely.
 
     Replace the old ``OnePointSender``'s payload role. Since the duration is
     infinite, ``poses()`` yields ``int(duration_s * rate_hz)`` samples where
@@ -82,8 +78,7 @@ class HoldTrajectory:
         return math.inf
 
     def poses(self, rate_hz: float) -> Iterator[GeodeticPose]:
-        """
-        Yield the held pose forever.
+        """Yield the held pose forever.
 
         Args:
             rate_hz: Output rate in Hz (ignored for hold; included for protocol).
@@ -98,13 +93,12 @@ class HoldTrajectory:
 
 @dataclass(frozen=True, slots=True)
 class OrbitTrajectory:
-    """
-    Circular orbit around a centre point with yaw tangent to the path.
+    """Circular orbit around a centre point with yaw tangent to the path.
 
     Match the geometry of the old ``OrbitSender``: the orbit lies in a
     horizontal plane at ``height_m`` MSL, the vehicle travels at constant
     ground speed, and the yaw always points tangent to the circle (computed
-    from the finite difference to the next sample, exactly as 2023 did).
+    from the finite difference to the next sample).
 
     Args:
         center_lat_deg: Centre latitude in degrees.
@@ -145,12 +139,11 @@ class OrbitTrajectory:
         return self.orbit_duration_s
 
     def poses(self, rate_hz: float) -> Iterator[GeodeticPose]:
-        """
-        Yield orbit poses at the given rate.
+        """Yield orbit poses at the given rate.
 
         Exactly ``int(duration_s * rate_hz)`` samples are yielded. The yaw at
         each sample is the tangent direction derived from the finite difference
-        to the next sample, matching the 2023 implementation.
+        to the next sample.
 
         Args:
             rate_hz: Output rate in Hz.
@@ -176,7 +169,7 @@ class OrbitTrajectory:
             lat = self.center_lat_deg + d_lat
             lon = self.center_lon_deg + d_lon
 
-            # Yaw from finite difference to next step (matching 2023)
+            # Yaw from the finite difference to the next step
             t_next = 2.0 * math.pi * num_cycles * ((step + 1) / total_steps)
             x_next = self.radius_m * math.cos(t_next)
             y_next = self.radius_m * math.sin(t_next)
@@ -196,8 +189,7 @@ _MIN_WAYPOINTS = 2
 
 @dataclass(frozen=True, slots=True)
 class PathTrajectory:
-    """
-    Constant-speed arc-length interpolation over LLA waypoints.
+    """Constant-speed arc-length interpolation over LLA waypoints.
 
     Match the old ``PathSender``'s cumulative-distance approach: the path is
     parameterised by arc length, the vehicle travels at constant ground speed,
@@ -233,8 +225,7 @@ class PathTrajectory:
 
     @property
     def duration_s(self) -> float:
-        """
-        Return the total path duration based on distance and speed.
+        """Return the total path duration based on distance and speed.
 
         Duration is ``total_distance / speed_mps``.
 
@@ -256,8 +247,7 @@ class PathTrajectory:
         return self._cumulative_distances[-1]
 
     def poses(self, rate_hz: float) -> Iterator[GeodeticPose]:
-        """
-        Yield path poses at the given rate.
+        """Yield path poses at the given rate.
 
         Exactly ``int(duration_s * rate_hz)`` samples are yielded. The position
         is interpolated linearly in LLA between waypoints based on cumulative

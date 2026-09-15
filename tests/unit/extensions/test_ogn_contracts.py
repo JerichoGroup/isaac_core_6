@@ -1,5 +1,4 @@
-"""
-Contract tests for OmniGraph extensions.
+"""Contract tests for OmniGraph extensions.
 
 These tests parse .ogn and extension.toml files as data — no Isaac Sim import,
 no OmniGraph runtime. They enforce naming conventions, structural contracts, and

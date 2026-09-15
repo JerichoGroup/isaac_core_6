@@ -1,5 +1,4 @@
-"""
-Tkinter GUI for manually driving the camera via UDP pose packets.
+"""Tkinter GUI for manually driving the camera via UDP pose packets.
 
 Replaces the old ``debugger/udp_sender.py`` and ``debugger/ros_sender.py``. All
 state and logic lives in :class:`PoseSenderController` which has no tkinter
@@ -69,8 +68,7 @@ _STEP_RATE: Final = 1.0
 
 
 def _build_packet_table() -> list[str]:
-    """
-    Build the packet-structure reference table from live contract constants.
+    """Build the packet-structure reference table from live contract constants.
 
     Derives byte ranges, field names, and types from
     :mod:`isaac_core.contracts.packet` so the table cannot drift from reality.
@@ -117,8 +115,7 @@ PACKET_TABLE_LINES: Final = _build_packet_table()
 
 
 class PoseSenderController:
-    """
-    All state and behaviour for the pose sender, with no UI dependency.
+    """All state and behaviour for the pose sender, with no UI dependency.
 
     Fields are stored in degrees (the user's unit); conversion to radians happens
     exactly once at the boundary when building a :class:`GeodeticPose`.
@@ -168,8 +165,7 @@ class PoseSenderController:
         self.rate_hz = _DEFAULT_RATE_HZ
 
     def nudge(self, field: str, direction: int) -> None:
-        """
-        Adjust a field by one step in the given direction, unless locked.
+        """Adjust a field by one step in the given direction, unless locked.
 
         Args:
             field: The field name to nudge (e.g. ``"lat_deg"``).
@@ -209,8 +205,7 @@ class PoseSenderController:
         return value
 
     def build_pose(self) -> GeodeticPose:
-        """
-        Build a :class:`GeodeticPose` from current field values.
+        """Build a :class:`GeodeticPose` from current field values.
 
         Converts degrees to radians at this boundary.
         """
@@ -229,8 +224,7 @@ class PoseSenderController:
         )
 
     def send_once(self) -> bool:
-        """
-        Build and send one pose packet. Return True on success, False on failure.
+        """Build and send one pose packet. Return True on success, False on failure.
 
         Skips if paused. Logs the result.
         """
@@ -269,8 +263,7 @@ class PoseSenderController:
 
 
 def _run_sender_loop(controller: PoseSenderController, stop_event: threading.Event) -> None:
-    """
-    Background send loop with drift-free pacing.
+    """Background send loop with drift-free pacing.
 
     Uses ``time.perf_counter`` with an accumulating deadline rather than
     ``time.sleep(1/rate)``. The ``pace()`` helper in ``devkit.transport`` is
@@ -312,8 +305,7 @@ def _build_field_rows(
     root: "tk.Misc",
     controller: PoseSenderController,
 ) -> tuple[dict[str, "tk.DoubleVar"], dict[str, "tk.BooleanVar"]]:
-    """
-    Build one labelled row per pose field, each with a lock and nudge buttons.
+    """Build one labelled row per pose field, each with a lock and nudge buttons.
 
     Args:
         root: Parent widget.
@@ -323,7 +315,7 @@ def _build_field_rows(
         The value variables and the lock variables, both keyed by field name.
 
     """
-    import tkinter as tk  # noqa: PLC0415
+    import tkinter as tk
 
     value_vars: dict[str, tk.DoubleVar] = {}
     lock_vars: dict[str, tk.BooleanVar] = {}
@@ -357,8 +349,7 @@ def _build_endpoint_rows(
     controller: PoseSenderController,
     row: int,
 ) -> tuple["tk.StringVar", "tk.IntVar", int]:
-    """
-    Build the host and port entry rows.
+    """Build the host and port entry rows.
 
     Args:
         root: Parent widget.
@@ -369,7 +360,7 @@ def _build_endpoint_rows(
         The host variable, the port variable, and the next free row.
 
     """
-    import tkinter as tk  # noqa: PLC0415
+    import tkinter as tk
 
     tk.Label(root, text="Host").grid(row=row, column=0, sticky="w", padx=4)
     host_var = tk.StringVar(value=controller.host)
@@ -384,8 +375,7 @@ def _build_endpoint_rows(
 
 
 def _build_log_and_table(root: "tk.Misc", row: int) -> "tk.Text":
-    """
-    Build the rolling packet log and the static packet-structure reference table.
+    """Build the rolling packet log and the static packet-structure reference table.
 
     Args:
         root: Parent widget.
@@ -395,7 +385,7 @@ def _build_log_and_table(root: "tk.Misc", row: int) -> "tk.Text":
         The log text widget, which the sync callback refreshes.
 
     """
-    import tkinter as tk  # noqa: PLC0415
+    import tkinter as tk
 
     tk.Label(root, text="Recent packets:").grid(row=row, column=0, columnspan=5, sticky="w")
     row += 1
@@ -422,8 +412,7 @@ def _push_widgets_to_controller(
     host_var: "tk.StringVar",
     port_var: "tk.IntVar",
 ) -> None:
-    """
-    Copy the current widget values into the controller.
+    """Copy the current widget values into the controller.
 
     A half-typed entry raises ``TclError``, which is expected and ignored: the field keeps
     its last good value until the user finishes typing.
@@ -436,7 +425,7 @@ def _push_widgets_to_controller(
         port_var: Port entry variable.
 
     """
-    import tkinter as tk  # noqa: PLC0415
+    import tkinter as tk
 
     for attr, var in value_vars.items():
         try:
@@ -453,8 +442,7 @@ def _push_widgets_to_controller(
 
 
 def launch_gui(controller: "PoseSenderController | None" = None) -> None:
-    """
-    Launch the tkinter GUI.
+    """Launch the tkinter GUI.
 
     Args:
         controller: Pre-configured controller, or ``None`` to build a default one. Taking
@@ -465,7 +453,7 @@ def launch_gui(controller: "PoseSenderController | None" = None) -> None:
 
     """
     try:
-        import tkinter as tk  # noqa: F811
+        import tkinter as tk
     except ImportError as exc:
         msg = (
             "tkinter is not available. Install python3-tk:\n" "  sudo apt install python3-tk\n" f"Original error: {exc}"
@@ -525,8 +513,7 @@ def launch_gui(controller: "PoseSenderController | None" = None) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """
-    Return the command-line parser for the pose sender.
+    """Return the command-line parser for the pose sender.
 
     Returns:
         A parser accepting the initial field values and a no-window smoke-test flag.
@@ -551,8 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """
-    Entry point for ``python -m isaac_core.debug.pose_sender_gui``.
+    """Entry point for ``python -m isaac_core.debug.pose_sender_gui``.
 
     Parses arguments BEFORE touching tkinter. An earlier version ignored ``argv`` and
     called :func:`launch_gui` unconditionally, so ``--help`` opened a window and blocked

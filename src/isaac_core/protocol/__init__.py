@@ -1,5 +1,4 @@
-"""
-Wire codecs for the pose UDP protocol.
+"""Wire codecs for the pose UDP protocol.
 
 This package contains the encoder/decoder for the 51-byte pose packet that
 drives camera placement in Isaac Sim. It is pure Python with no I/O: encoding

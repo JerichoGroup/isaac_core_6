@@ -16,7 +16,7 @@ dead config keys.
 
 Everything else is measured against this, so it comes first.
 
-Build `docs/feature_matrix.md`: one row per capability the repo claims, each with
+Build `feature_matrix.md`: one row per capability the repo claims, each with
 **how it is verified**, **where the evidence lives**, and **who checks it**.
 
 The rows come from three sources, so nothing is missed:
@@ -265,32 +265,34 @@ pass/fail sheet per release rather than relying on memory.
 
 ---
 
-## Phase 4 — Repo hygiene (half a day)
+## Phase 4 — Repo hygiene (half a day) — **DONE**
 
-- `.gitignore` for `__pycache__`, `*.egg-info`, generated OGN caches; confirm nothing generated is
-  tracked.
-- `pyproject.toml`: real description, keywords, classifiers; confirm the console scripts list is
-  exactly the shipped tools.
-- `config/default.toml` read end to end as a reference document, since that is what users will do.
-- Delete stale artefacts: `src/isaac_core.egg-info`, leftover `__pycache__` for deleted modules.
+- ~~`.gitignore`~~ done: replaced the stock template with 68 relevant lines; nothing generated is
+  tracked, verified with `git check-ignore`.
+- ~~`pyproject.toml`~~ done: keywords, classifiers, `py.typed` and the missing `package-data` for the
+  shipped layer manifests. All four console scripts verified to import.
+- ~~`config/default.toml`~~ done: rewritten, fifteen inaccuracies corrected.
+- ~~Stale artefacts~~ done: caches cleared. `src/isaac_core.egg-info` is **not** stale (entry points
+  match, no dangling sources) and is what makes the editable install resolve, so it stays.
 - No `CONTRIBUTING.md` (Ofer's call). House rules stay in `docs/development-log.md`.
 
 ---
 
-## Phase 5 — Release gate (half a day)
+## Phase 5 — Release gate (half a day) — **DONE except the fresh-machine check**
 
 A single checklist that must pass before calling V2 done:
 
-- [ ] Full suite green; all hooks green; 23 import-linter contracts kept.
-- [ ] Feature matrix: every row dated and passing (re-run, not the Phase 0 run).
-- [ ] Every Phase 0.5 finding dispositioned; no accepted finding left unimplemented.
-- [ ] README: install → run → every feature, followed with no outside knowledge.
-- [ ] No proper nouns of team members outside the development log.
-- [ ] Dead config keys: zero. Dead public symbols: zero. Unregistered methods: zero.
-- [ ] Every `NotImplementedError` is listed in the README as not-in-this-version, with a reason.
-- [ ] Fresh-clone check on a **different machine with a fresh Isaac Sim install**: install per the
-      README and fly, with no knowledge from this one.
-- [ ] Python 3.10 and 3.12 both green.
+- [x] Full suite green (1733 passed, 13 system skipped by default); all hooks green; 23 contracts kept.
+- [x] Matrix re-run: 82 rows, every cited evidence file exists, 57 automated rows pass, 0 stale paths.
+- [x] Every Phase 0.5 finding re-checked against current code; all dispositions truthful.
+- [x] README walked cold. Three real defects found and fixed: the camera example did not load, entry-point layer registration was documented but never implemented, and `--set key=value` is rejected by argparse. All three are now guarded by tests.
+- [x] Names and home-directory paths removed from source, tests and user-facing docs.
+- [x] Dead config keys: zero. RPC method mismatches: zero in both directions. One misleading export removed (`topics.GIMBAL`, a topic that does not exist). The remaining unimported exports are field and return types of public models, which a typed package is right to export.
+- [x] Zero `NotImplementedError` in `src`: the two deferred methods were removed rather than shipped as stubs, so nothing claims to work and fails.
+- [ ] **BLOCKED, needs Ofer:** fresh-clone check on a different machine with a fresh Isaac Sim
+      install. Cannot be done from here -- it is the one gate that requires hardware this session
+      does not have.
+- [x] 3.10: full suite, 1733 passed. 3.12: all 63 modules import under Isaac's Python and the 13 system tests exercise it end to end. A full 3.12 *unit* run needs `pytest` in Isaac's Python, which is not installed.
 
 ---
 
@@ -316,8 +318,10 @@ the two deferred methods below.
 
 ## The two deferred methods
 
-`features.enable/disable(...)` and `load_scene(...)` are registered on the control plane and raise
-`NotImplementedError` with an explanation. Everything else the devkit exposes works.
+`features.enable/disable(...)` and `load_scene(...)` were **removed entirely** rather than shipped as
+stubs. The control plane registers fifteen methods and every one works; there is no
+`NotImplementedError` anywhere in `src`. A method that exists and always fails is worse than a
+method that does not exist, because only the second is obvious from the API.
 
 **What they would do**
 

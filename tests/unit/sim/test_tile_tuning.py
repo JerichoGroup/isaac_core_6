@@ -20,11 +20,11 @@ class _FakeAttr:
         self._valid = valid
         self.value: object = None
 
-    def IsValid(self) -> bool:  # noqa: N802 - USD API name
+    def IsValid(self) -> bool:
         """Report validity."""
         return self._valid
 
-    def Set(self, value: object) -> None:  # noqa: N802 - USD API name
+    def Set(self, value: object) -> None:
         """Record the value."""
         self.value = value
 
@@ -38,15 +38,15 @@ class _FakePrim:
         if is_tileset:
             self.attrs["cesium:url"] = _FakeAttr()
 
-    def IsValid(self) -> bool:  # noqa: N802 - USD API name
+    def IsValid(self) -> bool:
         """Report validity."""
         return True
 
-    def GetAttribute(self, name: str) -> _FakeAttr:  # noqa: N802 - USD API name
+    def GetAttribute(self, name: str) -> _FakeAttr:
         """Return the named attribute, or an invalid placeholder."""
         return self.attrs.get(name, _FakeAttr(valid=False))
 
-    def CreateAttribute(self, name: str, _type: object) -> _FakeAttr:  # noqa: N802 - USD API name
+    def CreateAttribute(self, name: str, _type: object) -> _FakeAttr:
         """Create and return the named attribute."""
         self.attrs[name] = _FakeAttr()
         return self.attrs[name]
@@ -59,7 +59,7 @@ class _FakeStage:
         """Store the root."""
         self._root = root
 
-    def GetPrimAtPath(self, _path: object) -> object:  # noqa: N802 - USD API name
+    def GetPrimAtPath(self, _path: object) -> object:
         """Return the root prim."""
         return self._root
 
@@ -134,7 +134,7 @@ def test_missing_tilesets_root_warns_and_writes_nothing() -> None:
     """Warn rather than raise when the scene has no tilesets scope."""
 
     class _Absent:
-        def IsValid(self) -> bool:  # noqa: N802 - USD API name
+        def IsValid(self) -> bool:
             return False
 
     records: list[logging.LogRecord] = []

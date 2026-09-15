@@ -1,5 +1,4 @@
-"""
-Guard that the devkit only calls control-plane methods the runtime registers.
+"""Guard that the devkit only calls control-plane methods the runtime registers.
 
 The devkit (`SimSession`) is a thin client over the JSON-RPC control plane. If it calls a
 method the runtime never registers, the call fails against a real simulator with a confusing

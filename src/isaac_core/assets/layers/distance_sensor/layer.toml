@@ -1,7 +1,7 @@
 # Distance sensor feature layer.
 #
 # A PhysX raycast rangefinder publishing sensor_msgs/Range. The prim paths below must match
-# docs/usd_build_sheet.md Task B exactly.
+# docs/dev/usd_build_sheet.md Task B exactly.
 id = "distance_sensor"
 usd = "distance_sensor.usda"
 

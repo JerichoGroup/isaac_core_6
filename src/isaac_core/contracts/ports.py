@@ -1,9 +1,7 @@
-"""
-Default network ports and per-vehicle port allocation.
+"""Default network ports and per-vehicle port allocation.
 
-One UDP port per vehicle, allocated as ``base + index``. That keeps the wire
-format unchanged from the previous generation while still supporting a swarm: a
-single aircraft lands on the familiar 33333, and additional aircraft follow
+One UDP port per vehicle, allocated as ``base + index``. That supports a swarm without changing the wire
+format: a single aircraft lands on the usual 33333, and additional aircraft follow
 sequentially unless a port is set explicitly in config.
 """
 
@@ -11,6 +9,10 @@ from typing import Final
 
 # Base port for inbound pose packets. Vehicle *n* defaults to ``base + n``.
 DEFAULT_POSE_UDP_PORT: Final = 33333
+
+# Base RTSP port. Each simultaneous stream needs its own, so a camera's port is this plus the
+# vehicle's index unless the config pins one explicitly.
+DEFAULT_RTSP_PORT: Final = 8554
 
 # Port for the JSON-RPC control plane. Bound to localhost unless configured otherwise.
 DEFAULT_CONTROL_PLANE_PORT: Final = 8760
@@ -23,8 +25,7 @@ MAX_PORT: Final = 65535
 
 
 def validate_port(port: int) -> int:
-    """
-    Check that a port is in the unprivileged range.
+    """Check that a port is in the unprivileged range.
 
     Args:
         port: Port number to check.
@@ -43,8 +44,7 @@ def validate_port(port: int) -> int:
 
 
 def pose_port_for_index(index: int, base: int = DEFAULT_POSE_UDP_PORT) -> int:
-    """
-    Return the default pose port for the vehicle at ``index``.
+    """Return the default pose port for the vehicle at ``index``.
 
     Args:
         index: Zero-based vehicle index.
@@ -66,6 +66,7 @@ def pose_port_for_index(index: int, base: int = DEFAULT_POSE_UDP_PORT) -> int:
 __all__ = [
     "DEFAULT_CONTROL_PLANE_PORT",
     "DEFAULT_POSE_UDP_PORT",
+    "DEFAULT_RTSP_PORT",
     "MAX_PORT",
     "MIN_PORT",
     "pose_port_for_index",

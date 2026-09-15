@@ -1,5 +1,4 @@
-"""
-Motion limits: optional caps on speed, acceleration, turn rate, and climb rate.
+"""Motion limits: optional caps on speed, acceleration, turn rate, and climb rate.
 
 ``MotionLimits`` is a frozen dataclass whose fields are all ``None | float``.
 ``None`` means unlimited -- reproducing the old constant-speed, no-dynamics
@@ -17,8 +16,7 @@ import math
 
 @dataclass(frozen=True, slots=True)
 class MotionLimits:
-    """
-    Optional kinematic constraints on vehicle motion.
+    """Optional kinematic constraints on vehicle motion.
 
     Each field is ``None`` (unlimited) or a positive ``float``. The clamping
     helpers are pure -- they return a bounded value without any side effects.
@@ -45,8 +43,7 @@ class MotionLimits:
                 raise ValueError(msg)
 
     def clamp_speed(self, speed_mps: float) -> float:
-        """
-        Clamp a speed value to the configured maximum.
+        """Clamp a speed value to the configured maximum.
 
         The sign of ``speed_mps`` is preserved so negative (backward) motion
         is still possible; only the magnitude is capped.
@@ -63,8 +60,7 @@ class MotionLimits:
         return math.copysign(min(abs(speed_mps), self.max_speed_mps), speed_mps)
 
     def clamp_turn_rate_r(self, rate_rad_s: float) -> float:
-        """
-        Clamp an angular rate (radians/s) to the configured maximum.
+        """Clamp an angular rate (radians/s) to the configured maximum.
 
         The sign is preserved (positive = clockwise in NED yaw convention).
 
@@ -81,8 +77,7 @@ class MotionLimits:
         return math.copysign(min(abs(rate_rad_s), max_rad_s), rate_rad_s)
 
     def clamp_climb_rate(self, climb_mps: float) -> float:
-        """
-        Clamp a vertical speed to the configured maximum.
+        """Clamp a vertical speed to the configured maximum.
 
         The sign is preserved (positive = ascending).
 
@@ -98,8 +93,7 @@ class MotionLimits:
         return math.copysign(min(abs(climb_mps), self.max_climb_rate_mps), climb_mps)
 
     def effective_speed(self, desired_mps: float, dt: float, current_speed_mps: float) -> float:
-        """
-        Compute the effective speed after applying both speed and acceleration limits.
+        """Compute the effective speed after applying both speed and acceleration limits.
 
         If acceleration is unlimited, returns the clamped desired speed directly.
         Otherwise, the speed change per time step is limited by
@@ -124,8 +118,7 @@ class MotionLimits:
 
     @classmethod
     def unlimited(cls) -> MotionLimits:
-        """
-        Return a limits instance with no constraints.
+        """Return a limits instance with no constraints.
 
         This reproduces the old constant-speed, no-dynamics behaviour exactly.
 

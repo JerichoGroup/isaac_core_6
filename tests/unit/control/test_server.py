@@ -1,6 +1,8 @@
 """Tests for the ControlServer: dispatch, security, path confinement, lifecycle."""
 
 from collections.abc import Generator
+import contextlib
+import inspect
 import json
 from pathlib import Path
 import socket
@@ -22,7 +24,7 @@ from isaac_core.control.messages import (
     decode_response,
     encode,
 )
-from isaac_core.control.server import ControlServer, confine_path
+from isaac_core.control.server import MAX_REQUEST_BYTES, ControlServer, confine_path
 
 # -- helpers ---------------------------------------------------------------- #
 
@@ -314,3 +316,38 @@ def test_multiple_requests_on_single_connection(loopback_server: ControlServer) 
             assert resp.id == 100 + i
     finally:
         sock.close()
+
+
+def test_a_client_sending_no_newline_is_dropped_rather_than_growing_memory(
+    loopback_server: ControlServer,
+) -> None:
+    # Requests are newline-delimited and the buffer was unbounded, so a client streaming bytes with
+    # no newline grew it without limit and would OOM a process that is holding a GPU.
+    port = loopback_server.port
+    assert port is not None
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        chunk = b"x" * 65536
+        sent = 0
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
+            while sent <= MAX_REQUEST_BYTES + len(chunk):
+                sock.sendall(chunk)
+                sent += len(chunk)
+        # The server must have closed the connection rather than buffering everything.
+        sock.settimeout(5.0)
+        with contextlib.suppress(ConnectionResetError, OSError):
+            assert sock.recv(1) == b"", "server kept the connection open past the request-size limit"
+
+    # And it is still serving other clients.
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(json.dumps({"jsonrpc": "2.0", "method": "ping", "id": 1}).encode() + b"\n")
+        sock.settimeout(10.0)
+        assert b"pong" in sock.recv(65536)
+
+
+def test_token_is_compared_in_constant_time() -> None:
+    # A byte-wise != leaks the token through timing on exactly the non-loopback path the token
+    # exists to protect. This asserts the mechanism is used, since timing itself is not testable
+    # deterministically in a unit test.
+    source = Path(inspect.getfile(ControlServer)).read_text(encoding="utf-8")
+    assert "hmac.compare_digest" in source, "token comparison must use hmac.compare_digest"
+    assert "request.token != self._config.token" not in source, "byte-wise token comparison is back"

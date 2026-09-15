@@ -1,5 +1,4 @@
-"""
-Entry point for the ``isaac-core`` command-line tool.
+"""Entry point for the ``isaac-core`` command-line tool.
 
 Subcommands:
 
@@ -16,8 +15,17 @@ Subcommands:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from isaac_core.config import IsaacCoreConfig
+    from isaac_core.install import IsaacInstall
+
 import argparse
+from pathlib import Path
+import subprocess
 import sys
+import tempfile
 from typing import Sequence
 
 from isaac_core.cli.completion import register_completion_subcommand, run_completion
@@ -26,8 +34,7 @@ from isaac_core.cli.doctor import run_doctor
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """
-    Construct the argument parser with all subcommands.
+    """Construct the argument parser with all subcommands.
 
     Returns:
         The fully configured :class:`argparse.ArgumentParser`.
@@ -70,8 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """
-    Parse arguments and dispatch to the appropriate subcommand.
+    """Parse arguments and dispatch to the appropriate subcommand.
 
     Args:
         argv: Command-line arguments. Defaults to ``sys.argv[1:]``.
@@ -101,8 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    """
-    Handle the ``run`` subcommand.
+    """Handle the ``run`` subcommand.
 
     Build and print the resolved configuration, then exit with an explicit message
     that the simulator runtime is not yet implemented.
@@ -114,10 +119,9 @@ def _run_command(args: argparse.Namespace) -> int:
         Exit code.
 
     """
-    from pathlib import Path  # noqa: PLC0415
 
-    from isaac_core.config import load  # noqa: PLC0415
-    from isaac_core.install import IsaacInstall, IsaacInstallError  # noqa: PLC0415
+    from isaac_core.config import load
+    from isaac_core.install import IsaacInstall, IsaacInstallError
 
     config_path = Path(args.config) if args.config else None
     cli_overrides: dict[str, str] = {}
@@ -154,9 +158,8 @@ def _run_command(args: argparse.Namespace) -> int:
     return _launch_simulator(install, config=config)
 
 
-def _launch_simulator(install: object, *, config: object) -> int:
-    """
-    Launch the simulator in Isaac Sim's bundled interpreter.
+def _launch_simulator(install: IsaacInstall, *, config: IsaacCoreConfig) -> int:
+    """Launch the simulator in Isaac Sim's bundled interpreter.
 
     The runtime cannot run in this process: it needs ``omni``/``carb``/``pxr``, which
     exist only inside Isaac Sim's Python 3.12. So we exec ``-m isaac_core.sim`` there,
@@ -177,17 +180,14 @@ def _launch_simulator(install: object, *, config: object) -> int:
         The simulator's exit code, or 130 on keyboard interrupt.
 
     """
-    from pathlib import Path as _Path  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-    import tempfile  # noqa: PLC0415
 
-    from isaac_core.config.loader import dump_toml  # noqa: PLC0415
+    from isaac_core.config.loader import dump_toml
 
-    resolved_dir = _Path(tempfile.mkdtemp(prefix="isaac-core-"))
+    resolved_dir = Path(tempfile.mkdtemp(prefix="isaac-core-"))
     resolved_path = resolved_dir / "resolved.toml"
-    resolved_path.write_text(dump_toml(config), encoding="utf-8")  # type: ignore[arg-type]
+    resolved_path.write_text(dump_toml(config), encoding="utf-8")
 
-    command = [str(install.python_path), "-m", "isaac_core.sim", "--config", str(resolved_path)]  # type: ignore[attr-defined]
+    command = [str(install.python_path), "-m", "isaac_core.sim", "--config", str(resolved_path)]
 
     print("launching:", " ".join(command))
     print(f"resolved config: {resolved_path}")
@@ -203,8 +203,7 @@ def _launch_simulator(install: object, *, config: object) -> int:
 
 
 def _dispatch_config(args: argparse.Namespace) -> int:
-    """
-    Dispatch ``config`` sub-subcommands.
+    """Dispatch ``config`` sub-subcommands.
 
     Args:
         args: Parsed arguments.
@@ -224,8 +223,7 @@ def _dispatch_config(args: argparse.Namespace) -> int:
 
 
 def cli() -> None:
-    """
-    Console-script entry point.
+    """Console-script entry point.
 
     Calls :func:`main` and exits with its return code.
     """

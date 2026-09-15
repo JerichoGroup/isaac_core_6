@@ -1,5 +1,4 @@
-"""
-Shell tab-completion for the ``isaac-core`` command-line tool.
+"""Shell tab-completion for the ``isaac-core`` command-line tool.
 
 No third-party completion library is used or required. Instead this follows the
 kubectl/docker pattern: ``isaac-core completion bash`` (or ``zsh``) prints a shell
@@ -15,6 +14,7 @@ completing them is never misleading.
 from __future__ import annotations
 
 import argparse
+import sys
 from typing import TypeGuard, get_args, get_origin
 
 from pydantic import BaseModel
@@ -36,8 +36,7 @@ _DICT_TYPE_ARG_COUNT: int = 2
 
 
 def _is_model(annotation: object) -> TypeGuard[type[BaseModel]]:
-    """
-    Return whether an annotation is a pydantic model class.
+    """Return whether an annotation is a pydantic model class.
 
     Args:
         annotation: A field annotation.
@@ -50,8 +49,7 @@ def _is_model(annotation: object) -> TypeGuard[type[BaseModel]]:
 
 
 def _walk_model(model: type[BaseModel], prefix: str) -> list[str]:
-    """
-    Walk a pydantic model, returning every settable dotted key beneath ``prefix``.
+    """Walk a pydantic model, returning every settable dotted key beneath ``prefix``.
 
     Nested models are descended into recursively. Dict-typed fields are handled by
     :func:`_walk_default_dict`, which reads the concrete keys present in the default
@@ -79,8 +77,7 @@ def _walk_model(model: type[BaseModel], prefix: str) -> list[str]:
 
 
 def _is_dict_field(annotation: object) -> bool:
-    """
-    Return whether a field annotation is a ``dict[...]`` type.
+    """Return whether a field annotation is a ``dict[...]`` type.
 
     Args:
         annotation: A field annotation.
@@ -93,8 +90,7 @@ def _is_dict_field(annotation: object) -> bool:
 
 
 def _walk_default_dict(model: type[BaseModel], name: str, dotted: str, field: FieldInfo) -> list[str]:
-    """
-    Expand a dict-typed field using the concrete keys present in its default value.
+    """Expand a dict-typed field using the concrete keys present in its default value.
 
     Dict fields such as ``vehicles`` and ``cameras`` are keyed by ids chosen by the
     user, so there is no fixed set of dotted keys. Rather than emit a placeholder that
@@ -128,8 +124,7 @@ def _walk_default_dict(model: type[BaseModel], name: str, dotted: str, field: Fi
 
 
 def _default_dict_value(model: type[BaseModel], name: str) -> dict[str, object]:
-    """
-    Return the default value of a dict field on a model, as a plain dict.
+    """Return the default value of a dict field on a model, as a plain dict.
 
     Args:
         model: The model owning the field.
@@ -147,8 +142,7 @@ def _default_dict_value(model: type[BaseModel], name: str) -> dict[str, object]:
 
 
 def _dict_value_type(annotation: object) -> object:
-    """
-    Return the value type of a ``dict[key, value]`` annotation.
+    """Return the value type of a ``dict[key, value]`` annotation.
 
     Args:
         annotation: A ``dict[...]`` annotation.
@@ -164,8 +158,7 @@ def _dict_value_type(annotation: object) -> object:
 
 
 def config_keys() -> list[str]:
-    """
-    Return every settable dotted config key, derived from the pydantic schema.
+    """Return every settable dotted config key, derived from the pydantic schema.
 
     Walks :class:`~isaac_core.config.IsaacCoreConfig` recursively. Dict-typed fields
     contribute the concrete keys present in the default configuration (for example the
@@ -179,12 +172,8 @@ def config_keys() -> list[str]:
     return sorted(set(_walk_model(IsaacCoreConfig, "")))
 
 
-# bash completion script template.
-#
-# Uses ``isaac-core completion --list-keys`` at runtime for config-key candidates, so the
-# list stays in sync with the schema. ``2>/dev/null`` and the ``command -v`` guard keep it
-# silent and non-erroring when the CLI is not on PATH. ``compgen -W`` is fed a
-# newline-separated word list, which is safe for keys containing dots.
+# bash completion template. Calls `--list-keys` at runtime so candidates stay in sync with the
+# schema; the `command -v` guard and 2>/dev/null keep it silent when the CLI is not on PATH.
 _BASH_SCRIPT: str = r"""# bash completion for isaac-core
 # Enable with:  source <(isaac-core completion bash)
 _isaac_core_complete() {
@@ -280,8 +269,7 @@ _SCRIPTS: dict[str, str] = {"bash": _BASH_SCRIPT, "zsh": _ZSH_SCRIPT}
 
 
 def completion_script(shell: str) -> str:
-    """
-    Return the completion script for a supported shell.
+    """Return the completion script for a supported shell.
 
     Args:
         shell: One of ``"bash"`` or ``"zsh"``.
@@ -297,8 +285,7 @@ def completion_script(shell: str) -> str:
 
 
 def register_completion_subcommand(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
-    """
-    Register the ``completion`` subcommand on the parent subparsers.
+    """Register the ``completion`` subcommand on the parent subparsers.
 
     Args:
         subparsers: The parent subparsers action to attach to.
@@ -319,8 +306,7 @@ def register_completion_subcommand(subparsers: "argparse._SubParsersAction[argpa
 
 
 def run_completion(args: argparse.Namespace) -> int:
-    """
-    Handle the ``completion`` subcommand.
+    """Handle the ``completion`` subcommand.
 
     With ``--list-keys`` it prints every settable dotted config key, one per line, for the
     generated shell script to consume. Otherwise it prints the completion script for the
@@ -333,7 +319,6 @@ def run_completion(args: argparse.Namespace) -> int:
         Exit code (0 = success, non-zero = usage error).
 
     """
-    import sys  # noqa: PLC0415
 
     if args.list_keys:
         for key in config_keys():

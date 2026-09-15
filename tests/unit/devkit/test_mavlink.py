@@ -1,5 +1,4 @@
-"""
-Unit tests for the host-side MAVLink pose bridge.
+"""Unit tests for the host-side MAVLink pose bridge.
 
 These run with no network and no pymavlink installed: the MAVLink connection is a
 duck-typed fake exposing ``recv_match`` and the transport is the repo's
@@ -48,7 +47,7 @@ class FakeConnection:
         self._messages = list(messages)
         self.closed = False
 
-    def recv_match(self, *, blocking: bool = False) -> FakeMessage | None:  # noqa: ARG002
+    def recv_match(self, *, blocking: bool = False) -> FakeMessage | None:
         """Return the next queued message, or ``None`` when the queue is empty."""
         if self._messages:
             return self._messages.pop(0)

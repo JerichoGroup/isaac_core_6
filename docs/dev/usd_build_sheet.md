@@ -1,6 +1,6 @@
 # USD task list
 
-Tactical tasks only. Rationale lives in [docs/development-log.md](../docs/development-log.md).
+Tactical tasks only. Rationale lives in [docs/development-log.md](../development-log.md).
 
 ---
 

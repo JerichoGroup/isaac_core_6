@@ -1,5 +1,4 @@
-"""
-USD stage inspector backed by a real ``pxr.Usd.Stage``.
+"""USD stage inspector backed by a real ``pxr.Usd.Stage``.
 
 Implement the :class:`~isaac_core.sim.capabilities.StageInspector` protocol,
 providing the narrow bridge between the pure planning/capability logic and the
@@ -15,14 +14,13 @@ import importlib
 from typing import Any
 
 
-def _sdf() -> Any:  # noqa: ANN401
+def _sdf() -> Any:
     """Lazily import and return the pxr.Sdf module."""
     return importlib.import_module("pxr.Sdf")
 
 
 class UsdStageInspector:
-    """
-    Inspect a live USD stage by delegating to ``pxr.Usd.Stage`` methods.
+    """Inspect a live USD stage by delegating to ``pxr.Usd.Stage`` methods.
 
     Satisfy the :class:`~isaac_core.sim.capabilities.StageInspector` protocol.
 
@@ -31,18 +29,17 @@ class UsdStageInspector:
 
     """
 
-    def __init__(self, stage: Any) -> None:  # noqa: ANN401
+    def __init__(self, stage: Any) -> None:
         """Initialise with an open USD stage."""
         self._stage = stage
 
     @property
-    def stage(self) -> Any:  # noqa: ANN401
+    def stage(self) -> Any:
         """Return the underlying stage."""
         return self._stage
 
     def prim_exists(self, path: str) -> bool:
-        """
-        Report whether a prim exists at ``path`` in the open stage.
+        """Report whether a prim exists at ``path`` in the open stage.
 
         Args:
             path: Absolute USD prim path.
@@ -54,11 +51,10 @@ class UsdStageInspector:
         sdf = _sdf()
         sdf_path = sdf.Path(path)
         prim = self._stage.GetPrimAtPath(sdf_path)
-        return prim.IsValid()  # type: ignore[no-any-return]
+        return bool(prim.IsValid())
 
     def has_attribute(self, path: str, attribute: str) -> bool:
-        """
-        Report whether a prim at ``path`` has the named attribute.
+        """Report whether a prim at ``path`` has the named attribute.
 
         Args:
             path: Absolute USD prim path.
@@ -73,11 +69,10 @@ class UsdStageInspector:
         prim = self._stage.GetPrimAtPath(sdf_path)
         if not prim.IsValid():
             return False
-        return prim.HasAttribute(attribute)  # type: ignore[no-any-return]
+        return bool(prim.HasAttribute(attribute))
 
     def read_double(self, path: str, attribute: str) -> float | None:
-        """
-        Read a double-valued attribute from a prim.
+        """Read a double-valued attribute from a prim.
 
         Args:
             path: Absolute USD prim path.

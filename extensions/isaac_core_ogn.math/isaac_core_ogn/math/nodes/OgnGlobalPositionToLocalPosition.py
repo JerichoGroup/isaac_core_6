@@ -1,48 +1,23 @@
-"""
-OmniGraph node: convert global LLA + orientation to local ENU position and quaternion.
+"""OmniGraph node: convert global LLA + orientation to local ENU position and quaternion.
 
 Thin adapter over isaac_core.geo — all geodesy and rotation maths live there.
 """
-
-import math
 
 import carb
 from isaac_core_ogn.math.ogn.OgnGlobalPositionToLocalPositionDatabase import (
     OgnGlobalPositionToLocalPositionDatabase,
 )
-import numpy as np
 
-from isaac_core.contracts.frames import RotationFrame
 from isaac_core.contracts.pose import Lla
-from isaac_core.geo import EnuConverter, compose_rotation, euler_to_matrix, euler_to_quaternion, matrix_to_euler
+from isaac_core.geo import (
+    EnuConverter,
+    compose_local_pose,
+    has_position_fix,
+    rotation_frame_from_text,
+)
 
 # Prefix for all log messages from this node.
 _LOG_PREFIX = "SIM | GPTLP |"
-
-
-def _quaternion_wxyz_to_isaac_xyzw(w: float, x: float, y: float, z: float) -> list[float]:
-    """
-    Reorder a standard (w, x, y, z) quaternion to Isaac Sim's OmniGraph [x, y, z, w].
-
-    Isaac Sim 6 / Kit 110 OmniGraph ``quatd[4]`` attributes use IJKR order — confirmed
-    by reading the installed OGN schemas (e.g. ``OgnUCXPublishOdometry.ogn`` declares
-    ``"Orientation as a quaternion (IJKR - x,y,z,w)"`` with default ``[0,0,0,1]``).
-    The GUI displays (w,x,y,z) but the attribute storage is (x,y,z,w).
-
-    This matches the previous-generation behaviour. If a future Kit version changes the
-    convention, update this single helper.
-
-    Args:
-        w: Scalar component.
-        x: X vector component.
-        y: Y vector component.
-        z: Z vector component.
-
-    Returns:
-        ``[x, y, z, w]`` for writing to a ``quatd[4]`` OmniGraph attribute.
-
-    """
-    return [x, y, z, w]
 
 
 class _InternalState:
@@ -55,8 +30,7 @@ class _InternalState:
         self.warned_no_data: bool = False
 
     def ensure_converter(self, reference: tuple[float, float, float]) -> EnuConverter:
-        """
-        Lazily create or recreate the ENU converter if the reference point changed.
+        """Lazily create or recreate the ENU converter if the reference point changed.
 
         Args:
             reference: ``(lat_deg, lon_deg, alt_m)`` from the node input.
@@ -72,23 +46,6 @@ class _InternalState:
         return self.converter
 
 
-def _resolve_rotation_frame(value: str) -> RotationFrame:
-    """
-    Map the string input to the RotationFrame enum, defaulting to BODY.
-
-    Args:
-        value: String from the OGN input, expected ``"body"`` or ``"world"``.
-
-    Returns:
-        The corresponding :class:`RotationFrame` variant.
-
-    """
-    lowered = value.strip().lower()
-    if lowered == "world":
-        return RotationFrame.WORLD
-    return RotationFrame.BODY
-
-
 class OgnGlobalPositionToLocalPosition:
     """OmniGraph node: LLA + ENU orientation to local ENU position and quaternion."""
 
@@ -99,71 +56,42 @@ class OgnGlobalPositionToLocalPosition:
 
     @staticmethod
     def compute(db: OgnGlobalPositionToLocalPositionDatabase) -> bool:
-        """Compute local ENU position and composed quaternion."""
+        """Compute local ENU position and composed quaternion.
+
+        A thin adapter: the maths lives in :func:`isaac_core.geo.compose_local_pose`, where it is
+        tested without Isaac Sim.
+        """
         state: _InternalState = db.per_instance_state
         global_position = tuple(db.inputs.global_position)
-        global_orientation = tuple(db.inputs.global_orientation)
         reference = tuple(db.inputs.enu_reference)
 
-        # Skip if position is all zeros (no data received yet)
-        if np.allclose(global_position, [0.0, 0.0, 0.0]):
+        if not has_position_fix(global_position):
             if not state.warned_no_data:
                 carb.log_warn(f"{_LOG_PREFIX} Skipping compute — no valid global position yet")
                 state.warned_no_data = True
             return True
         state.warned_no_data = False
 
-        # ENU converter (lazily recreated if reference changes)
-        converter = state.ensure_converter(reference)
-
-        # LLA -> ENU
-        lla = Lla(lat_deg=global_position[0], lon_deg=global_position[1], alt_m=global_position[2])
-        east, north, up = converter.lla_to_enu(lla)
-
-        rotation_frame = _resolve_rotation_frame(str(db.inputs.rotation_frame))
-
-        # The frame governs how the aircraft's own roll/pitch/yaw compose, not just how the
-        # gimbal offset lands on top. In WORLD it is aerospace yaw-pitch-roll, so yaw holds
-        # heading regardless of attitude; in BODY yaw is about the already-pitched axis.
-        roll_r, pitch_r, yaw_r = global_orientation[0], global_orientation[1], global_orientation[2]
-        drone_matrix = euler_to_matrix(roll_r, pitch_r, yaw_r, frame=rotation_frame)
-
-        offset_roll_r = math.radians(float(db.inputs.offset_roll_deg))
-        offset_pitch_r = math.radians(float(db.inputs.offset_pitch_deg))
-        offset_yaw_r = math.radians(float(db.inputs.offset_yaw_deg))
-        # The gimbal offset is ALWAYS body-relative and always carries the airframe's own
-        # NED->ENU sign conventions. Both parts were wrong before, and together they made a
-        # commanded pitch come out as roll:
-        #
-        # * Composing in the vehicle's frame (WORLD by default) applies the offset about fixed
-        #   world axes. A level, north-heading aircraft already carries ENU yaw = +90 degrees
-        #   (because yaw_enu = -yaw_ned + pi/2 turns a compass heading into a bearing), and that
-        #   90 degrees rotates the offset's axes, so "pitch" landed on the roll axis. Measured:
-        #   commanded pitch changed the camera's elevation by 0.00 degrees while commanded roll
-        #   changed it by the full amount.
-        # * The offset also has to flip pitch and yaw exactly as `ned_to_enu` does for the
-        #   airframe, or the same command means opposite things depending on which path set it.
-        #
-        # With both applied: -pitch lowers the view, +roll drops the right side without moving
-        # where the camera points, and +yaw turns right -- the conventions the README documents.
-        offset_matrix = euler_to_matrix(
-            offset_roll_r,
-            -offset_pitch_r,
-            -offset_yaw_r,
-            frame=RotationFrame.BODY,
+        pose = compose_local_pose(
+            converter=state.ensure_converter(reference),
+            position=Lla(
+                lat_deg=global_position[0],
+                lon_deg=global_position[1],
+                alt_m=global_position[2],
+            ),
+            attitude_r=tuple(db.inputs.global_orientation),
+            rotation_frame=rotation_frame_from_text(str(db.inputs.rotation_frame)),
+            gimbal_offset_deg=(
+                float(db.inputs.offset_roll_deg),
+                float(db.inputs.offset_pitch_deg),
+                float(db.inputs.offset_yaw_deg),
+            ),
         )
 
-        composed = compose_rotation(drone_matrix, offset_matrix, RotationFrame.BODY)
-
-        # Read back with the same convention, or the angles would not round-trip.
-        composed_roll, composed_pitch, composed_yaw = matrix_to_euler(composed, frame=rotation_frame)
-        qw, qx, qy, qz = euler_to_quaternion(composed_roll, composed_pitch, composed_yaw, frame=rotation_frame)
-
-        # Write outputs
         db.outputs.global_position = list(global_position)
-        db.outputs.global_orientation = [composed_roll, composed_pitch, composed_yaw]
-        db.outputs.local_position = [east, north, up]
-        db.outputs.local_orientation = _quaternion_wxyz_to_isaac_xyzw(qw, qx, qy, qz)
+        db.outputs.global_orientation = list(pose.attitude_r)
+        db.outputs.local_position = list(pose.local_position)
+        db.outputs.local_orientation = list(pose.quaternion_xyzw)
 
         return True
 

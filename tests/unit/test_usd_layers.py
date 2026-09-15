@@ -1,5 +1,4 @@
-"""
-Structural validation of the authored USD layers.
+"""Structural validation of the authored USD layers.
 
 USD is authored by hand in the Isaac Sim GUI, which means the usual mistakes are
 possible: a Save-As leaves connections pointing at nodes that only existed in the
@@ -23,7 +22,9 @@ import numpy as np
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-USD_ROOT = REPO_ROOT / "usd"
+# Layers and scenes ship inside the package, so an installed copy behaves like a checkout. The
+# `layers/` and `scenes/` shape is unchanged, only the root moved.
+USD_ROOT = REPO_ROOT / "src" / "isaac_core" / "assets"
 
 CAMERA_LAYERS = sorted(USD_ROOT.glob("layers/camera_*/*.usda"))
 # Every feature layer, not just the cameras: a new layer must be validated the moment it
@@ -65,8 +66,7 @@ def _connections_for(text: str, node: str, attribute: str) -> list[str]:
 
 
 def _prim_block(text: str, prim_type: str, name: str) -> str | None:
-    """
-    Return the body of a prim definition, or ``None`` if absent.
+    """Return the body of a prim definition, or ``None`` if absent.
 
     The parenthetical metadata block after a prim name is optional in USD -- removing
     a Globe Anchor removes the `(prepend apiSchemas = [...])` that came with it. An
@@ -295,3 +295,18 @@ def test_layer_graphs_live_under_the_default_prim(layer: Path) -> None:
         f"the defaultPrim {default!r}. A reference composes only the defaultPrim's subtree, so "
         f"these would silently never appear in the stage. Nest them under {default!r}."
     )
+
+
+def test_every_layer_puts_its_graphs_directly_under_root() -> None:
+    # The documented convention, asserted so the docs cannot drift from the layers again: `Xform`
+    # carries the vehicle transform and a graph has none, so graphs are siblings of `Xform` under
+    # `/Root`. This is what makes manifest paths read `{mount}/<Graph>/...` rather than
+    # `{mount}/Xform/<Graph>/...`.
+    layers_root = USD_ROOT / "layers"
+    offenders: list[str] = []
+    for usda in sorted(layers_root.glob("*/*.usda")):
+        text = usda.read_text(encoding="utf-8")
+        # Two levels of indentation means nested inside another prim, i.e. inside Xform.
+        nested = re.findall(r'^        def OmniGraph "([^"]+)"', text, re.MULTILINE)
+        offenders.extend(f"{usda.parent.name}/{name}" for name in nested)
+    assert not offenders, f"these graphs are nested rather than directly under /Root: {offenders}"

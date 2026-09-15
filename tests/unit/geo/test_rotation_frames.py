@@ -1,5 +1,4 @@
-"""
-Tests for how the rotation frame changes the meaning of roll, pitch and yaw.
+"""Tests for how the rotation frame changes the meaning of roll, pitch and yaw.
 
 The behaviour these lock in is the one a pilot notices immediately: pitched straight down,
 changing yaw should spin the view about its centre rather than swing where the nose points.
@@ -90,7 +89,7 @@ def test_the_quaternion_agrees_with_the_matrix(frame: RotationFrame) -> None:
     w, x, y, z = euler_to_quaternion(roll_r, pitch_r, yaw_r, frame=frame)
 
     # Rebuild the matrix from the quaternion and compare how each maps the nose.
-    from transforms3d.quaternions import quat2mat  # noqa: PLC0415
+    from transforms3d.quaternions import quat2mat
 
     assert np.allclose(np.asarray(quat2mat([w, x, y, z])) @ _NOSE, matrix @ _NOSE, atol=1e-9)
 

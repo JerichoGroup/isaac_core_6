@@ -168,6 +168,39 @@ isaac-core doctor
 `doctor` reports what it found, what it could not find, and the exact command to fix each problem. It
 is the first thing to run when something is wrong.
 
+<details>
+<summary><b>Using it from your own project, without cloning this repo</b></summary>
+
+You do not have to work inside this repo. A separate project can install the package and bring only
+what is specific to it: its own scene, its own scripts, and its own feature layers.
+
+```bash
+pip install --user 'isaac-core[devkit] @ git+https://github.com/JerichoGroup/isaac_core_6'
+```
+
+The shipped scene and the four shipped layers travel with the package, so `isaac-core run` works
+immediately. Point it at your own scene by path, and at your own layers by directory:
+
+```toml
+[sim]
+scene = "/home/you/my_project/terrain.usda"
+
+[assets]
+layer_search_paths = ["/home/you/my_project/layers"]
+```
+
+Or from Python, with no config file at all:
+
+```python
+Sim.launch(overrides={"sim.scene": "/home/you/my_project/terrain.usda"})
+```
+
+Your project still needs Isaac Sim itself, the extensions symlinked into it, and the custom ROS 2
+messages if you want the `bbox` topic. `scripts/setup.sh` does those from a clone; run
+`isaac-core doctor` to see which are missing and what to run.
+
+</details>
+
 ---
 
 ## Running the simulation 🚀
@@ -235,8 +268,7 @@ pose_source = "udp" # or "ros"
 
 [vehicles.drone_0.cameras.eo]
 fov_deg = 60.0
-width = 1280
-height = 720
+resolution = [1280, 720]
 ```
 
 There are exactly **two** pose sources, those are the two things the simulation can listens for:
@@ -303,13 +335,17 @@ than aiming the wrong one.
 
 ```python
 with Sim.attach() as session:
-    session.capture_frame("image.png")                          # camera resolution
+    session.capture_frame("image.png")                            # the camera's resolution
     session.capture_frame("4k_pic.png", width=3840, height=2160)  # 4K from a 720p window
 ```
 
-Capture resolution is independent of the window. Paths are resolved under
-`sim.control_plane.output_root` and confined to it. Width and height must be given together. The
-return value reports the path written and the resolution used.
+Capture resolution is independent of the window: the viewport is resized for the shot and restored
+afterwards. Width and height must be given together. Paths are resolved under
+`sim.control_plane.output_root` and confined to it. The return value reports the path written, the
+resolution used, and which render product it came from.
+
+**Capture needs a window.** Headless has no colour resource to read, so `capture_frame` only works
+with a GUI.
 
 **Single vehicle only**, same as the gimbal.
 
@@ -375,7 +411,7 @@ ffplay rtsp://127.0.0.1:8554/stream
 ```toml
 [vehicles.drone_0.cameras.eo]
 rtsp_port = 8554
-rtsp_mount_path = "/stream"    # unset = derived, namespaced when there is more than one camera
+rtsp_mount_path = "/stream"    # unset = derived, namespaced when there is more than one vehicle
 ```
 
 Each simultaneous stream needs its own port, so ports are allocated as `rtsp_port + vehicle index`.
@@ -428,13 +464,17 @@ publish an image with ground missing under it. Point the main viewport window el
 <details>
 <summary><b>Recording</b></summary>
 
-Record poses and images to disk from your own script, on system Python with ROS2 sourced:
+Record any published topic to disk from your own script, on system Python with ROS 2 sourced:
 
 ```python
-from isaac_core.devkit.recording import Recorder
+from isaac_core.devkit.recording import video_recorder, bbox_recorder
+
+camera = video_recorder()          # /isaac_core/image_rgb
+boxes = bbox_recorder()            # /isaac_core/bbox
 ```
 
-Video writing needs `opencv-python`, pose recording does not.
+Writing video needs `opencv-python` (`pip install --user 'isaac-core[devkit]'`); recording poses and
+boxes does not.
 
 </details>
 
@@ -558,7 +598,7 @@ Values are resolved from five places. Later beats earlier:
 | 1 | Package defaults | built in; what you get with no config at all |
 | 2 | Your config file | `isaac-core run --config my.toml` |
 | 3 | Environment variables | `ISAAC_CORE__VEHICLES__DRONE_0__CAMERAS__EO__FOV_DEG=90` |
-| 4 | `--set` flags | `isaac-core run --set sim.headless=true` |
+| 4 | `--set` flags | `isaac-core run --set sim.headless true` |
 | 5 | Runtime patch | `session.config.patch("gimbal.max_rate_deg_s", 10.0)` |
 
 **Two ways to name the file, one slot.** `--config my.toml` and `ISAAC_CORE_CONFIG=my.toml` do the
@@ -593,6 +633,11 @@ with Sim.attach() as session:
 
 Two entry points. Both return the same `SimSession`, so a script does not care how the simulator
 started.
+
+The bare `*` in these signatures is Python's keyword-only marker, not an omission: everything after it
+must be passed by name. `Sim.attach("192.168.1.50", 8760)` is fine, but the rest needs
+`token=...`/`timeout_s=...`. `Sim.launch` puts the `*` first, so **every** one of its arguments is
+keyword-only. Both lists below are complete — neither takes `**kwargs`.
 
 ```python
 Sim.attach(
@@ -718,30 +763,79 @@ MavlinkPoseBridge(connection, transport: PoseTransport, *, rate_hz: float = 30.0
 <details>
 <summary><b>Recording</b></summary>
 
+One `TopicRecorder` subscribes to one topic and keeps every message it sees, with four ready-made
+factories for the topics this repo publishes:
+
 ```python
-from isaac_core.devkit.recording import Recorder
+from isaac_core.devkit.recording import (
+    video_recorder,     # /isaac_core/image_rgb   -> frames, savable as mp4
+    pose_recorder,      # /isaac_core/global_pose
+    range_recorder,     # /isaac_core/distance_sensor
+    bbox_recorder,      # /isaac_core/bbox
+    TopicRecorder,      # any other topic
+)
+
+recorder = video_recorder(topic="/isaac_core/lead/image_rgb")   # topic is overridable
 ```
 
-Records poses and images to disk. Runs on system Python with ROS 2 sourced, because it subscribes
-with `rclpy`. Writing video needs `opencv-python` (`pip install --user 'isaac-core[devkit]'`);
-recording poses does not.
+Each returns a `TopicRecorder` with the same five methods:
+
+| Method | What it does |
+|---|---|
+| `start()` | create the ROS node and subscribe |
+| `spin()` | pump callbacks; run it on a thread while your flight happens |
+| `stop()` | stop spinning, keep what was captured |
+| `save_to(path)` | write the captured messages, returns the path |
+| `save_video(path, *, fps_override=None)` | encode frames to mp4 at the measured frame rate |
+| `shutdown()` | release the ROS node |
+
+For a topic with no factory, build one yourself:
+
+```python
+TopicRecorder(
+    topic: str,
+    msg_type: type,
+    serialiser: Callable[[msg, int], Any],   # (message, index) -> whatever you want stored
+    *,
+    node_name: str | None = None,
+    qos_depth: int = 10,
+)
+```
+
+Two helpers are exported for timing: `measured_fps(stamps_ns)` and
+`presentation_times_s(stamps_ns)`. `save_video` uses the first already, because a constant-rate
+container cannot express real frame timing; the second gives you per-frame presentation times if you
+want to remux with `ffmpeg` later.
+
+Runs on system Python with ROS 2 sourced, because it subscribes with `rclpy`. Writing video needs
+`opencv-python` (`pip install --user 'isaac-core[devkit]'`); nothing else does.
 
 </details>
 
 <details>
 <summary><b>A full example, start to finish</b></summary>
 
-Launch a headless simulator, fly an orbit while recording the pose, capture a frame at the top of
-the orbit, and shut down. Nothing here needs a GUI.
+Launch a simulator with bounding boxes enabled, fly an orbit, change the simulation both through
+`session` methods and through a runtime config patch, and record the camera video and the bbox stream
+for the whole flight.
+
+Run it on system Python with ROS 2 sourced, because the recorders subscribe with `rclpy`:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/IsaacSim-ros_workspaces/humble_ws/install/setup.bash   # for the FrameBboxes message
+python3 orbit_example.py
+```
 
 ```python
-"""Fly one orbit, capture a frame, and report where the camera ended up."""
+"""Fly an orbit with bboxes on, recording the video and the boxes for the whole flight."""
 
 from __future__ import annotations
 
 import threading
 
 from isaac_core.devkit import Sim
+from isaac_core.devkit.recording import bbox_recorder, video_recorder
 from isaac_core.devkit.transport import UdpPoseTransport, pace
 from isaac_core.vehicle import OrbitTrajectory
 
@@ -758,31 +852,44 @@ def fly(transport: UdpPoseTransport) -> None:
         speed_mps=30.0,
         orbit_duration_s=60.0,
     )
-    sent = pace(trajectory.poses(rate_hz=30.0), transport, rate_hz=30.0)
-    print(f"sent {sent} pose packets")
+    print(f"sent {pace(trajectory.poses(rate_hz=30.0), transport, rate_hz=30.0)} pose packets")
 
 
 def main() -> None:
-    """Run the flight and capture a frame part-way through."""
+    """Record a full orbit with the camera and the bounding boxes."""
     # launch owns the process: leaving this block stops Isaac Sim, even on Ctrl-C.
-    with Sim.launch(headless=True) as session:
+    with Sim.launch(overrides={"features.enabled": ["camera_udp", "bbox"]}) as session:
         print("capabilities:", session.get_capabilities())
+
+        # Two recorders, each on its own thread. Start them before the flight so nothing is missed.
+        camera = video_recorder()
+        boxes = bbox_recorder()
+        for recorder in (camera, boxes):
+            recorder.start()
+            threading.Thread(target=recorder.spin, daemon=True).start()
+
+        # Change the simulation two ways: a control call, and a runtime config patch.
+        session.set_gimbal(pitch_deg=-40.0)                     # aim the camera down at the ground
+        session.config.patch("gimbal.max_rate_deg_s", 10.0)     # slow later gimbal moves down
 
         # Poses arrive over UDP, independently of the control plane.
         transport = UdpPoseTransport(port=33333)
         flight = threading.Thread(target=fly, args=(transport,), daemon=True)
         flight.start()
 
-        # Give the first packets time to land, then aim the camera down and shoot.
-        session.step(count=60)
-        session.set_gimbal(pitch_deg=-40.0)
-        session.step(count=30)
-
-        shot = session.capture_frame("orbit.png", width=1920, height=1080)
-        print("captured:", shot)
+        # Part way round, swing the camera and let the slew rate we just patched take effect.
+        session.step(count=900)
+        session.set_gimbal(yaw_deg=90.0)
 
         flight.join(timeout=90.0)
         transport.close()
+
+        for recorder in (camera, boxes):
+            recorder.stop()
+        print("video:", camera.save_video("orbit.mp4"))
+        print("boxes:", boxes.save_to("orbit_bboxes.pkl"))
+        for recorder in (camera, boxes):
+            recorder.shutdown()
 
         print("final pose:", session.get_pose())
 
@@ -791,11 +898,9 @@ if __name__ == "__main__":
     main()
 ```
 
-Run it on system Python:
-
-```bash
-python3 orbit_example.py
-```
+`save_video` writes at the measured frame rate rather than a nominal one, and drops a
+`orbit.timestamps.txt` beside the mp4 with the real per-frame presentation times, since a
+constant-rate container cannot express them.
 
 </details>
 
@@ -836,13 +941,17 @@ It is recommended to author `usda` files via the Isaac Sim GUI. The shape that c
 
 ```
 /Root                                  <- the default prim. Composition references THIS.
-└── /Root/Xform                        <- everything the vehicle carries hangs here
-    ├── /Root/Xform/thermal_camera_01   <- your prim: a camera, a sensor, whatever
-    └── /Root/Xform/ThermalExport       <- an OmniGraph, if you need one
-        ├── on_playback_tick
-        ├── thermal_node                <- your compute node
-        └── ros2_publisher              <- one of Isaac's generic bridge nodes
+├── /Root/Xform                        <- prims that must MOVE with the vehicle
+│   └── /Root/Xform/thermal_camera_01   <- your camera, sensor, or mesh
+└── /Root/ThermalExport                <- your OmniGraph, a SIBLING of Xform
+    ├── on_playback_tick
+    ├── thermal_node                   <- your compute node
+    └── ros2_publisher                 <- one of Isaac's generic bridge nodes
 ```
+
+`Xform` carries the vehicle's transform, so anything that has to move with the aircraft goes under it.
+A graph has no transform, so it sits directly under `/Root` — which is what every shipped layer does,
+and it is why manifest paths read `{mount}/ThermalExport/...` rather than `{mount}/Xform/...`.
 
 Three rules that will cost you an afternoon otherwise:
 
@@ -918,11 +1027,13 @@ isaac-core run
 The startup report lists every layer it composed and every layer it skipped with the reason. A layer
 that does not appear at all was not found on the search path.
 
-If your layer ships as an installable package, register it instead and no search path is needed:
+A layer that ships inside an installed package still needs its directory on
+`layer_search_paths`; point at it with `importlib.resources` if you do not know the install prefix:
 
-```toml
-[project.entry-points."isaac_core.layers"]
-thermal_cam = "my_package.layers:thermal_cam_dir"
+```python
+from importlib.resources import files
+
+Sim.launch(overrides={"assets.layer_search_paths": [str(files("my_package") / "layers")]})
 ```
 
 </details>
@@ -1013,6 +1124,12 @@ directories make it worse:
 rm -rf /tmp/carb.*
 ```
 
+To measure whether something made it better or worse rather than guessing:
+
+```bash
+./scripts/crash_rate.sh 10 my-label     # 10 launches, reports how many segfaulted
+```
+
 </details>
 
 <details>
@@ -1026,8 +1143,20 @@ fresh terrain, 59.9 on the second pass over the same ground. try adjusting cesiu
 <details>
 <summary><b>Cesium cache growing without limit</b></summary>
 
-Long sessions grow `~/.cache/ov/cesium-request-cache.sqlite-wal`. Delete it, or set
-`cesium.delete_cache_on_launch = true`.
+`~/.cache/ov/cesium-request-cache.sqlite-wal` grows and does not level off, and once it exists it can
+stop the simulator reaching a composed stage at all. **Size is not the trigger.** Measured: a
+two-vehicle launch with a 763 MB log never became ready across three runs, taking over ten minutes
+each to give up, and passed in 24 seconds with the log deleted. A 23 GB log behaved the same way. The
+GPU sits idle and nothing in the output points at the cache, so this is worth ruling out first
+whenever startup goes from seconds to minutes:
+
+```bash
+rm -f ~/.cache/ov/cesium-request-cache.sqlite-wal ~/.cache/ov/cesium-request-cache.sqlite-shm
+```
+
+Safe while no simulator is running, and it only costs re-streaming terrain. Or set
+`cesium.delete_cache_on_launch = true` and never think about it. The system tests delete it before
+every launch attempt for exactly this reason.
 
 </details>
 
@@ -1046,10 +1175,17 @@ Long sessions grow `~/.cache/ov/cesium-request-cache.sqlite-wal`. Delete it, or 
 
 ```bash
 python3 -m pytest -q                              # the whole suite, no GPU needed
+python3 -m pytest tests/system --system           # system tests: launches a real Isaac Sim
 PYTHONPATH=src lint-imports                       # layering contracts
 pre-commit run ruff --files <paths>               # lint
 pre-commit run mypy --files <paths>               # types
 ```
+
+The system tests are the ones that catch what unit tests cannot: they launch Isaac Sim and measure
+observable outcomes -- pixels in a captured PNG, the stage transform after a commanded pose, two
+vehicles at two altitudes. They take about two minutes and are skipped unless you pass `--system`, so
+the default suite stays fast. Run them before committing anything that touches `sim/`, the shipped
+assets under `src/isaac_core/assets/` or `extensions/`; three regressions have shipped past a fully green unit suite.
 
 Files may be untracked, and `--all-files` silently skips those, so pass `--files` explicitly.
 

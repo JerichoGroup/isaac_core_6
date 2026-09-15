@@ -24,12 +24,6 @@ def fake_server() -> Generator[ControlServer, None, None]:
     server.register(Method.GET_CAPABILITIES.value, lambda _p: {"tilesets": True, "bboxes": False})
     server.register(Method.GET_CONFIG.value, lambda _p: {"sim": {"scene": "earth"}})
     server.register(Method.SET_CONFIG.value, lambda p: {"patched": p})
-    server.register(
-        Method.ENABLE_FEATURE.value, lambda p: {"enabled": p["feature_id"] if isinstance(p, dict) else None}
-    )
-    server.register(
-        Method.DISABLE_FEATURE.value, lambda p: {"disabled": p["feature_id"] if isinstance(p, dict) else None}
-    )
     server.register(Method.CAPTURE_FRAME.value, lambda p: {"path": p["path"] if isinstance(p, dict) else None})
     server.register(Method.PAUSE.value, lambda _p: "paused")
     server.register(Method.RESUME.value, lambda _p: "resumed")
@@ -69,7 +63,7 @@ def test_attach_requires_no_path(fake_server: ControlServer) -> None:
 
 def test_attach_timeout_when_no_server() -> None:
     # Use an ephemeral port that nothing is listening on.
-    import socket  # noqa: PLC0415
+    import socket
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
@@ -232,24 +226,10 @@ def test_session_config_patch(fake_server: ControlServer) -> None:
     port = fake_server.port
     assert port is not None
     with Sim.attach(host="127.0.0.1", port=port, timeout_s=5.0) as session:
-        result = session.config.patch(headless=True)
-        assert result == {"patched": {"headless": True}}
-
-
-def test_session_features_enable(fake_server: ControlServer) -> None:
-    port = fake_server.port
-    assert port is not None
-    with Sim.attach(host="127.0.0.1", port=port, timeout_s=5.0) as session:
-        result = session.features.enable("thermal_cam")
-        assert result == {"enabled": "thermal_cam"}
-
-
-def test_session_features_disable(fake_server: ControlServer) -> None:
-    port = fake_server.port
-    assert port is not None
-    with Sim.attach(host="127.0.0.1", port=port, timeout_s=5.0) as session:
-        result = session.features.disable("thermal_cam")
-        assert result == {"disabled": "thermal_cam"}
+        result = session.config.patch("gimbal.max_rate_deg_s", 10.0)
+        # The wire form is params.key/params.value, which is why patch takes them positionally:
+        # a **kwargs signature invited patch(gimbal_max_rate_deg_s=...), which the server rejects.
+        assert result == {"patched": {"key": "gimbal.max_rate_deg_s", "value": 10.0}}
 
 
 def test_session_capture_frame(fake_server: ControlServer) -> None:

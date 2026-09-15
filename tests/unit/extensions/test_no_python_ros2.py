@@ -1,5 +1,4 @@
-"""
-Guard against Python ROS 2 dependencies re-entering the Kit extensions.
+"""Guard against Python ROS 2 dependencies re-entering the Kit extensions.
 
 Isaac Sim 6 bundles Python 3.12.13. ROS 2 Humble's ``rclpy`` ships a C extension
 built for Python 3.10 (``_rclpy_pybind11.cpython-310-x86_64-linux-gnu.so``), and C

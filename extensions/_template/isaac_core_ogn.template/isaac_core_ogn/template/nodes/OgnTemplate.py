@@ -1,5 +1,4 @@
-"""
-OmniGraph node: scaffold template that greets the user and counts frames.
+"""OmniGraph node: scaffold template that greets the user and counts frames.
 
 Copy this file as a starting point for new nodes. Replace the class names,
 internal state, and compute logic with your implementation.

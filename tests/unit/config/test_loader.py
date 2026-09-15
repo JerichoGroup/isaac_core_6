@@ -321,3 +321,43 @@ def test_dump_toml_round_trip_with_prim_overrides(tmp_path: Path) -> None:
     toml_file.write_text(dumped)
     reloaded = load(path=toml_file, environ={})
     assert reloaded == original
+
+
+def test_dump_toml_round_trip_preserves_per_vehicle_derived_ports(tmp_path: Path) -> None:
+    # Guards a real bug that broke every multi-vehicle Sim.launch. resolved_rtsp_port keyed off
+    # `model_fields_set`, which does not survive a dump: Sim.launch writes the resolved config to
+    # TOML and re-reads it, so every field came back "explicitly set", the per-vehicle offset was
+    # skipped, and both vehicles asked for 8554 -> "Address already in use". The existing round-trip
+    # test compared configs for *equality*, which passed while the behaviour differed.
+    original = load(cli_overrides={"vehicles.lead.pose_source": "udp", "vehicles.wing.pose_source": "udp"})
+    before = {v: original.resolved_rtsp_port(v, "eo") for v in original.vehicles}
+    assert before == {"lead": 8554, "wing": 8555}
+
+    path = tmp_path / "resolved.toml"
+    path.write_text(dump_toml(original), encoding="utf-8")
+    reloaded = load(path=path)
+
+    after = {v: reloaded.resolved_rtsp_port(v, "eo") for v in reloaded.vehicles}
+    assert after == before, "a dump/reload changed the derived RTSP ports"
+
+
+def test_dump_toml_round_trip_preserves_derived_udp_ports(tmp_path: Path) -> None:
+    # Same class of failure for the pose ports, which are also allocated base + index.
+    original = load(cli_overrides={"vehicles.lead.pose_source": "udp", "vehicles.wing.pose_source": "udp"})
+    before = {v: original.resolved_udp_port(v) for v in original.vehicles}
+    path = tmp_path / "resolved.toml"
+    path.write_text(dump_toml(original), encoding="utf-8")
+    reloaded = load(path=path)
+    after = {v: reloaded.resolved_udp_port(v) for v in reloaded.vehicles}
+    assert after == before, "a dump/reload changed the derived UDP ports"
+
+
+def test_an_explicitly_pinned_rtsp_port_is_never_offset() -> None:
+    # The other half of the contract: pinning a port must give exactly that port.
+    config = load(
+        cli_overrides={
+            "vehicles.lead.cameras.eo.rtsp_port": 9000,
+            "vehicles.wing.pose_source": "udp",
+        }
+    )
+    assert config.resolved_rtsp_port("lead", "eo") == 9000

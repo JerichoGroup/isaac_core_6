@@ -1,14 +1,13 @@
-"""
-Shared contracts: the single source of truth for every cross-boundary name.
+"""Shared contracts: the single source of truth for every cross-boundary name.
 
 Everything in this package is pure Python with no third-party imports at all, so
 it can be imported from Isaac Sim's interpreter, a ROS 2 environment, system
 python3 or a bare CI venv alike. That matters because these definitions have to be
 identical in every one of those processes.
 
-The previous generation had no such layer, and paid for it: topic names, the UDP
-header bytes, the packet struct format, default ports and the readiness sentinel
-were each re-declared in two to four places that could drift apart independently.
+Without this layer, topic names, the UDP header bytes, the packet struct format, default
+ports and the readiness sentinel each get re-declared in several places that drift apart
+independently.
 
 Contents:
 

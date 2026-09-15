@@ -1,5 +1,4 @@
-"""
-Tests that the packaging metadata cannot quietly drift apart.
+"""Tests that the packaging metadata cannot quietly drift apart.
 
 The team installs system-wide from ``requirements.txt`` rather than using a venv,
 but ``pyproject.toml`` still has to declare the same dependencies for the package

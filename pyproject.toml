@@ -1,10 +1,37 @@
 [project]
 name = "isaac-core"
-version = "0.1.0"
+version = "0.2.0"
 description = "Team infrastructure for building, running and scripting Isaac Sim 6 simulations"
 requires-python = ">=3.10"
+
 readme = "README.md"
 license = "Apache-2.0"
+keywords = [
+    "isaac-sim",
+    "omniverse",
+    "simulation",
+    "cesium",
+    "3d-tiles",
+    "geospatial",
+    "ros2",
+    "robotics",
+    "camera",
+    "digital-twin",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
 dependencies = [
     "numpy>=1.24,<3",
     "pydantic>=2.6,<3",
@@ -12,6 +39,10 @@ dependencies = [
     "tomli>=2.0,<3; python_version < '3.11'",
     "transforms3d>=0.4,<0.5",
 ]
+
+[project.urls]
+Repository = "https://github.com/JerichoGroup/isaac_core_6"
+Issues = "https://github.com/JerichoGroup/isaac_core_6/issues"
 
 [project.scripts]
 isaac-core = "isaac_core.cli.main:cli"
@@ -27,9 +58,11 @@ isaac-core-mavlink = "isaac_core.devkit.mavlink:main"
 sim = []
 
 # Installed into any interpreter that has ROS 2 sourced. `rclpy` comes from
-# `source /opt/ros/humble/setup.bash`, not from pip, so this extra is empty by
-# design and exists to document the environment requirement.
-devkit = []
+# `source /opt/ros/humble/setup.bash`, not from pip, which is why it is absent here.
+# opencv-python is only needed to write video; recording poses does not use it.
+devkit = [
+    "opencv-python>=4.8,<5",
+]
 
 # Services that cannot live inside Isaac's interpreter (GStreamer via PyGObject)
 # run on system python3. PyGObject is installed with apt rather than pip, because
@@ -60,6 +93,21 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Data files inside the package are NOT shipped unless listed here.
+#   py.typed         -- without it a consumer's type checker silently ignores every annotation.
+#   assets/**        -- the shipped feature layers (manifest + USD) and the `earth` scene. These
+#                       used to live in a repo-level `usd/` directory outside the package, so a
+#                       non-editable install had no layers and no scene and could not compose
+#                       anything. The resolvers already looked in these packaged locations; only
+#                       the files were in the wrong place.
+[tool.setuptools.package-data]
+isaac_core = [
+    "py.typed",
+    "assets/layers/*/layer.toml",
+    "assets/layers/*/*.usda",
+    "assets/scenes/*.usda",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -125,14 +173,22 @@ select = [
     "FIX",      # flake8-fixme
     "TD",       # flake8-todos
     "D",         # pydocstyle
+    "RUF100",   # Unused `noqa` directive
+                # Enabled deliberately: 91 of ~190 suppressions in this repo were found to be
+                # protecting against rules that never fired. Nothing was checking them.
 ]
 
 ignore = [
     "E501",     # Line too long ({width} > {limit})
     "D203",     # 1 blank line required before class docstring
     "D202",     # No blank lines allowed after function docstring (found {num_lines})
-    "D212",     # Multi-line docstring summary should start at the first line
+    "D213",     # Multi-line docstring summary should start at the second line
+                # D212 and D213 are mutually exclusive; PEP 257 and Google style both want the
+                # summary on the first line, so D212 is enforced and D213 ignored.
     "PLR0913",  # Too many arguments in function definition ({c_args} > {max_args})
+    "ANN401",   # Dynamically typed expressions (typing.Any) disallowed
+                # Allowed deliberately: the JSON-RPC and config boundaries carry arbitrary JSON,
+                # and the Isaac Sim APIs ship no type stubs, so Any is the honest annotation.
 ]
 
 fixable = ["ALL"]
@@ -150,7 +206,9 @@ force-sort-within-sections = true
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["D104", "D100"]
-"tests/**" = ["PLR2004", "D103", "ANN201"]
+# N802: fakes for Pixar's USD API must copy its PascalCase method names exactly
+# (IsValid, GetAttribute, GetPrimAtPath), or they are not substitutable for the real thing.
+"tests/**" = ["PLR2004", "D103", "ANN201", "N802"]
 
 [tool.mypy]
 python_version = "3.10"

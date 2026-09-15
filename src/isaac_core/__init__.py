@@ -1,5 +1,4 @@
-"""
-Team infrastructure for building, running and scripting Isaac Sim 6 simulations.
+"""Team infrastructure for building, running and scripting Isaac Sim 6 simulations.
 
 This top-level module is deliberately lightweight. It must stay importable in an
 interpreter that has neither Isaac Sim nor ROS 2 available, so the heavy

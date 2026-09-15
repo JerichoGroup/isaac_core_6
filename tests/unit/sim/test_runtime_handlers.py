@@ -1,5 +1,4 @@
-"""
-Tests for the timeline control-plane handlers dispatching onto the step loop.
+"""Tests for the timeline control-plane handlers dispatching onto the step loop.
 
 Regression: a timeline call issued from the control-server thread crashed inside Isaac's
 throttling extension with ``RuntimeError: There is no current event loop in thread
@@ -31,8 +30,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def fake_timeline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    Install a fake ``omni.timeline`` so handlers run without Isaac Sim.
+    """Install a fake ``omni.timeline`` so handlers run without Isaac Sim.
 
     ``step`` calls ``forward_one_frame`` when the timeline is not playing, because
     ``update_app`` alone does not advance a paused timeline -- stepping while paused used to do
@@ -90,24 +88,22 @@ class _FakeAppUtils:
 class _HandlerRuntime(SimulationRuntime):
     """A runtime with the Isaac-dependent constructor bypassed, wired for handler tests."""
 
-    def __init__(self, app_utils: Any) -> None:  # noqa: ANN401
-        """
-        Initialise only the fields the timeline handlers touch.
+    def __init__(self, app_utils: Any) -> None:
+        """Initialise only the fields the timeline handlers touch.
 
         Args:
             app_utils: The fake app-utils stand-in the handlers dispatch to.
 
         """
-        from isaac_core.sim.runtime import _MainThreadTask  # noqa: PLC0415
+        from isaac_core.sim.runtime import _MainThreadTask
 
         self._main_thread_tasks: queue.Queue[_MainThreadTask] = queue.Queue()
         self._loop_thread_id: int | None = None
         self._app_utils = app_utils
 
 
-def _run_off_thread(call: "Callable[[], Any]", drain: "Callable[[], None]", loop_thread_id: int) -> Any:  # noqa: ANN401
-    """
-    Run ``call`` on a worker thread while draining the queue on this (the loop) thread.
+def _run_off_thread(call: "Callable[[], Any]", drain: "Callable[[], None]", loop_thread_id: int) -> Any:
+    """Run ``call`` on a worker thread while draining the queue on this (the loop) thread.
 
     Args:
         call: The handler invocation to run off the loop thread.
@@ -125,7 +121,7 @@ def _run_off_thread(call: "Callable[[], Any]", drain: "Callable[[], None]", loop
     def worker() -> None:
         try:
             box.append(call())
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             error.append(exc)
 
     thread = threading.Thread(target=worker)
@@ -194,7 +190,7 @@ def test_step_pumps_count_frames_on_the_loop_thread(count: int) -> None:
 
 
 def test_step_rejects_a_non_positive_count() -> None:
-    from isaac_core.control import InvalidParamsError  # noqa: PLC0415
+    from isaac_core.control import InvalidParamsError
 
     app = _FakeAppUtils()
     runtime = _HandlerRuntime(app)

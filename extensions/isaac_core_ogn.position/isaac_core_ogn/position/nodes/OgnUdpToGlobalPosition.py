@@ -1,5 +1,4 @@
-"""
-OmniGraph node: receive pose over UDP, output global position and ENU orientation.
+"""OmniGraph node: receive pose over UDP, output global position and ENU orientation.
 
 Thin adapter over isaac_core.protocol (packet decoding) and isaac_core.geo
 (NED-to-ENU conversion). The socket is the only I/O this module owns; all
@@ -33,8 +32,7 @@ class _InternalState:
         self.bound_port: int | None = None
 
     def ensure_socket(self, port: int) -> socket.socket:
-        """
-        Lazily create the UDP socket, binding to the requested port.
+        """Lazily create the UDP socket, binding to the requested port.
 
         If the port changes at runtime the previous socket is closed and a new
         one is bound.
@@ -77,8 +75,7 @@ class OgnUdpToGlobalPosition:
 
     @staticmethod
     def compute(db: OgnUdpToGlobalPositionDatabase) -> bool:
-        """
-        Read UDP packets, decode, convert NED to ENU, write outputs.
+        """Read UDP packets, decode, convert NED to ENU, write outputs.
 
         Drains all queued datagrams and keeps only the latest. On any decode
         failure the HoldLastGoodDecoder preserves the previous pose rather than

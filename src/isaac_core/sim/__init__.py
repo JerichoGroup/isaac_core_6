@@ -1,5 +1,4 @@
-"""
-Feature-layer system: manifest-driven discovery, capability probing and planning.
+"""Feature-layer system: manifest-driven discovery, capability probing and planning.
 
 This package is the pure, testable core of the simulator's feature-layer
 composition. It handles discovering layers from disk, validating their manifests,

@@ -1,11 +1,9 @@
-"""
-Frame-tagged pose value types.
+"""Frame-tagged pose value types.
 
 These are immutable, hashable, dependency-free carriers used across the whole
 codebase, from the UDP codec up to the vehicle model. Angles are tagged with the
 frame they are expressed in, so a NED value cannot be silently passed where an ENU
-value is expected -- the exact confusion that produced orientation bugs in the
-previous generation.
+value is expected, which is the usual cause of orientation bugs.
 """
 
 from dataclasses import dataclass, replace
@@ -13,21 +11,25 @@ from math import degrees, radians
 
 from isaac_core.contracts.frames import Frame
 
-_MIN_LAT_DEG = -90.0
-_MAX_LAT_DEG = 90.0
-_MIN_LON_DEG = -180.0
-_MAX_LON_DEG = 180.0
+MIN_LAT_DEG = -90.0
+MAX_LAT_DEG = 90.0
+MIN_LON_DEG = -180.0
+MAX_LON_DEG = 180.0
 
 
 @dataclass(frozen=True, slots=True)
 class Lla:
-    """
-    A WGS84 geodetic position.
+    """A WGS84 geodetic position.
 
     Args:
         lat_deg: Latitude in degrees, in ``[-90, 90]``.
         lon_deg: Longitude in degrees, in ``[-180, 180]``.
-        alt_m: Altitude in metres above the WGS84 ellipsoid; sea level is ``0``.
+        alt_m: Altitude in metres, in the same datum as ``geo.enu_reference.alt_m``. The ENU
+            conversion sends both through an ECEF transform that treats height as ellipsoidal, but
+            because the position and the reference share a datum, a consistent mean-sea-level input
+            still yields a correct local ENU to within the geoid variation across the scene. What
+            matters is that the sender and the reference agree; the wire format documents metres
+            with sea level at 0, which is what a GPS or MAVLink source provides.
 
     """
 
@@ -37,11 +39,11 @@ class Lla:
 
     def __post_init__(self) -> None:
         """Reject positions that cannot exist on the ellipsoid."""
-        if not _MIN_LAT_DEG <= self.lat_deg <= _MAX_LAT_DEG:
-            msg = f"lat_deg must be in [{_MIN_LAT_DEG}, {_MAX_LAT_DEG}], got {self.lat_deg}"
+        if not MIN_LAT_DEG <= self.lat_deg <= MAX_LAT_DEG:
+            msg = f"lat_deg must be in [{MIN_LAT_DEG}, {MAX_LAT_DEG}], got {self.lat_deg}"
             raise ValueError(msg)
-        if not _MIN_LON_DEG <= self.lon_deg <= _MAX_LON_DEG:
-            msg = f"lon_deg must be in [{_MIN_LON_DEG}, {_MAX_LON_DEG}], got {self.lon_deg}"
+        if not MIN_LON_DEG <= self.lon_deg <= MAX_LON_DEG:
+            msg = f"lon_deg must be in [{MIN_LON_DEG}, {MAX_LON_DEG}], got {self.lon_deg}"
             raise ValueError(msg)
 
     def as_tuple(self) -> tuple[float, float, float]:
@@ -51,8 +53,7 @@ class Lla:
 
 @dataclass(frozen=True, slots=True)
 class Rpy:
-    """
-    An attitude as intrinsic-XYZ Euler angles in radians, tagged with its frame.
+    """An attitude as intrinsic-XYZ Euler angles in radians, tagged with its frame.
 
     Radians are used because that is what the wire format and every rotation
     library in the stack expect. Convert at the edges with :meth:`from_degrees` and
@@ -91,8 +92,7 @@ class Rpy:
         return (self.roll_r, self.pitch_r, self.yaw_r)
 
     def tagged(self, frame: Frame) -> "Rpy":
-        """
-        Return a copy relabelled as ``frame``, without converting the values.
+        """Return a copy relabelled as ``frame``, without converting the values.
 
         This is a relabelling only. Use it when the numbers are already correct for
         ``frame`` and the tag needs to catch up -- never to "convert" between
@@ -103,8 +103,7 @@ class Rpy:
 
 @dataclass(frozen=True, slots=True)
 class GeodeticPose:
-    """
-    A complete pose: where a body is, and how it is oriented.
+    """A complete pose: where a body is, and how it is oriented.
 
     Args:
         position: WGS84 geodetic position.

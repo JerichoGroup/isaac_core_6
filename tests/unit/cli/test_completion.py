@@ -61,8 +61,8 @@ def test_every_sampled_key_actually_resolves(key: str) -> None:
 
 def test_all_emitted_keys_resolve_in_default_config() -> None:
     # Stronger guarantee: no emitted key is junk that would not resolve.
-    from isaac_core.cli.config_cmd import _MISSING, _resolve_dotted_key  # noqa: PLC0415
-    from isaac_core.config import load  # noqa: PLC0415
+    from isaac_core.cli.config_cmd import _MISSING, _resolve_dotted_key
+    from isaac_core.config import load
 
     data = load().model_dump()
     for key in config_keys():
@@ -109,8 +109,8 @@ def test_emitted_bash_script_passes_bash_syntax_check(tmp_path: Path, capsys: py
     script_path = tmp_path / "completion.bash"
     script_path.write_text(script, encoding="utf-8")
 
-    result = subprocess.run(  # noqa: S603
-        ["bash", "-n", str(script_path)],  # noqa: S607
+    result = subprocess.run(
+        ["bash", "-n", str(script_path)],
         capture_output=True,
         text=True,
         check=False,

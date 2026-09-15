@@ -307,9 +307,10 @@ def test_derived_layers_are_not_duplicated_when_also_listed_explicitly() -> None
     assert config.required_feature_ids() == ("camera_udp",)
 
 
-@pytest.mark.parametrize("source", ["script", "replay", "mavlink"])
-def test_pose_sources_with_no_shipped_layer_imply_nothing(source: str) -> None:
-    # These need an explicit [features] entry; silently inventing a layer id that does
-    # not exist would surface as a confusing "unknown feature" at compose time.
-    config = IsaacCoreConfig(vehicles={"v": VehicleConfig(pose_source=source)})
-    assert config.required_feature_ids() == ()
+def test_every_pose_source_implies_a_shipped_layer() -> None:
+    # PoseSource used to carry script/replay/mavlink, which nothing dispatched on: a vehicle
+    # configured that way composed and then never moved, with no error at all. The enum now holds
+    # only wired sources, so this asserts the invariant instead of cataloguing the exceptions.
+    for source in PoseSource:
+        config = IsaacCoreConfig(vehicles={"v": VehicleConfig(pose_source=source)})
+        assert config.required_feature_ids(), f"{source.value} implies no layer"

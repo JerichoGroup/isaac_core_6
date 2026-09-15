@@ -1,5 +1,4 @@
-"""
-Tests for repointing Cesium tilesets at a different server from config.
+"""Tests for repointing Cesium tilesets at a different server from config.
 
 The tile server URL is otherwise baked into the scene USD, so changing it means hand-editing
 a `.usda` in the GUI. The previous generation had this feature; this restores and generalises
@@ -29,15 +28,15 @@ class _FakeAttribute:
         self._value = value
         self._valid = valid
 
-    def IsValid(self) -> bool:  # noqa: N802
+    def IsValid(self) -> bool:
         """Report whether the attribute exists on the prim."""
         return self._valid
 
-    def Get(self) -> str | None:  # noqa: N802
+    def Get(self) -> str | None:
         """Return the current value."""
         return self._value
 
-    def Set(self, value: str) -> None:  # noqa: N802
+    def Set(self, value: str) -> None:
         """Record a new value."""
         self._value = value
 
@@ -52,17 +51,17 @@ class _FakePrim:
         attr_valid = has_url_attr if has_url_attr is not None else url is not None
         self.attribute = _FakeAttribute(url, valid=attr_valid)
 
-    def IsValid(self) -> bool:  # noqa: N802
+    def IsValid(self) -> bool:
         """Report whether the prim exists."""
         return self._valid
 
-    def GetAttribute(self, name: str) -> _FakeAttribute:  # noqa: N802
+    def GetAttribute(self, name: str) -> _FakeAttribute:
         """Return the attribute if the name matches, otherwise an invalid one."""
         if name == "cesium:url":
             return self.attribute
         return _FakeAttribute(None, valid=False)
 
-    def GetPath(self) -> str:  # noqa: N802
+    def GetPath(self) -> str:
         """Return the prim path."""
         return self._path
 
@@ -76,7 +75,7 @@ class _FakeStage:
         self._prims = prims
         self._root = _FakePrim(root_path, None, valid=root_valid)
 
-    def GetPrimAtPath(self, path: str) -> _FakePrim:  # noqa: N802
+    def GetPrimAtPath(self, path: str) -> _FakePrim:
         """Return the root prim for the known path, otherwise an invalid prim."""
         if path == self._root_path:
             return self._root
@@ -112,9 +111,8 @@ def _stage(prims: list[_FakePrim], root: str = "/World/tilesets", root_valid: bo
 
 
 @contextlib.contextmanager
-def _captured_warnings() -> Any:  # noqa: ANN401
-    """
-    Capture warnings from the composer logger.
+def _captured_warnings() -> Any:
+    """Capture warnings from the composer logger.
 
     ``caplog`` does not see this project's warnings, so attach a handler directly to the
     named logger and yield the raw records for the test to inspect.

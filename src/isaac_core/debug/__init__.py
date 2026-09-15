@@ -1,5 +1,4 @@
-"""
-Debug tools for manual interaction with a running simulator.
+"""Debug tools for manual interaction with a running simulator.
 
 :mod:`~isaac_core.debug.pose_sender_gui`
     Tkinter GUI for manually driving the camera via UDP pose packets.

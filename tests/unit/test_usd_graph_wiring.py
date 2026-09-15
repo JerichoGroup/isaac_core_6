@@ -1,5 +1,4 @@
-"""
-Validate that every OmniGraph node that needs ticking is actually wired to tick.
+"""Validate that every OmniGraph node that needs ticking is actually wired to tick.
 
 An unconnected ``execIn`` is the quietest failure mode in OmniGraph: the node exists,
 its inputs are set, the graph loads without a warning, and it simply never computes.
@@ -17,7 +16,7 @@ from typing import Final
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-LAYERS = sorted((REPO_ROOT / "usd" / "layers").rglob("*.usda"))
+LAYERS = sorted((REPO_ROOT / "src" / "isaac_core" / "assets" / "layers").rglob("*.usda"))
 
 # Node types that legitimately have no execIn connection.
 #
@@ -110,8 +109,7 @@ def test_published_messages_carry_a_timestamp(layer: Path) -> None:
 
 
 def _unconnected_render_product_inputs(text: str) -> list[str]:
-    """
-    Return graph nodes that declare `inputs:renderProductPath` without connecting it.
+    """Return graph nodes that declare `inputs:renderProductPath` without connecting it.
 
     Args:
         text: The USD layer text.

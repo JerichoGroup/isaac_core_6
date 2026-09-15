@@ -104,7 +104,7 @@ def test_help_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_inspect_prints_live_values_read_from_the_stage(capsys: pytest.CaptureFixture[str]) -> None:
-    # Ofer's requirement: the inspector reports the REAL values read off the running stage
+    # The inspector must report the REAL values read off the running stage
     # (via get_runtime_values), not values derived from config.
     instance = ControlServer(bind_port=0)
     instance.register("get_state", lambda _p: {"running": True})
@@ -144,7 +144,7 @@ def test_inspect_prints_live_values_read_from_the_stage(capsys: pytest.CaptureFi
 def test_count_alone_polls_instead_of_printing_the_one_shot_report(
     server: ControlServer, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Ofer's bug: `--count 10` silently fell back to the one-shot report because --count only
+    # Reported bug: `--count 10` silently fell back to the one-shot report because --count only
     # took effect alongside --poll. Now --count implies polling.
     port = _port_of(server)
     assert main(["--port", port, "--count", "3"]) == 0

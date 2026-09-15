@@ -1,9 +1,7 @@
-"""
-Wire specification for the UDP pose packet.
+"""Wire specification for the UDP pose packet.
 
-Byte-for-byte identical to the format used by the previous generation of this
-tooling, so existing senders, the debugger GUI and any team scripts built against
-it remain valid. A vehicle id and a version byte were considered and deliberately
+The format is frozen: existing senders and any scripts built against it stay valid, so it
+must not change. A vehicle id and a version byte were considered and deliberately
 rejected as speculative: one UDP port per vehicle is simpler to debug (point a
 capture at a single port and you see exactly one aircraft), and gives complete
 isolation, since a malformed stream can only ever disturb the vehicle it belongs
@@ -22,9 +20,8 @@ Layout, 51 bytes total, little-endian::
     42      8     yaw         float64  RADIANS, NED
     50      1     checksum    uint8    XOR of bytes [2, 50)
 
-Note the angles are **radians**, despite the previous generation's debugger GUI
-displaying a table that claimed degrees while transmitting radians. That
-discrepancy is why every angle in this codebase carries its unit in the name.
+Note the angles are **radians**. A GUI showing degrees while transmitting radians is an easy
+mistake to make, which is why every angle in this codebase carries its unit in the name.
 
 The codec itself lives in :mod:`isaac_core.protocol`; this module is the
 specification only, so it stays importable with no dependencies at all.
@@ -51,10 +48,9 @@ FIELD_ORDER: Final = ("lat_deg", "lon_deg", "alt_m", "roll_r", "pitch_r", "yaw_r
 
 
 def checksum(payload: bytes) -> int:
-    """
-    Compute the trailing checksum for a payload.
+    """Compute the trailing checksum for a payload.
 
-    A plain XOR over every payload byte, matching the previous generation's
+    A plain XOR over every payload byte, matching the sender's and receiver's
     sender and receiver exactly.
 
     Args:

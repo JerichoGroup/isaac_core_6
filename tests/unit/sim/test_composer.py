@@ -1,5 +1,4 @@
-"""
-Test composer helper logic that can be verified without Isaac Sim.
+"""Test composer helper logic that can be verified without Isaac Sim.
 
 Covers mount path derivation, layer USD file resolution, render report text and
 reference ordering. The actual USD stage mounting requires a live Isaac Sim

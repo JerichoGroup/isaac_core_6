@@ -6,8 +6,9 @@ import struct
 import pytest
 
 from isaac_core.contracts import packet as packet_spec
+from isaac_core.control import InvalidParamsError
 from isaac_core.protocol import decode
-from isaac_core.sim.runtime import _encode_pose_packet
+from isaac_core.sim.runtime import _encode_pose_packet, _optional_float
 
 
 def _pose(**overrides: float) -> dict[str, float]:
@@ -56,3 +57,32 @@ def test_angles_are_converted_from_degrees_to_radians(field: str, degrees: float
     )
     index = packet_spec.FIELD_ORDER.index(field.replace("_deg", "_r"))
     assert math.isclose(values[index], math.radians(degrees))
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("lat_deg", float("nan")),
+        ("lat_deg", float("inf")),
+        ("lat_deg", 9999.0),
+        ("lat_deg", -91.0),
+        ("lon_deg", 181.0),
+        ("lon_deg", float("nan")),
+        ("alt_m", float("inf")),
+    ],
+)
+def test_optional_float_rejects_nonfinite_and_out_of_range(name: str, value: float) -> None:
+    # Guards a real gap: the config path range-checks lat/lon but the live RPC path did not.
+    # float("nan") and float("inf") parse cleanly, so a NaN latitude reached the packet encoder.
+    bounds = {
+        "lat_deg": {"minimum": -90.0, "maximum": 90.0},
+        "lon_deg": {"minimum": -180.0, "maximum": 180.0},
+        "alt_m": {},
+    }[name]
+    with pytest.raises(InvalidParamsError):
+        _optional_float({name: value}, name, 0.0, **bounds)
+
+
+def test_optional_float_still_accepts_valid_values() -> None:
+    assert _optional_float({"lat_deg": 32.2}, "lat_deg", 0.0, minimum=-90.0, maximum=90.0) == 32.2
+    assert _optional_float({}, "lat_deg", 12.5, minimum=-90.0, maximum=90.0) == 12.5

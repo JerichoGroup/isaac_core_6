@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Send pose packets to a running Isaac Sim, for a first end-to-end test.
+"""Send pose packets to a running Isaac Sim, for a first end-to-end test.
 
 Runs on the *system* Python, not Isaac's, and needs no ROS 2. It exercises the whole
 pure kernel -- ``isaac_core.vehicle`` generates the trajectory,
@@ -13,7 +12,7 @@ Usage, with the simulation playing and a ``camera_udp`` layer composed::
     PYTHONPATH=src ./scripts/send_test_pose.py orbit --radius-m 800 --duration-s 60
     PYTHONPATH=src ./scripts/send_test_pose.py path
 
-Defaults match ``usd/scenes/earth.usda``'s Cesium georeference origin and the
+Defaults match the shipped ``earth`` scene's Cesium georeference origin and the
 ``enu_reference`` default baked into the math node, so the aircraft starts over the
 terrain rather than somewhere in the ocean.
 """
@@ -31,7 +30,7 @@ from isaac_core.contracts.pose import GeodeticPose, Lla, Rpy
 from isaac_core.devkit.transport import UdpPoseTransport, pace
 from isaac_core.vehicle import HoldTrajectory, OrbitTrajectory, PathTrajectory
 
-# The Cesium georeference origin of usd/scenes/earth.usda, which is also the
+# The Cesium georeference origin of the shipped earth scene, which is also the
 # enu_reference default in GlobalPositionToLocalPosition. Starting here means the
 # camera is over the terrain on the very first packet.
 DEFAULT_LAT_DEG = 32.22481
@@ -115,8 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """
-    Send the selected trajectory until it ends or the user interrupts.
+    """Send the selected trajectory until it ends or the user interrupts.
 
     Args:
         argv: Command-line arguments, defaulting to ``sys.argv[1:]``.

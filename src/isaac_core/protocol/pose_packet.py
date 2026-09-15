@@ -1,26 +1,34 @@
-"""
-Encode and decode the 51-byte UDP pose packet.
+"""Encode and decode the 51-byte UDP pose packet.
 
 This is the wire codec only -- no sockets, no I/O. Transport belongs to a later
-layer. Byte compatibility with the previous generation is mandatory: the existing
-debugger GUI and senders produce and consume exactly these bytes.
+layer. Byte compatibility is mandatory: existing senders produce and consume exactly these bytes.
 
 The specification lives in :mod:`isaac_core.contracts.packet`; this module is the
 implementation that honours it.
 """
 
+import math
 import struct
 
 from isaac_core.contracts.frames import Frame
 from isaac_core.contracts.packet import (
     CHECKSUM_OFFSET,
+    FIELD_ORDER,
     HEADER,
     PACKET_SIZE,
     PAYLOAD_FORMAT,
     PAYLOAD_OFFSET,
     checksum,
 )
-from isaac_core.contracts.pose import GeodeticPose, Lla, Rpy
+from isaac_core.contracts.pose import (
+    MAX_LAT_DEG,
+    MAX_LON_DEG,
+    MIN_LAT_DEG,
+    MIN_LON_DEG,
+    GeodeticPose,
+    Lla,
+    Rpy,
+)
 from isaac_core.protocol.errors import (
     PacketChecksumError,
     PacketHeaderError,
@@ -31,8 +39,7 @@ from isaac_core.protocol.errors import (
 
 
 def encode(pose: GeodeticPose) -> bytes:
-    """
-    Serialize a geodetic pose into the 51-byte wire format.
+    """Serialize a geodetic pose into the 51-byte wire format.
 
     Angles go on the wire in radians. The orientation must be tagged
     :attr:`Frame.NED` -- silently sending ENU is exactly the class of bug this
@@ -69,8 +76,7 @@ def encode(pose: GeodeticPose) -> bytes:
 
 
 def decode(data: bytes) -> GeodeticPose:
-    """
-    Deserialize 51 raw bytes into a geodetic pose tagged ``Frame.NED``.
+    """Deserialize 51 raw bytes into a geodetic pose tagged ``Frame.NED``.
 
     Validates length, header, checksum, and payload structure, raising a specific
     :class:`~isaac_core.protocol.errors.PosePacketError` subclass for each failure
@@ -86,7 +92,8 @@ def decode(data: bytes) -> GeodeticPose:
         PacketLengthError: If ``len(data)`` is not 51.
         PacketHeaderError: If the first two bytes are not ``0xAC 0xDC``.
         PacketChecksumError: If the XOR checksum does not match.
-        PacketPayloadError: If the payload cannot be unpacked.
+        PacketPayloadError: If the payload cannot be unpacked, or carries a non-finite or
+            out-of-range value.
 
     """
     if len(data) != PACKET_SIZE:
@@ -108,6 +115,17 @@ def decode(data: bytes) -> GeodeticPose:
     except struct.error as exc:
         raise PacketPayloadError(reason=str(exc)) from exc
 
+    # Converted here because Lla raises ValueError, which HoldLastGoodDecoder does not catch -- one
+    # hostile packet crashed the receive loop. Non-finite values are rejected too: inf and NaN
+    # propagate silently into the stage and fail far from the cause.
+    for name, value in zip(FIELD_ORDER, fields, strict=True):
+        if not math.isfinite(value):
+            raise PacketPayloadError(reason=f"{name} is not finite: {value!r}")
+    if not MIN_LAT_DEG <= fields[0] <= MAX_LAT_DEG:
+        raise PacketPayloadError(reason=f"lat_deg must be in [{MIN_LAT_DEG}, {MAX_LAT_DEG}], got {fields[0]!r}")
+    if not MIN_LON_DEG <= fields[1] <= MAX_LON_DEG:
+        raise PacketPayloadError(reason=f"lon_deg must be in [{MIN_LON_DEG}, {MAX_LON_DEG}], got {fields[1]!r}")
+
     return GeodeticPose(
         position=Lla(lat_deg=fields[0], lon_deg=fields[1], alt_m=fields[2]),
         orientation=Rpy(roll_r=fields[3], pitch_r=fields[4], yaw_r=fields[5], frame=Frame.NED),
@@ -115,17 +133,15 @@ def decode(data: bytes) -> GeodeticPose:
 
 
 class HoldLastGoodDecoder:
-    """
-    Stateful decoder preserving the previous generation's hold-last-good behaviour.
+    """Stateful decoder implementing the hold-last-good contract.
 
     On any malformed packet, the last successfully decoded pose is returned instead
     of raising or dropping to zero. This is deliberate and valuable for a real-time
     camera rig: a single corrupted datagram should freeze the view, not teleport it
     to null island.
 
-    Unlike the previous generation, which only logged failures silently, this
-    decoder exposes the failure count and the last error so monitoring can detect
-    sustained corruption.
+    The failure count and last error are exposed rather than only logged, so monitoring can
+    detect sustained corruption.
     """
 
     def __init__(self) -> None:
@@ -150,8 +166,7 @@ class HoldLastGoodDecoder:
         return self._last_error
 
     def decode(self, data: bytes) -> GeodeticPose | None:
-        """
-        Attempt to decode a packet, falling back to the last good pose on failure.
+        """Attempt to decode a packet, falling back to the last good pose on failure.
 
         Args:
             data: Raw bytes received from the network.

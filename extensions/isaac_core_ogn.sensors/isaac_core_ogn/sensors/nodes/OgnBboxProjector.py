@@ -1,5 +1,4 @@
-"""
-OmniGraph node: report 2D bounding boxes for the tracked objects in a camera's view.
+"""OmniGraph node: report 2D bounding boxes for the tracked objects in a camera's view.
 
 Boxes come from Isaac's own synthetic-data annotators, not from arithmetic here. That matters for
 two reasons. They are measured from the rendered image, so a box cannot drift away from what the
@@ -18,13 +17,13 @@ prim is invisible to them. ``composer.apply_target_semantics`` applies one to ev
 targets root at startup, so nobody has to remember.
 """
 
-from dataclasses import dataclass, field
 import importlib
 import math
 
 import carb
 from isaac_core_ogn.sensors.ogn.OgnBboxProjectorDatabase import OgnBboxProjectorDatabase
 
+from isaac_core.contracts.bbox import ARRAY_FIELDS, BboxArrays, BboxDetection
 from isaac_core.geo.rotations import quaternion_to_euler
 
 # Prefix for all log messages from this node.
@@ -33,60 +32,12 @@ _LOG_PREFIX = "SIM | BBOX |"
 # Box reported for a target the annotators do not mention at all.
 _ZERO_BOX = (0, 0, 0, 0)
 
-# Every array this node publishes, so writing empties and writing results cannot drift apart.
-_ARRAY_FIELDS = (
-    "target_name",
-    "x1",
-    "y1",
-    "x2",
-    "y2",
-    "in_frame",
-    "is_visible",
-    "lat",
-    "lon",
-    "alt",
-    "roll",
-    "pitch",
-    "yaw",
-    "distance_x",
-    "distance_y",
-    "distance_z",
-)
-
 # Sensors enabled per viewport, keyed by node path, so the (non-trivial) enable happens once.
 _ENABLED: dict[str, bool] = {}
 
 
-@dataclass
-class _BoxArrays:
-    """
-    Growing parallel output arrays, one appended entry per target.
-
-    Field names match ``isaac_core_ros2_msgs/FrameBboxes`` exactly. Every list is appended in
-    lockstep, which is what lets a consumer read detection ``i`` as a slice across all of them.
-    """
-
-    target_name: list[str] = field(default_factory=list)
-    x1: list[int] = field(default_factory=list)
-    y1: list[int] = field(default_factory=list)
-    x2: list[int] = field(default_factory=list)
-    y2: list[int] = field(default_factory=list)
-    in_frame: list[bool] = field(default_factory=list)
-    is_visible: list[bool] = field(default_factory=list)
-    lat: list[float] = field(default_factory=list)
-    lon: list[float] = field(default_factory=list)
-    alt: list[float] = field(default_factory=list)
-    roll: list[float] = field(default_factory=list)
-    pitch: list[float] = field(default_factory=list)
-    yaw: list[float] = field(default_factory=list)
-    distance_x: list[float] = field(default_factory=list)
-    distance_y: list[float] = field(default_factory=list)
-    distance_z: list[float] = field(default_factory=list)
-
-
 def _prim_path(value: object) -> str | None:
-    """
-    Return a cleaned absolute prim path from a token input, or ``None``.
+    """Return a cleaned absolute prim path from a token input, or ``None``.
 
     Args:
         value: The token value read off the node database.
@@ -104,8 +55,7 @@ def _prim_path(value: object) -> str | None:
 
 
 def _viewport_for(camera_path: str) -> object | None:
-    """
-    Return the viewport rendering the given camera.
+    """Return the viewport rendering the given camera.
 
     Prefers a viewport whose camera actually matches, so a second vehicle's boxes cannot be
     measured against the wrong picture. Falls back to the active viewport, which is the common
@@ -125,7 +75,7 @@ def _viewport_for(camera_path: str) -> object | None:
 
     try:
         instances = utility.get_viewport_window_instances()
-    except Exception:  # noqa: BLE001 - the utility raises bare errors when no window exists
+    except Exception:
         instances = None
 
     if instances:
@@ -136,13 +86,12 @@ def _viewport_for(camera_path: str) -> object | None:
 
     try:
         return utility.get_active_viewport()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
 def _annotator_rows(viewport: object, node_key: str) -> tuple[dict[str, object], dict[str, object]] | None:
-    """
-    Return the tight and loose annotator results, keyed by prim path.
+    """Return the tight and loose annotator results, keyed by prim path.
 
     Enabling the sensors is done once per node: it allocates render resources, and doing it every
     frame would be both wasteful and disruptive to the render graph.
@@ -168,7 +117,7 @@ def _annotator_rows(viewport: object, node_key: str) -> tuple[dict[str, object],
     if not _ENABLED.get(node_key):
         try:
             sd.sensors.enable_sensors(viewport, sensor_types)
-        except Exception as exc:  # noqa: BLE001 - synthetic data raises bare errors
+        except Exception as exc:
             carb.log_warn(f"{_LOG_PREFIX} could not enable bbox sensors: {exc}")
             return None
         _ENABLED[node_key] = True
@@ -176,7 +125,7 @@ def _annotator_rows(viewport: object, node_key: str) -> tuple[dict[str, object],
     try:
         tight = sd.sensors.get_bounding_box_2d_tight(viewport)
         loose = sd.sensors.get_bounding_box_2d_loose(viewport)
-    except Exception as exc:  # noqa: BLE001 - raises until the first annotated frame is ready
+    except Exception as exc:
         carb.log_warn(f"{_LOG_PREFIX} annotators not ready: {exc}")
         return None
 
@@ -186,8 +135,7 @@ def _annotator_rows(viewport: object, node_key: str) -> tuple[dict[str, object],
 
 
 def _anchor_lla(target: object) -> tuple[float, float, float]:
-    """
-    Read a target's geodetic position from its Cesium globe anchor.
+    """Read a target's geodetic position from its Cesium globe anchor.
 
     Returns NaN rather than zero for a target with no anchor: zero is a real place off the coast
     of Africa, so a consumer could not tell "unknown" from "there". NaN is checkable.
@@ -208,8 +156,7 @@ def _anchor_lla(target: object) -> tuple[float, float, float]:
 
 
 def _local_euler(target: object) -> tuple[float, float, float]:
-    """
-    Read a target's local orientation as euler XYZ radians.
+    """Read a target's local orientation as euler XYZ radians.
 
     Uses the authored ``xformOp:orient`` -- the orientation set in the GUI -- matching what the
     published message documents, rather than the fully composed world rotation.
@@ -231,8 +178,7 @@ def _local_euler(target: object) -> tuple[float, float, float]:
 
 
 def _box_of(row: object) -> tuple[int, int, int, int]:
-    """
-    Return a annotator row's pixel box.
+    """Return a annotator row's pixel box.
 
     Args:
         row: One row of an annotator's structured array.
@@ -245,34 +191,32 @@ def _box_of(row: object) -> tuple[int, int, int, int]:
 
 
 def _write_empty(db: OgnBboxProjectorDatabase) -> None:
-    """
-    Write empty arrays and a zero count to every output.
+    """Write empty arrays and a zero count to every output.
 
     Args:
         db: OmniGraph node database.
 
     """
-    for name in _ARRAY_FIELDS:
+    for name in ARRAY_FIELDS:
         setattr(db.outputs, name, [])
     db.outputs.count = 0
 
 
-def _write_arrays(db: OgnBboxProjectorDatabase, arrays: _BoxArrays) -> None:
-    """
-    Write the accumulated parallel arrays and their shared length to the outputs.
+def _write_arrays(db: OgnBboxProjectorDatabase, arrays: BboxArrays) -> None:
+    """Write the accumulated parallel arrays and their shared length to the outputs.
 
     Args:
         db: OmniGraph node database.
         arrays: The parallel output arrays built over this tick's targets.
 
     """
-    for name in _ARRAY_FIELDS:
-        setattr(db.outputs, name, getattr(arrays, name))
-    db.outputs.count = len(arrays.target_name)
+    for name, values in arrays.as_outputs().items():
+        setattr(db.outputs, name, values)
+    db.outputs.count = len(arrays)
 
 
 def _append_target(
-    arrays: _BoxArrays,
+    arrays: BboxArrays,
     target: object,
     tight: dict[str, object],
     loose: dict[str, object],
@@ -280,8 +224,7 @@ def _append_target(
     usd_geom: object,
     time_code: object,
 ) -> None:
-    """
-    Append one target's box, visibility and pose to the output arrays.
+    """Append one target's box, visibility and pose to the output arrays.
 
     Every target gets an entry even when the annotators do not mention it, because a consumer
     matches detections by index across the arrays and a skipped target would misalign them all.
@@ -307,22 +250,26 @@ def _append_target(
     roll, pitch, yaw = _local_euler(target)
     position = usd_geom.Xformable(target).ComputeLocalToWorldTransform(time_code).ExtractTranslation()  # type: ignore[attr-defined]
 
-    arrays.target_name.append(target.GetName())  # type: ignore[attr-defined]
-    arrays.x1.append(box[0])
-    arrays.y1.append(box[1])
-    arrays.x2.append(box[2])
-    arrays.y2.append(box[3])
-    arrays.in_frame.append(loose_row is not None)
-    arrays.is_visible.append(tight_row is not None)
-    arrays.lat.append(latitude)
-    arrays.lon.append(longitude)
-    arrays.alt.append(altitude)
-    arrays.roll.append(roll)
-    arrays.pitch.append(pitch)
-    arrays.yaw.append(yaw)
-    arrays.distance_x.append(float(position[0] - camera_position[0]))  # type: ignore[index]
-    arrays.distance_y.append(float(position[1] - camera_position[1]))  # type: ignore[index]
-    arrays.distance_z.append(float(position[2] - camera_position[2]))  # type: ignore[index]
+    arrays.append(
+        BboxDetection(
+            target_name=target.GetName(),  # type: ignore[attr-defined]
+            x1=box[0],
+            y1=box[1],
+            x2=box[2],
+            y2=box[3],
+            in_frame=loose_row is not None,
+            is_visible=tight_row is not None,
+            lat=latitude,
+            lon=longitude,
+            alt=altitude,
+            roll=roll,
+            pitch=pitch,
+            yaw=yaw,
+            distance_x=float(position[0] - camera_position[0]),  # type: ignore[index]
+            distance_y=float(position[1] - camera_position[1]),  # type: ignore[index]
+            distance_z=float(position[2] - camera_position[2]),  # type: ignore[index]
+        )
+    )
 
 
 class OgnBboxProjector:
@@ -330,8 +277,7 @@ class OgnBboxProjector:
 
     @staticmethod
     def compute(db: OgnBboxProjectorDatabase) -> bool:
-        """
-        Report a box, visibility and pose for every target under the targets root.
+        """Report a box, visibility and pose for every target under the targets root.
 
         Args:
             db: OmniGraph node database.
@@ -378,7 +324,7 @@ class OgnBboxProjector:
         time_code = usd_mod.TimeCode.Default()
         camera_position = usd_geom.Xformable(camera_prim).ComputeLocalToWorldTransform(time_code).ExtractTranslation()
 
-        arrays = _BoxArrays()
+        arrays = BboxArrays()
         for target in targets_prim.GetChildren():
             _append_target(arrays, target, tight, loose, camera_position, usd_geom, time_code)
 

@@ -1,5 +1,4 @@
-"""
-ROS 2 message timestamp representation.
+"""ROS 2 message timestamp representation.
 
 A ROS 2 ``builtin_interfaces/msg/Time`` is a pair of integers, not a float: ``sec`` is a
 signed 32-bit count of seconds and ``nanosec`` is an unsigned 32-bit remainder that must
@@ -32,8 +31,7 @@ SEC_MAX: int = 2**31 - 1
 
 
 def seconds_to_ros_stamp(seconds: float) -> tuple[int, int]:
-    """
-    Split a floating-point seconds value into a ROS 2 ``(sec, nanosec)`` pair.
+    """Split a floating-point seconds value into a ROS 2 ``(sec, nanosec)`` pair.
 
     Uses floor semantics, so the remainder is always non-negative and ``nanosec`` is
     always a valid unsigned value even for negative inputs -- ``-0.25`` becomes

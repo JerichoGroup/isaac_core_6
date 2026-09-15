@@ -1,5 +1,4 @@
-"""
-Tests for what the camera actually does when you move a stick.
+"""Tests for what the camera actually does when you move a stick.
 
 Everything else about orientation is a formula that can be "right" while the picture is
 wrong. These tests assert the observable outcome instead: send a roll, pitch or yaw and check
@@ -106,7 +105,7 @@ def test_ninety_degree_yaw_looks_east() -> None:
 
 
 def test_straight_down_is_reachable() -> None:
-    # The case Ofer used to find the frame problem: pitched fully down.
+    # The case that exposed the frame problem: pitched fully down.
     forward, _ = _look(0.0, -90.0, 0.0)
     assert np.allclose(forward, [0.0, 0.0, -1.0], atol=1e-9), f"pitch -90 should look down, got {forward}"
 

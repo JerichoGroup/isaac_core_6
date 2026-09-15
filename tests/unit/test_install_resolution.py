@@ -1,5 +1,4 @@
-"""
-Tests that a stale ISAACSIM_PATH cannot win over a supported install.
+"""Tests that a stale ISAACSIM_PATH cannot win over a supported install.
 
 This guards a real trap observed on a developer machine: ``$ISAACSIM_PATH`` still
 pointed at an Isaac Sim 2023.1.1 install that passed every structural check

@@ -1,5 +1,4 @@
-"""
-Derive the local ENU reference from the scene's Cesium georeference.
+"""Derive the local ENU reference from the scene's Cesium georeference.
 
 ``geo.enu_reference`` and the scene's ``cesium:georeferenceOrigin`` describe the same
 thing: the geodetic point that the stage origin corresponds to. If they disagree, the
@@ -43,12 +42,9 @@ SOURCE_CONFIG = "config (explicit)"
 SOURCE_SCENE = f"scene ({CESIUM_GEOREFERENCE_PRIM})"
 SOURCE_DEFAULT = "schema default"
 
-# Horizontal agreement tolerance, in metres. Cesium's origin round-trips through USD
-# (double authored, sometimes re-read as float) and through Cesium's own ellipsoid maths,
-# so bit-exact equality is not realistic; a sub-metre gap is noise. One metre is also far
-# below anything that matters for a camera hundreds of metres above terrain: at that range
-# a one-metre shift of the tangent-plane origin is invisible in frame. Anything larger is a
-# genuine "these two point at different places on Earth" disagreement and must be loud.
+# Horizontal agreement tolerance, in metres. Cesium's origin round-trips through USD and its own
+# ellipsoid maths, so bit-exact equality is unrealistic and a sub-metre gap is invisible from
+# hundreds of metres up. Anything larger means the two point at different places, and must be loud.
 HORIZONTAL_TOLERANCE_M = 1.0
 
 # Mean Earth radius (WGS84 mean), metres. Used only to turn a small angular separation into
@@ -58,8 +54,7 @@ _EARTH_RADIUS_M = 6_371_008.8
 
 
 class GeoreferenceMismatchError(RuntimeError):
-    """
-    Raise when config and the scene name different geodetic origins.
+    """Raise when config and the scene name different geodetic origins.
 
     Carrying the two references and their separation lets callers log or re-raise with a
     message that says exactly what to change, rather than a bare failure.
@@ -99,8 +94,7 @@ class GeoreferenceMismatchError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ResolvedEnuReference:
-    """
-    An ENU reference together with where it came from.
+    """An ENU reference together with where it came from.
 
     Args:
         reference: The geodetic anchor for the local ENU frame.
@@ -113,8 +107,7 @@ class ResolvedEnuReference:
 
 
 def horizontal_separation_m(a: EnuReference, b: EnuReference) -> float:
-    """
-    Return the great-circle ground distance between two references, in metres.
+    """Return the great-circle ground distance between two references, in metres.
 
     Altitude is ignored on purpose: a georeference disagreement is about *where on Earth*
     the origin sits, and reporting the horizontal gap in metres is far more intuitive than
@@ -141,8 +134,7 @@ def read_scene_georeference(
     inspector: StageInspector,
     prim_path: str = CESIUM_GEOREFERENCE_PRIM,
 ) -> EnuReference | None:
-    """
-    Read the Cesium georeference origin from the open stage.
+    """Read the Cesium georeference origin from the open stage.
 
     Args:
         inspector: Stage query interface.
@@ -173,8 +165,7 @@ def resolve_enu_reference(
     prim_path: str = CESIUM_GEOREFERENCE_PRIM,
     tolerance_m: float = HORIZONTAL_TOLERANCE_M,
 ) -> ResolvedEnuReference:
-    """
-    Decide which ENU reference a run should use, refusing a silent disagreement.
+    """Decide which ENU reference a run should use, refusing a silent disagreement.
 
     There is one authoritative source, chosen by an explicit rule:
 
@@ -224,8 +215,7 @@ def describe_mismatch(
     prim_path: str = CESIUM_GEOREFERENCE_PRIM,
     tolerance_m: float = HORIZONTAL_TOLERANCE_M,
 ) -> str | None:
-    """
-    Return a message when an explicit reference disagrees with the scene.
+    """Return a message when an explicit reference disagrees with the scene.
 
     Retained so callers can report an in-tolerance-but-nonzero gap if they want to, and so
     the composer's existing warning call site stays valid. A disagreement large enough to

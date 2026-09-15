@@ -1,5 +1,4 @@
-"""
-Environment diagnostics for the ``isaac-core doctor`` command.
+"""Environment diagnostics for the ``isaac-core doctor`` command.
 
 Each check is individually guarded and reported as PASS, WARN, or FAIL with a
 concrete remediation hint. This command must *never* raise -- a broken environment
@@ -9,6 +8,8 @@ is precisely when it is run.
 from __future__ import annotations
 
 import importlib
+from importlib.metadata import version
+import os
 from pathlib import Path
 import sys
 from typing import Sequence
@@ -42,8 +43,7 @@ _WARNINGS: list[str] = []
 
 
 def run_doctor() -> int:
-    """
-    Run all environment diagnostic checks and print results.
+    """Run all environment diagnostic checks and print results.
 
     Returns:
         Exit code: 0 if no FAILs, 1 if any FAIL was reported.
@@ -71,8 +71,7 @@ def run_doctor() -> int:
 
 
 def _run_all_checks() -> bool:
-    """
-    Execute every diagnostic check and print each result.
+    """Execute every diagnostic check and print each result.
 
     Returns:
         ``True`` if any check returned FAIL.
@@ -93,8 +92,7 @@ def _run_all_checks() -> bool:
 
 
 def _run_dependency_checks() -> bool:
-    """
-    Check all runtime dependencies.
+    """Check all runtime dependencies.
 
     Returns:
         ``True`` if any dependency check FAILed.
@@ -110,8 +108,7 @@ def _run_dependency_checks() -> bool:
 
 
 def _run_isaac_checks(has_fail: bool) -> tuple[bool, IsaacInstall | None]:
-    """
-    Run Isaac Sim installation checks.
+    """Run Isaac Sim installation checks.
 
     Args:
         has_fail: Current failure state.
@@ -132,8 +129,7 @@ def _run_isaac_checks(has_fail: bool) -> tuple[bool, IsaacInstall | None]:
 
 
 def _emit(result: tuple[str, str]) -> bool:
-    """
-    Print a single check result, tally it, and return whether it is a FAIL.
+    """Print a single check result, tally it, and return whether it is a FAIL.
 
     Args:
         result: Tuple of (status, message).
@@ -150,8 +146,7 @@ def _emit(result: tuple[str, str]) -> bool:
 
 
 def _check_python_version() -> tuple[str, str]:
-    """
-    Check that the Python version meets the minimum requirement.
+    """Check that the Python version meets the minimum requirement.
 
     Returns:
         Status and message tuple.
@@ -165,8 +160,7 @@ def _check_python_version() -> tuple[str, str]:
 
 
 def _check_dependency(name: str, min_version: str) -> tuple[str, str]:
-    """
-    Check that a Python package is importable and meets its minimum version.
+    """Check that a Python package is importable and meets its minimum version.
 
     Args:
         name: Package name to import.
@@ -188,8 +182,7 @@ def _check_dependency(name: str, min_version: str) -> tuple[str, str]:
 
 
 def _get_version(mod: object, name: str) -> str | None:
-    """
-    Extract a module's version string from common attributes.
+    """Extract a module's version string from common attributes.
 
     Args:
         mod: The imported module object.
@@ -205,16 +198,13 @@ def _get_version(mod: object, name: str) -> str | None:
             return val
 
     try:
-        from importlib.metadata import version  # noqa: PLC0415
-
         return version(name)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
 def _check_isaac_install() -> tuple[str, str, IsaacInstall | None]:
-    """
-    Attempt to locate Isaac Sim.
+    """Attempt to locate Isaac Sim.
 
     Returns:
         Status, message, and the install (or ``None``).
@@ -232,8 +222,7 @@ def _check_isaac_install() -> tuple[str, str, IsaacInstall | None]:
 
 
 def _check_isaac_version(install: IsaacInstall) -> tuple[str, str]:
-    """
-    Check that the Isaac Sim version is 6.x.
+    """Check that the Isaac Sim version is 6.x.
 
     Args:
         install: Validated install.
@@ -251,8 +240,7 @@ def _check_isaac_version(install: IsaacInstall) -> tuple[str, str]:
 
 
 def _check_isaac_python(install: IsaacInstall) -> tuple[str, str]:
-    """
-    Check that Isaac's bundled python.sh exists and is executable.
+    """Check that Isaac's bundled python.sh exists and is executable.
 
     Args:
         install: Validated install.
@@ -268,8 +256,7 @@ def _check_isaac_python(install: IsaacInstall) -> tuple[str, str]:
 
 
 def _check_isaac_core_in_isaac(install: IsaacInstall) -> tuple[str, str]:
-    """
-    Check whether isaac_core is likely installed into Isaac's interpreter.
+    """Check whether isaac_core is likely installed into Isaac's interpreter.
 
     This is a heuristic: we look for a ``isaac_core`` directory or ``.egg-link``
     in Isaac's site-packages. We cannot run Isaac's interpreter from here.
@@ -306,14 +293,12 @@ def _check_isaac_core_in_isaac(install: IsaacInstall) -> tuple[str, str]:
 
 
 def _check_ros2() -> tuple[str, str]:
-    """
-    Check whether ROS 2 is available (rclpy importable, ROS_DOMAIN_ID set).
+    """Check whether ROS 2 is available (rclpy importable, ROS_DOMAIN_ID set).
 
     Returns:
         Status and message tuple.
 
     """
-    import os  # noqa: PLC0415
 
     rclpy_available = False
     try:
@@ -334,8 +319,7 @@ def _check_ros2() -> tuple[str, str]:
 
 
 def _check_extensions_linked(install: IsaacInstall) -> tuple[str, str]:
-    """
-    Check whether our extensions are symlinked into extsUser.
+    """Check whether our extensions are symlinked into extsUser.
 
     Args:
         install: Validated install.
@@ -363,27 +347,25 @@ def _check_extensions_linked(install: IsaacInstall) -> tuple[str, str]:
 
 
 def _check_config() -> tuple[str, str]:
-    """
-    Check that the configuration loads without error.
+    """Check that the configuration loads without error.
 
     Returns:
         Status and message tuple.
 
     """
     try:
-        from isaac_core.config import load  # noqa: PLC0415
+        from isaac_core.config import load
 
         load()
         return "PASS", "Configuration loads successfully"
     except FileNotFoundError as exc:
         return "WARN", f"Config file not found: {exc}. Using defaults."
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return "FAIL", f"Configuration error: {exc}"
 
 
 def doctor_checks() -> Sequence[tuple[str, str]]:
-    """
-    Run all checks and return a list of (status, message) tuples.
+    """Run all checks and return a list of (status, message) tuples.
 
     Useful for programmatic access without printing.
 

@@ -1,5 +1,4 @@
-"""
-Tests for the recording serialisers.
+"""Tests for the recording serialisers.
 
 Each recorder factory builds a serialiser closure that reads fields off a ROS message. Those
 closures had no coverage, so a renamed message field would go uncaught until a live recording

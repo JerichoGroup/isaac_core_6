@@ -22,9 +22,6 @@ def test_method_enum_contains_all_required_names() -> None:
         "get_capabilities",
         "get_config",
         "set_config",
-        "enable_feature",
-        "disable_feature",
-        "load_scene",
         "reset",
         "pause",
         "resume",
@@ -34,6 +31,8 @@ def test_method_enum_contains_all_required_names() -> None:
         "set_pose",
         "ping",
         "get_pose",
+        "get_runtime_values",
+        "read_prim_attribute",
     }
     actual = {m.value for m in Method}
     assert actual == expected

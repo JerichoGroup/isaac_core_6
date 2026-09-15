@@ -1,5 +1,4 @@
-"""
-Configuration source layers.
+"""Configuration source layers.
 
 Each function here produces a plain nested dict from a single input layer,
 making every source independently testable without needing the full load
@@ -24,8 +23,7 @@ else:
 
 
 def defaults_source() -> dict[str, Any]:
-    """
-    Return the defaults layer: an empty dict.
+    """Return the defaults layer: an empty dict.
 
     The pydantic field defaults *are* the shipped defaults. ``config/default.toml``
     is a documented copy for users to start from and is contract-tested to agree,
@@ -40,8 +38,7 @@ def defaults_source() -> dict[str, Any]:
 
 
 def toml_file_source(path: Path) -> dict[str, Any]:
-    """
-    Parse a TOML configuration file into a nested dict.
+    """Parse a TOML configuration file into a nested dict.
 
     Uses :mod:`tomllib` on Python 3.11+ and :mod:`tomli` on 3.10.
 
@@ -69,9 +66,8 @@ def toml_file_source(path: Path) -> dict[str, Any]:
     return data
 
 
-def _coerce_env_value(raw: str) -> object:  # noqa: ANN401
-    """
-    Coerce a string environment variable value to the most specific Python type.
+def _coerce_env_value(raw: str) -> object:
+    """Coerce a string environment variable value to the most specific Python type.
 
     Rules applied in order:
     - "true"/"false" (case-insensitive) -> bool
@@ -113,8 +109,7 @@ def _coerce_env_value(raw: str) -> object:  # noqa: ANN401
 
 
 def env_source(environ: Mapping[str, str], prefix: str = "ISAAC_CORE") -> dict[str, Any]:
-    """
-    Parse environment variables into a nested configuration dict.
+    """Parse environment variables into a nested configuration dict.
 
     Variables are expected in the form ``PREFIX__SECTION__KEY=value``, where
     ``__`` (double underscore) separates nesting levels and each segment is
@@ -153,8 +148,7 @@ def env_source(environ: Mapping[str, str], prefix: str = "ISAAC_CORE") -> dict[s
 
 
 def cli_source(overrides: Mapping[str, Any]) -> dict[str, Any]:
-    """
-    Expand dotted-key CLI overrides into a nested dict.
+    """Expand dotted-key CLI overrides into a nested dict.
 
     Accepts keys like ``"vehicles.drone_0.cameras.eo.fov_deg"`` and expands them
     to nested dicts with the final segment as the leaf key.

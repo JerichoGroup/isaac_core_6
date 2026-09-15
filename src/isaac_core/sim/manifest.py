@@ -1,5 +1,4 @@
-"""
-Layer manifest model: validated, typed description of a feature layer.
+"""Layer manifest model: validated, typed description of a feature layer.
 
 A feature layer is a self-contained USD file (carrying its own OmniGraph and
 prims) that can be composed onto a base stage at runtime. Its ``layer.toml``
@@ -35,8 +34,7 @@ KNOWN_PLACEHOLDERS: Final[frozenset[str]] = frozenset({MOUNT, INSTANCE, CAMERA})
 
 
 class Binding(BaseModel):
-    """
-    Map a configuration value or runtime-derived value to a prim attribute.
+    """Map a configuration value or runtime-derived value to a prim attribute.
 
     Exactly one of ``config`` or ``resolve`` must be provided. ``config`` is a
     dotted key into the loaded configuration (e.g. ``"cameras.eo.fov_deg"``);
@@ -78,12 +76,11 @@ class Binding(BaseModel):
 
 
 class LayerManifest(BaseModel):
-    """
-    Validated description of a feature layer, loaded from ``layer.toml``.
+    """Validated description of a feature layer, loaded from ``layer.toml``.
 
     The manifest is the single source of truth for how a layer participates in
     stage composition. It replaces the hardcoded ``OPTIONAL_USDS`` dict and the
-    branches-per-feature pattern of the previous generation.
+    branch-per-feature pattern it would otherwise need.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -106,8 +103,7 @@ class LayerManifest(BaseModel):
     @field_validator("mount")
     @classmethod
     def _validate_mount_placeholders(cls, value: str) -> str:
-        """
-        Reject mount templates with unknown or self-referential placeholders.
+        """Reject mount templates with unknown or self-referential placeholders.
 
         ``{mount}`` is specifically forbidden here, even though it is a valid
         placeholder in *bindings*. The mount field defines what ``{mount}`` resolves
@@ -144,8 +140,7 @@ class LayerManifest(BaseModel):
 
 
 def load_manifest(path: Path) -> LayerManifest:
-    """
-    Parse and validate a ``layer.toml`` file into a :class:`LayerManifest`.
+    """Parse and validate a ``layer.toml`` file into a :class:`LayerManifest`.
 
     Args:
         path: Absolute or relative path to the ``layer.toml`` file.

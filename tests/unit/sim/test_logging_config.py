@@ -1,5 +1,4 @@
-"""
-Tests for the logging configuration, in particular that `isaac_logs = false` works.
+"""Tests for the logging configuration, in particular that `isaac_logs = false` works.
 
 The setting existed in the schema but was never applied: a launch emitted roughly 3,400
 lines regardless, and `ogn_registration` alone was 2,721 of them. Level changes do not fix

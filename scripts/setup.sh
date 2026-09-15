@@ -51,7 +51,7 @@ if [[ -n "$ISAAC_PATH" ]]; then
 else
     # Probe known locations (do NOT trust $ISAACSIM_PATH without validation)
     CANDIDATES=(
-        "/home/ofer/isaacsim"
+        "$HOME/isaacsim"
         "/opt/isaacsim"
         "/opt/nvidia/isaac-sim"
         "/isaac-sim"
@@ -95,7 +95,7 @@ echo
 
 # --- 3. Install into Isaac's bundled Python ---
 echo "[3/5] Installing isaac-core into Isaac's Python..."
-"$ISAAC_PATH/python.sh" -m pip install -e "$REPO_ROOT"
+"$ISAAC_PATH/python.sh" -m pip install -e "$REPO_ROOT[sim]"
 echo
 
 # --- 4. Link extensions ---
@@ -136,6 +136,11 @@ echo
 
 # --- Run doctor ---
 echo "=== Running isaac-core doctor ==="
-isaac-core doctor || true
+if ! isaac-core doctor; then
+    echo
+    echo "Setup finished, but 'isaac-core doctor' reported problems above."
+    echo "Fix those before running the simulator: each line prints the command that resolves it."
+    exit 1
+fi
 echo
 echo "Setup complete."

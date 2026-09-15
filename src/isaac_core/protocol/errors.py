@@ -1,9 +1,7 @@
-"""
-Exception hierarchy for pose packet codec failures.
+"""Exception hierarchy for pose packet codec failures.
 
-The previous generation logged errors and silently returned the last good packet
-for every failure kind, making it impossible for callers to distinguish a length
-error from a checksum corruption. These typed exceptions let the transport layer
+Logging every failure kind identically makes it impossible for a caller to distinguish a
+length error from a checksum corruption. These typed exceptions let the transport layer
 and the hold-last-good decoder expose *why* a packet was rejected while still
 preserving the hold behaviour.
 """
@@ -14,8 +12,7 @@ class PosePacketError(Exception):
 
 
 class PacketLengthError(PosePacketError):
-    """
-    Raise when a packet is not the expected 51 bytes.
+    """Raise when a packet is not the expected 51 bytes.
 
     Args:
         actual: Length of the received data.
@@ -31,8 +28,7 @@ class PacketLengthError(PosePacketError):
 
 
 class PacketHeaderError(PosePacketError):
-    """
-    Raise when the two-byte sync preamble does not match.
+    """Raise when the two-byte sync preamble does not match.
 
     Args:
         actual: The header bytes received, as a tuple.
@@ -50,8 +46,7 @@ class PacketHeaderError(PosePacketError):
 
 
 class PacketChecksumError(PosePacketError):
-    """
-    Raise when the trailing XOR checksum does not match the payload.
+    """Raise when the trailing XOR checksum does not match the payload.
 
     Args:
         actual: The checksum computed from the payload.
@@ -67,8 +62,7 @@ class PacketChecksumError(PosePacketError):
 
 
 class PacketPayloadError(PosePacketError):
-    """
-    Raise when the payload cannot be unpacked into six float64 fields.
+    """Raise when the payload cannot be unpacked into six float64 fields.
 
     Args:
         reason: A human-readable description of the struct.unpack failure.

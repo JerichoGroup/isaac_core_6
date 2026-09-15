@@ -1,5 +1,4 @@
-"""
-Terminal inspector for a running Isaac Sim session's control plane.
+"""Terminal inspector for a running Isaac Sim session's control plane.
 
 Connects to :class:`~isaac_core.control.client.ControlClient`, queries state,
 capabilities, pose and config, and prints them. Optionally polls ``get_pose`` at
@@ -19,6 +18,7 @@ from typing import Any
 
 from isaac_core.contracts.ports import DEFAULT_CONTROL_PLANE_PORT, DEFAULT_POSE_UDP_PORT
 from isaac_core.control.client import ControlClient
+from isaac_core.control.messages import Method
 
 # Tolerance for treating a pose as "still at its default".
 _IDENTITY_TOL = 1e-9
@@ -28,8 +28,7 @@ DEFAULT_POLL_INTERVAL_S = 0.5
 
 
 def _format_pose(pose: dict[str, Any]) -> str:
-    """
-    Format a pose dict as a compact one-line table row.
+    """Format a pose dict as a compact one-line table row.
 
     Args:
         pose: Dict with ``translate`` and ``orient`` keys from ``get_pose``.
@@ -46,8 +45,7 @@ def _format_pose(pose: dict[str, Any]) -> str:
 
 
 def inspect_once(client: ControlClient) -> None:
-    """
-    Query and print the simulator's current state.
+    """Query and print the simulator's current state.
 
     Args:
         client: A connected ControlClient.
@@ -55,49 +53,48 @@ def inspect_once(client: ControlClient) -> None:
     """
     print("=== Simulator State ===")
     try:
-        state = client.call("get_state")
+        state = client.call(Method.GET_STATE.value)
         print(f"  State: {state}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"  get_state failed: {exc}")
 
     print()
     print("=== Capabilities ===")
     try:
-        caps = client.call("get_capabilities")
+        caps = client.call(Method.GET_CAPABILITIES.value)
         print(f"  Capabilities: {caps}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"  get_capabilities failed: {exc}")
 
     print()
     print("=== Current Pose ===")
     try:
-        pose = client.call("get_pose")
+        pose = client.call(Method.GET_POSE.value)
         print(f"  {_format_pose(pose)}")
         translate = pose.get("translate") or [0, 0, 0]
         orient = pose.get("orient") or [1, 0, 0, 0]
         if all(abs(v) < _IDENTITY_TOL for v in translate) and abs(orient[0] - 1.0) < _IDENTITY_TOL:
             print("  (pose is at its default -- no UDP/ROS pose received yet; start a sender)")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"  get_pose failed: {exc}")
 
     print()
     print("=== Config ===")
     try:
-        config = client.call("get_config")
+        config = client.call(Method.GET_CONFIG.value)
         if isinstance(config, dict):
             for key, value in sorted(config.items()):
                 print(f"  {key}: {value}")
         else:
             print(f"  {config}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"  get_config failed: {exc}")
 
     _print_live_values(client)
 
 
 def _print_live_values(client: ControlClient) -> None:
-    """
-    Print the effective values read directly off the running stage.
+    """Print the effective values read directly off the running stage.
 
     This is the inspector's core job: report what is genuinely applied -- the port, rotation
     frame, topic names, camera intrinsics and tileset URLs actually on the prims -- rather
@@ -111,8 +108,8 @@ def _print_live_values(client: ControlClient) -> None:
     print()
     print("=== Live values (read from the running stage) ===")
     try:
-        rv = client.call("get_runtime_values")
-    except Exception as exc:  # noqa: BLE001
+        rv = client.call(Method.GET_RUNTIME_VALUES.value)
+    except Exception as exc:
         print(f"  get_runtime_values failed: {exc}")
         return
     if not isinstance(rv, dict):
@@ -141,8 +138,7 @@ def _print_live_values(client: ControlClient) -> None:
 
 
 def poll_pose(client: ControlClient, interval: float, count: int | None = None) -> None:
-    """
-    Poll ``get_pose`` at an interval, printing a one-line table per sample.
+    """Poll ``get_pose`` at an interval, printing a one-line table per sample.
 
     Args:
         client: A connected ControlClient.
@@ -158,11 +154,11 @@ def poll_pose(client: ControlClient, interval: float, count: int | None = None) 
     try:
         while count is None or sample < count:
             try:
-                pose = client.call("get_pose")
+                pose = client.call(Method.GET_POSE.value)
                 sample += 1
                 line = f"{sample:>5}  {_format_pose(pose)}"
                 print(line, flush=True)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 sample += 1
                 print(f"{sample:>5}  ERROR: {exc}", flush=True)
             time.sleep(interval)
@@ -171,8 +167,7 @@ def poll_pose(client: ControlClient, interval: float, count: int | None = None) 
 
 
 def _wrong_port_hint(port: int) -> str:
-    """
-    Return an extra hint when the port looks like a different service's port.
+    """Return an extra hint when the port looks like a different service's port.
 
     Passing the UDP pose port (33333) to the inspector is an easy mistake -- both numbers
     appear in the config -- and the bare "connection refused" does not explain it.
@@ -193,8 +188,7 @@ def _wrong_port_hint(port: int) -> str:
 
 
 def read_attributes(client: ControlClient, requests: list[str]) -> int:
-    """
-    Print live attribute values read off the running stage.
+    """Print live attribute values read off the running stage.
 
     Args:
         client: A connected control client.
@@ -212,8 +206,8 @@ def read_attributes(client: ControlClient, requests: list[str]) -> int:
             status = 1
             continue
         try:
-            result = client.call("read_prim_attribute", {"prim": prim, "attribute": attribute})
-        except Exception as exc:  # noqa: BLE001 - report any RPC failure per request
+            result = client.call(Method.READ_PRIM_ATTRIBUTE.value, {"prim": prim, "attribute": attribute})
+        except Exception as exc:
             print(f"  {prim}.{attribute}: FAILED {exc}")
             status = 1
             continue
@@ -229,8 +223,7 @@ def read_attributes(client: ControlClient, requests: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """
-    Entry point for ``python -m isaac_core.debug.inspector``.
+    """Entry point for ``python -m isaac_core.debug.inspector``.
 
     Args:
         argv: Command-line arguments.

@@ -1,5 +1,4 @@
-"""
-Typed configuration schema.
+"""Typed configuration schema.
 
 Mirrors ``config/default.toml`` exactly. Validation happens in-process the moment
 a config is loaded -- there is no separate command to run -- so a bad value is
@@ -31,6 +30,7 @@ from isaac_core.contracts.frames import PoseSource, RotationFrame
 from isaac_core.contracts.ports import (
     DEFAULT_CONTROL_PLANE_PORT,
     DEFAULT_POSE_UDP_PORT,
+    DEFAULT_RTSP_PORT,
     MAX_PORT,
     MIN_PORT,
     pose_port_for_index,
@@ -52,13 +52,9 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # handler to it directly -- pytest's ``caplog`` does not capture this project's warnings.
 logger = logging.getLogger(__name__)
 
-# RTX render modes SimulationApp accepts, mapping each lower-cased spelling to its
-# canonical form. Isaac lower-cases the value before matching (see
-# ``isaacsim.simulation_app.SimulationApp._set_render_settings``), so the accepted set is
-# case-insensitive and "Minimal" is an alias for "MinimalRendering". Any value outside this
-# map is passed straight through to Kit's ``/rtx/rendermode`` carb setting, where a typo
-# fails late or silently rather than at config load -- exactly the foot-gun this validator
-# closes.
+# RTX render modes, lower-cased spelling to canonical form, because Isaac lower-cases before
+# matching. Anything outside this map reaches Kit's /rtx/rendermode unchecked, where a typo fails
+# late or silently instead of at config load.
 _RENDERER_CANONICAL: Final[dict[str, str]] = {
     "raytracedlighting": "RaytracedLighting",
     "pathtracing": "PathTracing",
@@ -77,8 +73,7 @@ LogLevel = Literal["debug", "info", "warning", "error"]
 
 
 class _Strict(BaseModel):
-    """
-    Base for every config model.
+    """Base for every config model.
 
     ``extra="forbid"`` turns a typo into an immediate, located error rather than a
     silently ignored setting -- the failure mode that makes configuration files
@@ -89,8 +84,7 @@ class _Strict(BaseModel):
 
 
 class EnuReference(_Strict):
-    """
-    Anchor for the local ENU tangent plane the simulation works in.
+    """Anchor for the local ENU tangent plane the simulation works in.
 
     Must agree with the scene's Cesium georeference, or the terrain and the
     aircraft will disagree about where they are.
@@ -102,8 +96,7 @@ class EnuReference(_Strict):
 
 
 class ControlPlaneConfig(_Strict):
-    """
-    JSON-RPC command channel settings.
+    """JSON-RPC command channel settings.
 
     Defaults to loopback deliberately. This channel mutates a running simulation
     and writes files, so exposing it on a routable interface requires an explicit
@@ -135,12 +128,9 @@ class SimConfig(_Strict):
     scene: str = "earth"
     headless: bool = False
     strict_features: bool = False
-    # Kit extensions to enable before opening the stage. Configurable rather than
-    # hardcoded so a stage needing an extra extension requires no code change.
-    #
-    # A missing extension degrades rather than crashes: OmniGraph logs
-    # "Could not find node type interface" and those nodes do nothing, so dropping
-    # one from this list is a safe way to bisect a problem.
+    # Enabled before the stage opens; configurable so a stage needing another extension needs no
+    # code change. A missing one degrades rather than crashes -- OmniGraph logs "Could not find node
+    # type interface" and those nodes do nothing -- so dropping one is a safe way to bisect.
     extensions: tuple[str, ...] = (
         "omni.graph.action",
         "omni.graph.nodes",
@@ -154,66 +144,31 @@ class SimConfig(_Strict):
         "isaac_core_ogn.position",
         "isaac_core_ogn.sensors",
     )
-    # Kit experience (app config) to launch.
-    #
-    # Isaac's SimulationApp defaults to `isaacsim.exp.base.python.kit`, a deliberately
-    # minimal app. That app omits the extensions that contribute property widgets and, more
-    # importantly, behaves differently from the editor the team actually authors USD in --
-    # which makes "it works in the GUI but not from the CLI" hard to reason about. Using the
-    # full experience keeps the two consistent.
-    #
-    # A bare filename is resolved against Isaac's apps directory ($EXP_PATH). An absolute
-    # path is used as given. Set to "" to accept SimulationApp's own default.
+    # The full experience, not SimulationApp's minimal default, so the CLI behaves like the editor
+    # USD is authored in. A bare filename resolves against $EXP_PATH; "" accepts Isaac's default.
     experience: str = "isaacsim.exp.full.kit"
 
-    # Extensions enabled during Kit startup, via `--enable`, rather than afterwards.
-    #
-    # This distinction is not cosmetic. An extension that contributes **USD schemas** must be
-    # present before the schema registry initialises; enabling it later reports success and
-    # silently does nothing useful. Measured on this install: enabling `cesium.omniverse`
-    # after startup left `CesiumTilesetPrim` unregistered, so the prim resolved as untyped
-    # with 5 raw attributes, `IsA(Xformable)` false, and no terrain drawn. Enabling it at
-    # boot gave a registered schema, 28 attributes and `IsA(Xformable)` true.
-    #
-    # The visible symptom is a prim that has lost most of its properties in the GUI -- and no
-    # error anywhere. Put schema-providing extensions here, everything else in `extensions`.
+    # Extensions that contribute USD *schemas* must load before the schema registry initialises.
+    # Enabling one later reports success and does nothing: the prim stays untyped, loses most of its
+    # GUI properties and draws nothing, with no error. Everything else belongs in `extensions`.
     boot_extensions: tuple[str, ...] = (
         "cesium.usd.plugins",
         "cesium.omniverse",
     )
 
-    # Extra directories Kit should search for extensions.
-    #
-    # Isaac's headless python experience does not search Omniverse's user extension
-    # registry, where extensions installed through the GUI's extension manager live. Cesium
-    # for Omniverse is installed there, so without this the tileset prims in a scene load
-    # as inert typed prims and no terrain ever appears -- with no error, because the prims
-    # themselves are perfectly valid USD.
-    #
-    # Each existing path is passed to Kit as `--ext-folder`. Missing paths are skipped
-    # rather than failing, so this default is portable across machines.
+    # Isaac's python experience does not search Omniverse's user extension registry, where the GUI
+    # installs Cesium -- without this, tileset prims are valid USD that draw no terrain, silently.
+    # Each existing path becomes a `--ext-folder`; missing ones are skipped, so this stays portable.
     extension_search_paths: tuple[str, ...] = ("~/.local/share/ov/data/exts/v2",)
 
-    # Prim path the main viewport should look through when running with a GUI.
-    #
-    # Without this the viewport keeps Kit's default perspective camera, so the aircraft
-    # camera can be tracking a pose perfectly while the window appears frozen -- which
-    # reads as "the camera does not respond". `{instance}` is replaced with the vehicle id.
-    #
-    # Set to an empty string to leave the viewport alone.
+    # Without this the viewport keeps Kit's default camera, so a perfectly working aircraft camera
+    # looks frozen. `{instance}` becomes the vehicle id; "" leaves the viewport alone.
     viewport_camera: str = "/World/Environment/{instance}/Xform/main_camera_01"
 
-    # RTX render mode passed to SimulationApp.
-    #
-    # Isaac defaults to "RealTimePathTracing", which this project does not need: the camera
-    # topic wants a correct image, not a photoreal one. Path tracing over streaming 3D
-    # Tiles was also implicated in an intermittent startup segfault inside OmniGraph's
-    # render-stage execution. "RaytracedLighting" is materially lighter and stable.
-    #
-    # Also accepts "PathTracing", "RealTimePathTracing" and "MinimalRendering" (alias
-    # "Minimal"). Matching is case-insensitive, mirroring Isaac; an unknown value is
-    # rejected at config load rather than passed through. "MinimalRendering" validates but
-    # warns: it draws no Cesium 3D Tiles terrain.
+    # Lighter and more stable than Isaac's path-tracing default, which this project does not need
+    # and which was implicated in a startup segfault over streaming tiles. Also accepts
+    # "PathTracing", "RealTimePathTracing" and "MinimalRendering" -- the last warns, as it draws no
+    # terrain. Matching is case-insensitive; an unknown value is rejected at load.
     renderer: str = "RaytracedLighting"
     physics_dt: float = Field(1.0 / 60.0, gt=0.0)
     stage_units_in_meters: float = Field(1.0, gt=0.0)
@@ -222,8 +177,7 @@ class SimConfig(_Strict):
     @field_validator("renderer")
     @classmethod
     def _check_renderer(cls, value: str) -> str:
-        """
-        Reject an unknown renderer and warn when the choice draws no terrain.
+        """Reject an unknown renderer and warn when the choice draws no terrain.
 
         Validation happens here, at config load, because Isaac silently passes an
         unrecognised value through to a raw carb setting where it fails late or not at
@@ -270,8 +224,7 @@ class GeoConfig(_Strict):
 
 
 class CesiumConfig(_Strict):
-    """
-    3D Tiles terrain settings.
+    """3D Tiles terrain settings.
 
     The tile-loading fields default to ``None``, meaning "leave Cesium's own default alone".
     They exist because tuning them previously required a ``prim_override``, not because the
@@ -306,12 +259,11 @@ class FeaturesConfig(_Strict):
 
 
 class GimbalConfig(_Strict):
-    """
-    Camera gimbal starting attitude and slew behaviour.
+    """Camera gimbal starting attitude and slew behaviour.
 
     Defaults to ``RotationFrame.BODY`` because a gimbal is physically mounted on
     the airframe and moves with it. ``max_rate_deg_s`` of ``None`` reproduces the
-    previous generation's instantaneous snapping.
+    snaps instantly.
     """
 
     start_roll_deg: float = 0.0
@@ -322,8 +274,7 @@ class GimbalConfig(_Strict):
 
 
 class DistanceSensorConfig(_Strict):
-    """
-    Rangefinder settings for a vehicle's distance sensor.
+    """Rangefinder settings for a vehicle's distance sensor.
 
     The rated band is a sensor property, not a preference: readings outside it are reported
     as the `sensor_msgs/Range` out-of-band values rather than clamped, so a consumer can tell
@@ -349,8 +300,7 @@ class DistanceSensorConfig(_Strict):
 
 
 class CameraConfig(_Strict):
-    """
-    One camera on a vehicle.
+    """One camera on a vehicle.
 
     ``focal_length_mm`` together with ``fov_deg`` determines the horizontal
     aperture applied to the USD camera prim; the vertical aperture follows from
@@ -388,7 +338,7 @@ class CameraConfig(_Strict):
     #
     # `rtsp_mount_path` of ``None`` means derive: ``/stream`` for a single camera, and a
     # namespaced path once there is more than one, mirroring how topics are derived.
-    rtsp_port: Port = 8554
+    rtsp_port: Port | None = None
     rtsp_mount_path: str | None = None
 
     @property
@@ -403,11 +353,10 @@ class CameraConfig(_Strict):
 
 
 class VehicleConfig(_Strict):
-    """
-    One vehicle, with one or more cameras.
+    """One vehicle, with one or more cameras.
 
     Defaults to ``RotationFrame.WORLD`` for movement commands, matching the
-    previous generation's ``UdpBot`` turn methods, which rotated about fixed world
+    movement commands, which rotate about fixed world
     axes. Note this differs from the gimbal default of ``BODY`` -- both behaviours
     existed before, neither was selectable, and the physical defaults differ.
     """
@@ -435,19 +384,14 @@ class VehicleConfig(_Strict):
 class Ros2Config(_Strict):
     """ROS 2 middleware settings."""
 
-    # DDS domain the ROS 2 bridge publishes on.
-    #
-    # ``None`` means inherit ``$ROS_DOMAIN_ID`` from the environment (0 if unset), which is
-    # what the bridge's context node does by default and what the team expects. An explicit
-    # integer is exported to ``ROS_DOMAIN_ID`` before the bridge starts, so config can
-    # override the environment when needed. A hardcoded default here was misleading: it
-    # looked authoritative but never reached the bridge.
+    # None inherits $ROS_DOMAIN_ID (0 if unset), matching the bridge's own default. An explicit
+    # value is exported before the bridge starts. A hardcoded default looked authoritative here but
+    # never reached the bridge.
     domain_id: int | None = Field(None, ge=0, le=232)
 
 
 class SidecarServiceConfig(BaseModel):
-    """
-    One supervised sidecar service.
+    """One supervised sidecar service.
 
     Extra keys are permitted, unlike everywhere else, because each service kind
     defines its own parameters and those are validated by the service itself.
@@ -470,18 +414,12 @@ class LoggingConfig(_Strict):
 
     level: LogLevel = "info"
 
-    # Whether to let Kit's own log stream through to the terminal.
-    #
-    # False quiets Kit to warnings and errors only. Isaac otherwise prints thousands of
-    # startup lines that bury our own output -- a full launch emitted over 3,400 lines.
-    # Our own logger is unaffected either way; this only governs Kit's stream.
+    # False quiets Kit to warnings and errors: it otherwise emits thousands of startup lines that
+    # bury our own output. Governs Kit's stream only; our logger is unaffected.
     isaac_logs: bool = False
 
-    # Python loggers raised to WARNING when `isaac_logs` is false.
-    #
-    # These are named explicitly because they set their own level and attach their own
-    # handler, so raising the root logger does not touch them. `ogn_registration` alone
-    # accounted for 2,721 lines of a 3,400-line launch.
+    # Named explicitly because each sets its own level and handler, so raising the root logger does
+    # not touch them. ogn_registration alone emitted 2,721 lines of a 3,400-line launch.
     quiet_loggers: tuple[str, ...] = (
         "ogn_registration",
         "AutoNode",
@@ -496,8 +434,7 @@ class LoggingConfig(_Strict):
 
 
 class PrimOverride(_Strict):
-    """
-    A raw prim attribute write, applied after all layer bindings.
+    """A raw prim attribute write, applied after all layer bindings.
 
     The escape hatch for a knob no layer exposed. Sharp, occasionally correct.
     """
@@ -514,8 +451,7 @@ class PrimOverride(_Strict):
 
 
 class IsaacCoreConfig(_Strict):
-    """
-    The complete configuration for one simulation run.
+    """The complete configuration for one simulation run.
 
     Also the only object that can resolve the conventional defaults, because
     those depend on how many vehicles and cameras exist. See
@@ -558,9 +494,28 @@ class IsaacCoreConfig(_Strict):
         """Whether topic namespacing should collapse the vehicle level."""
         return len(self.vehicles) == 1
 
-    def vehicle_index(self, vehicle_id: str) -> int:
+    @property
+    def first_vehicle_id(self) -> str:
+        """Return the first vehicle in declaration order.
+
+        The default identity for calls that do not name a vehicle, and the vehicle the GUI
+        viewport follows. TOML preserves declaration order, so this is stable across loads.
+
+        Returns:
+            The first vehicle's key.
+
+        Raises:
+            ValueError: If no vehicles are configured.
+
         """
-        Return the declaration order index of a vehicle.
+        try:
+            return next(iter(self.vehicles))
+        except StopIteration as error:
+            msg = "no vehicles are configured"
+            raise ValueError(msg) from error
+
+    def vehicle_index(self, vehicle_id: str) -> int:
+        """Return the declaration order index of a vehicle.
 
         Args:
             vehicle_id: Key in ``vehicles``.
@@ -579,8 +534,7 @@ class IsaacCoreConfig(_Strict):
             raise KeyError(msg) from error
 
     def resolved_udp_port(self, vehicle_id: str) -> int:
-        """
-        Return a vehicle's pose port, explicit if set, otherwise ``base + index``.
+        """Return a vehicle's pose port, explicit if set, otherwise ``base + index``.
 
         Args:
             vehicle_id: Key in ``vehicles``.
@@ -595,16 +549,15 @@ class IsaacCoreConfig(_Strict):
         return pose_port_for_index(self.vehicle_index(vehicle_id), DEFAULT_POSE_UDP_PORT)
 
     def resolved_rtsp_port(self, vehicle_id: str, camera_id: str) -> int:
-        """
-        Return a camera's RTSP port, offset per vehicle so a swarm cannot collide.
+        """Return a camera's RTSP port, offset per vehicle so a swarm cannot collide.
 
         Every vehicle mounts its own copy of the camera layer, so with a shared port the second
         aircraft's RTSP server fails to bind: Isaac reports
         ``Error binding to address 0.0.0.0:8554: Address already in use`` and that vehicle simply
         has no stream. Offsetting by the vehicle's index mirrors how pose ports work.
 
-        An explicitly configured port is honoured verbatim, so a single-vehicle setup keeps 8554
-        and a user pinning a port gets exactly that.
+        An explicitly configured port is honoured verbatim; leaving it unset derives
+        ``DEFAULT_RTSP_PORT + index``, so a single vehicle keeps 8554.
 
         Args:
             vehicle_id: Key in ``vehicles``.
@@ -615,13 +568,16 @@ class IsaacCoreConfig(_Strict):
 
         """
         camera = self.vehicles[vehicle_id].cameras[camera_id]
-        if "rtsp_port" in camera.model_fields_set:
+        # None means derive, matching rtsp_mount_path and the topic fields. This used to key off
+        # `model_fields_set`, which does not survive a dump/reload: `Sim.launch` writes the resolved
+        # config to TOML and re-reads it, so every field came back "explicitly set" and the offset was
+        # skipped -- giving every vehicle 8554 and an "Address already in use" collision.
+        if camera.rtsp_port is not None:
             return camera.rtsp_port
-        return camera.rtsp_port + self.vehicle_index(vehicle_id)
+        return DEFAULT_RTSP_PORT + self.vehicle_index(vehicle_id)
 
     def resolved_mount(self, vehicle_id: str) -> str:
-        """
-        Return a vehicle's stage mount point, defaulting to ``/Environment/<id>``.
+        """Return a vehicle's stage mount point, defaulting to ``/Environment/<id>``.
 
         Args:
             vehicle_id: Key in ``vehicles``.
@@ -636,8 +592,7 @@ class IsaacCoreConfig(_Strict):
         return prims.child(prims.ENVIRONMENT_ROOT, vehicle_id)
 
     def topic_resolver(self, vehicle_id: str, camera_id: str | None = None) -> topics.TopicResolver:
-        """
-        Return a resolver producing this vehicle's (and camera's) topic names.
+        """Return a resolver producing this vehicle's (and camera's) topic names.
 
         Namespace levels collapse when there is only one of something, so a single
         vehicle with a single camera yields the flat names the team already uses,
@@ -661,8 +616,7 @@ class IsaacCoreConfig(_Strict):
         return topics.TopicResolver(vehicle=vehicle_segment, camera=camera_segment)
 
     def required_feature_ids(self) -> tuple[str, ...]:
-        """
-        Return every feature layer this configuration needs, in a stable order.
+        """Return every feature layer this configuration needs, in a stable order.
 
         The union of what ``[features] enabled`` lists explicitly and the camera layer
         implied by each vehicle's ``pose_source``. Deriving the implied layers means a

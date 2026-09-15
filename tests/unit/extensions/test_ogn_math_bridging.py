@@ -1,5 +1,4 @@
-"""
-Interface tests for the quaternion/Euler bridging nodes.
+"""Interface tests for the quaternion/Euler bridging nodes.
 
 These two nodes exist purely to connect Isaac's ROS 2 bridge to our math node. The
 bridge exposes a ``PoseStamped`` or ``GeoPoseStamped`` orientation as four separate

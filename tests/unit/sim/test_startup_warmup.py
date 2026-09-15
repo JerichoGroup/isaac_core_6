@@ -1,5 +1,4 @@
-"""
-Tests for the startup warm-up that fixes the intermittent Kit segfault.
+"""Tests for the startup warm-up that fixes the intermittent Kit segfault.
 
 Opening or creating a stage immediately after enabling ``isaacsim.ros2.bridge`` crashed
 roughly half of all launches on this install, inside Kit's parallel graph executor. Pumping

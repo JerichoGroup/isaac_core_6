@@ -1,5 +1,4 @@
-"""
-Guard against config keys that are declared but never read.
+"""Guard against config keys that are declared but never read.
 
 A field that parses and validates but that nothing consumes is worse than not offering it:
 setting it looks like it worked. Two such keys were reported as bugs by the team before this
@@ -22,7 +21,7 @@ SCHEMA = REPO_ROOT / "src" / "isaac_core" / "config" / "schema.py"
 # Directories that legitimately consume config values.
 _SEARCH_ROOTS: Final = ("src/isaac_core", "extensions", "scripts")
 
-# Fields known to be unapplied, tracked in docs/roadmap.md. Shrink this; do not grow it.
+# Fields known to be unapplied, tracked in docs/dev/roadmap.md. Shrink this; do not grow it.
 _KNOWN_DEAD: Final[frozenset[str]] = frozenset()
 
 

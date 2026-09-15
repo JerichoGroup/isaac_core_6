@@ -15,7 +15,7 @@ _OGN_PATH = _NODES_DIR / "OgnGlobalPositionToLocalPosition.ogn"
 _EXT_TOML = _EXT_ROOT / "config" / "extension.toml"
 
 # Valid OGN attribute types as confirmed in the real Isaac Sim 6 install (Kit 110.1.2).
-# Derived by scanning all .ogn files under /home/ofer/isaacsim/exts.
+# Derived by scanning all .ogn files under the Isaac Sim install's exts directory.
 _VALID_OGN_TYPES = frozenset(
     {
         "bool",

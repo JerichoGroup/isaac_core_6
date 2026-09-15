@@ -1,5 +1,7 @@
 """Tests for isaac_core.vehicle.motion."""
 
+import ast
+import inspect
 import math
 import pathlib
 
@@ -8,6 +10,7 @@ import numpy as np
 from isaac_core.contracts.frames import RotationFrame
 from isaac_core.geo.rotations import euler_to_matrix
 from isaac_core.vehicle.limits import MotionLimits
+import isaac_core.vehicle.motion as motion_module
 from isaac_core.vehicle.motion import (
     move_forward_backward,
     move_right_left,
@@ -459,3 +462,58 @@ def test_move_to_does_not_mutate_original_state() -> None:
     # State must be unchanged
     assert state.lat_deg == original_lat
     assert np.allclose(state.rotation, original_rotation)
+
+
+def test_move_to_honours_the_speed_limit_it_accepts() -> None:
+    # Guards a real bug: move_to accepted `limits` and never referenced it, so a caller passing a
+    # 1 m/s cap still got the full-distance move in the requested duration. Every sibling honours
+    # limits, so ignoring it here meant the signature lied.
+    state = VehicleState(lat_deg=32.0, lon_deg=35.0, alt_m=1000.0, rotation=np.eye(3))
+    unlimited = list(move_to(state, 33.0, 35.0, 1000.0, duration_s=10.0, rate_hz=1.0))
+    limited = list(
+        move_to(
+            state,
+            33.0,
+            35.0,
+            1000.0,
+            duration_s=10.0,
+            rate_hz=1.0,
+            limits=MotionLimits(max_speed_mps=1.0),
+        )
+    )
+    assert len(limited) > len(unlimited), "the speed limit did not extend the move"
+    assert limited[-1].position.lat_deg == unlimited[-1].position.lat_deg
+
+
+def test_turn_to_point_honours_the_turn_rate_limit_it_accepts() -> None:
+    # The same bug in the rotation path: turn_to_point took `limits` and ignored it, while
+    # turn_yaw, turn_roll and turn_pitch all clamp.
+    state = VehicleState(lat_deg=32.0, lon_deg=35.0, alt_m=1000.0, rotation=np.eye(3))
+    unlimited = list(turn_to_point(state, 33.0, 36.0, 1000.0, duration_s=2.0, rate_hz=1.0))
+    limited = list(
+        turn_to_point(
+            state,
+            33.0,
+            36.0,
+            1000.0,
+            duration_s=2.0,
+            rate_hz=1.0,
+            limits=MotionLimits(max_turn_rate_deg_s=1.0),
+        )
+    )
+    assert len(limited) > len(unlimited), "the turn rate limit did not extend the turn"
+
+
+def test_no_motion_function_accepts_limits_and_ignores_it() -> None:
+    # The general invariant, so a new function cannot reintroduce the same lie.
+    tree = ast.parse(inspect.getsource(motion_module))
+    offenders = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        args = [arg.arg for arg in node.args.args] + [arg.arg for arg in node.args.kwonlyargs]
+        if "limits" not in args:
+            continue
+        if "'limits'" not in ast.dump(ast.Module(body=node.body, type_ignores=[])):
+            offenders.append(node.name)
+    assert not offenders, f"these accept `limits` and never use it: {offenders}"

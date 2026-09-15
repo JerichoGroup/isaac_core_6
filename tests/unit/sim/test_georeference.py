@@ -20,7 +20,7 @@ from isaac_core.sim.georeference import (
     resolve_enu_reference,
 )
 
-# The origin authored in usd/scenes/earth.usda.
+# The origin authored in the shipped earth scene.
 SCENE_LAT = 32.22481
 SCENE_LON = 35.25621
 SCENE_ALT = 516.7

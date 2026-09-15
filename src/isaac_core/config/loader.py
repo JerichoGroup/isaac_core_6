@@ -1,5 +1,4 @@
-"""
-Layered configuration loader.
+"""Layered configuration loader.
 
 Resolves layered inputs into one validated :class:`~isaac_core.config.schema.IsaacCoreConfig`.
 Resolution order, later wins::
@@ -24,12 +23,11 @@ from isaac_core.config.sources import cli_source, defaults_source, env_source, t
 _CONFIG_ENV_VAR = "ISAAC_CORE_CONFIG"
 
 
-def deep_merge(  # noqa: ANN401
+def deep_merge(
     base: dict[str, Any],
     override: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Recursively merge two dicts, with *override* winning on conflicts.
+    """Recursively merge two dicts, with *override* winning on conflicts.
 
     Never mutates its inputs. Lists and tuples are replaced wholesale rather than
     concatenated -- appending would make it impossible to shorten a list through an
@@ -61,8 +59,7 @@ def deep_merge(  # noqa: ANN401
 
 
 def _copy_value(value: object) -> object:
-    """
-    Return a deep copy of a value, handling nested dicts and lists.
+    """Return a deep copy of a value, handling nested dicts and lists.
 
     Args:
         value: The value to copy.
@@ -78,9 +75,8 @@ def _copy_value(value: object) -> object:
     return value
 
 
-def _flatten_keys(data: dict[str, Any], prefix: str = "") -> dict[str, str]:  # noqa: ANN401
-    """
-    Flatten a nested dict into dotted-key form, returning keys mapped to themselves.
+def _flatten_keys(data: dict[str, Any], prefix: str = "") -> dict[str, str]:
+    """Flatten a nested dict into dotted-key form, returning keys mapped to themselves.
 
     Args:
         data: Nested dict to flatten.
@@ -102,8 +98,7 @@ def _flatten_keys(data: dict[str, Any], prefix: str = "") -> dict[str, str]:  # 
 
 
 def _resolve_config_path(path: Path | None, environ: Mapping[str, str]) -> Path | None:
-    """
-    Determine the configuration file path.
+    """Determine the configuration file path.
 
     Explicit *path* takes precedence over ``$ISAAC_CORE_CONFIG``.
 
@@ -125,12 +120,11 @@ def _resolve_config_path(path: Path | None, environ: Mapping[str, str]) -> Path 
 
 def _build_provenance(
     config_path: Path | None,
-    file_data: dict[str, Any],  # noqa: ANN401
-    env_data: dict[str, Any],  # noqa: ANN401
-    cli_data: dict[str, Any],  # noqa: ANN401
+    file_data: dict[str, Any],
+    env_data: dict[str, Any],
+    cli_data: dict[str, Any],
 ) -> dict[str, str]:
-    """
-    Compute provenance for every leaf key that was explicitly set.
+    """Compute provenance for every leaf key that was explicitly set.
 
     Keys from defaults are not tracked because the caller never supplied them.
 
@@ -160,12 +154,11 @@ def _build_provenance(
 
 
 def _merge_layers(
-    file_data: dict[str, Any],  # noqa: ANN401
-    env_data: dict[str, Any],  # noqa: ANN401
-    cli_data: dict[str, Any],  # noqa: ANN401
+    file_data: dict[str, Any],
+    env_data: dict[str, Any],
+    cli_data: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Merge the three override layers on top of an empty base.
+    """Merge the three override layers on top of an empty base.
 
     Args:
         file_data: From the TOML file.
@@ -189,10 +182,9 @@ def _merge_layers(
 def load_with_provenance(
     path: Path | None = None,
     environ: Mapping[str, str] | None = None,
-    cli_overrides: Mapping[str, Any] | None = None,  # noqa: ANN401
+    cli_overrides: Mapping[str, Any] | None = None,
 ) -> tuple[IsaacCoreConfig, dict[str, str]]:
-    """
-    Load and validate configuration, returning both the config and provenance.
+    """Load and validate configuration, returning both the config and provenance.
 
     Resolution order, later wins:
         defaults -> TOML file -> env -> CLI
@@ -242,10 +234,9 @@ def load_with_provenance(
 def load(
     path: Path | None = None,
     environ: Mapping[str, str] | None = None,
-    cli_overrides: Mapping[str, Any] | None = None,  # noqa: ANN401
+    cli_overrides: Mapping[str, Any] | None = None,
 ) -> IsaacCoreConfig:
-    """
-    Load, merge, and validate configuration from all layers.
+    """Load, merge, and validate configuration from all layers.
 
     Convenience wrapper around :func:`load_with_provenance` that discards
     provenance.
@@ -273,8 +264,7 @@ _TOML_BOOL_FALSE = "false"
 
 
 def _render_scalar(value: object) -> str | None:
-    """
-    Render a single scalar value to TOML, or return None if not a scalar.
+    """Render a single scalar value to TOML, or return None if not a scalar.
 
     Args:
         value: The value to render.
@@ -299,8 +289,7 @@ def _render_scalar(value: object) -> str | None:
 
 
 def _render_value(value: object) -> str:
-    """
-    Render a Python value as a TOML-compatible string.
+    """Render a Python value as a TOML-compatible string.
 
     Args:
         value: The value to render.
@@ -320,13 +309,12 @@ def _render_value(value: object) -> str:
         return f"{{{items}}}"
     # Fallback for enums and other objects with a .value attribute.
     if hasattr(value, "value"):
-        return _render_value(getattr(value, "value"))  # noqa: B009
+        return _render_value(value.value)
     return f'"{value}"'
 
 
 def _dump_section(data: dict[str, object], lines: list[str], prefix: str) -> None:
-    """
-    Recursively render a dict as TOML table sections and key/value pairs.
+    """Recursively render a dict as TOML table sections and key/value pairs.
 
     Args:
         data: Nested dict to render.
@@ -345,8 +333,7 @@ def _dump_section(data: dict[str, object], lines: list[str], prefix: str) -> Non
 
 
 def dump_toml(config: IsaacCoreConfig) -> str:
-    """
-    Render a resolved configuration as a TOML string.
+    """Render a resolved configuration as a TOML string.
 
     Intended for ``isaac-core config dump``. The output, when loaded back, produces
     an equal configuration.

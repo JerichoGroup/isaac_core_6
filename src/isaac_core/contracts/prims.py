@@ -1,5 +1,4 @@
-"""
-USD prim path construction and templating.
+"""USD prim path construction and templating.
 
 Layer manifests declare prim paths as templates containing placeholders, which are
 substituted at compose time::
@@ -7,9 +6,8 @@ substituted at compose time::
     "{mount}/ActionGraph/ros2_distance_publisher"
     "/Environment/{instance}/thermal"
 
-This is what keeps prim paths out of Python entirely. The previous generation
-scattered literals like
-``/Environment/distance_sensor/ActionGraph/ros2_distance_publisher`` through its
+This is what keeps prim paths out of Python entirely. Scattering literals like
+``/Environment/distance_sensor/ActionGraph/ros2_distance_publisher`` through
 simulation class, so any rename in the USD silently broke configuration with no
 error until runtime. Now a layer author writes the path once in a manifest, and a
 contract test asserts every declared path actually exists in the shipped USD.
@@ -24,7 +22,7 @@ from typing import Final
 
 # Conventional mount point for composed feature layers. Under /World, because USD
 # convention is a single /World default prim and the authored scenes follow it. The
-# 2023 repo rooted its scenes at /Environment; mounting there now would create a
+# Not /Environment: mounting there would create a
 # sibling of /World, outside the scene graph.
 ENVIRONMENT_ROOT: Final = "/World/Environment"
 
@@ -44,8 +42,7 @@ _IDENTIFIER_RE: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def is_valid_prim_path(path: str) -> bool:
-    """
-    Report whether ``path`` is a well-formed absolute USD prim path.
+    """Report whether ``path`` is a well-formed absolute USD prim path.
 
     Checks the shape only: absolute, no empty or repeated separators, and every
     element a valid USD identifier. It says nothing about whether the prim exists.
@@ -65,8 +62,7 @@ def is_valid_prim_path(path: str) -> bool:
 
 
 def validate_prim_path(path: str) -> str:
-    """
-    Check that ``path`` is a well-formed absolute USD prim path.
+    """Check that ``path`` is a well-formed absolute USD prim path.
 
     Args:
         path: Candidate prim path.
@@ -88,8 +84,7 @@ def validate_prim_path(path: str) -> str:
 
 
 def placeholders(template: str) -> frozenset[str]:
-    """
-    Return the set of placeholder names appearing in ``template``.
+    """Return the set of placeholder names appearing in ``template``.
 
     Lets the manifest loader reject a template referencing an unknown placeholder
     at load time, rather than producing a malformed path much later.
@@ -105,8 +100,7 @@ def placeholders(template: str) -> frozenset[str]:
 
 
 def render(template: str, **substitutions: str) -> str:
-    """
-    Substitute placeholders in a prim path template and validate the result.
+    """Substitute placeholders in a prim path template and validate the result.
 
     Args:
         template: Prim path template, for example ``"{mount}/ActionGraph/node"``.
@@ -135,8 +129,7 @@ def render(template: str, **substitutions: str) -> str:
 
 
 def child(parent: str, *elements: str) -> str:
-    """
-    Return the path of a descendant prim.
+    """Return the path of a descendant prim.
 
     Args:
         parent: Absolute path of the ancestor prim.

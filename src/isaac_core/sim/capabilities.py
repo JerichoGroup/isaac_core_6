@@ -1,9 +1,7 @@
-"""
-Stage capabilities: probing and representing what a USD stage offers.
+"""Stage capabilities: probing and representing what a USD stage offers.
 
-The previous generation crashed outright if the stage lacked a ``/bboxes`` or
-``/tilesets`` prim. This module replaces that behaviour with a probing step that
-runs after the base stage opens: the result is a :class:`StageCapabilities` value
+A stage lacking a ``/bboxes`` or ``/tilesets`` prim must degrade, not crash. This module
+probes after the base stage opens: the result is a :class:`StageCapabilities` value
 that layers can test with :meth:`~StageCapabilities.has`. Unmet requirements
 cause a layer to be **skipped with a reason**, not a crash.
 
@@ -22,8 +20,7 @@ from isaac_core.contracts.prims import BBOXES_ROOT, TILESETS_ROOT
 
 @unique
 class StageCapability(Enum):
-    """
-    A capability that a USD stage may or may not provide.
+    """A capability that a USD stage may or may not provide.
 
     Layers declare which capabilities they require via their manifest's
     ``requires`` field, using the enum *name* (e.g. ``"TILESETS_ROOT"``).
@@ -47,8 +44,7 @@ class StageCapability(Enum):
 
 @runtime_checkable
 class StageInspector(Protocol):
-    """
-    Narrow interface for querying a USD stage's structure.
+    """Narrow interface for querying a USD stage's structure.
 
     A real implementation wraps ``pxr.Usd.Stage`` calls; tests use
     :class:`FakeStageInspector`. The surface is deliberately minimal so that
@@ -56,8 +52,7 @@ class StageInspector(Protocol):
     """
 
     def prim_exists(self, path: str) -> bool:
-        """
-        Report whether a prim exists at ``path`` in the open stage.
+        """Report whether a prim exists at ``path`` in the open stage.
 
         Args:
             path: Absolute USD prim path.
@@ -69,8 +64,7 @@ class StageInspector(Protocol):
         ...
 
     def has_attribute(self, path: str, attribute: str) -> bool:
-        """
-        Report whether a prim at ``path`` has the named attribute.
+        """Report whether a prim at ``path`` has the named attribute.
 
         Args:
             path: Absolute USD prim path.
@@ -83,8 +77,7 @@ class StageInspector(Protocol):
         ...
 
     def read_double(self, path: str, attribute: str) -> float | None:
-        """
-        Read a double-valued attribute from a prim.
+        """Read a double-valued attribute from a prim.
 
         Needed so composition can read the scene's Cesium georeference origin and
         derive ``geo.enu_reference`` from it, rather than requiring the two to be
@@ -103,8 +96,7 @@ class StageInspector(Protocol):
 
 
 class FakeStageInspector:
-    """
-    In-memory stage inspector for testing without Isaac Sim.
+    """In-memory stage inspector for testing without Isaac Sim.
 
     Args:
         prims: Set of prim paths that exist.
@@ -141,8 +133,7 @@ class FakeStageInspector:
 
 
 class StageCapabilities:
-    """
-    Frozen set of capabilities detected in the current stage.
+    """Frozen set of capabilities detected in the current stage.
 
     Constructed by :func:`probe`; layers test individual capabilities via
     :meth:`has`.
@@ -153,8 +144,7 @@ class StageCapabilities:
         self._capabilities = capabilities
 
     def has(self, capability: StageCapability) -> bool:
-        """
-        Check whether a specific capability is present.
+        """Check whether a specific capability is present.
 
         Args:
             capability: The capability to check.
@@ -166,8 +156,7 @@ class StageCapabilities:
         return capability in self._capabilities
 
     def has_named(self, name: str) -> bool:
-        """
-        Check a capability by its enum name string (as used in manifests).
+        """Check a capability by its enum name string (as used in manifests).
 
         Args:
             name: Enum member name, e.g. ``"TILESETS_ROOT"``.
@@ -196,15 +185,12 @@ class StageCapabilities:
 _GEOREFERENCE_ATTR: str = "cesium:georeferenceBinding"
 
 # A conventional camera prim path prefix.
-_CAMERA_ROOT: str = "/Environment"
 
 # Semantic labels are applied via a "semantics" schema.
-_SEMANTICS_ATTR: str = "semantic:Semantics:params:semanticType"
 
 
 def probe(inspector: StageInspector) -> StageCapabilities:
-    """
-    Detect stage capabilities by inspecting known prim paths and attributes.
+    """Detect stage capabilities by inspecting known prim paths and attributes.
 
     This is the sole point where prim-existence checks for capability detection
     live. The mapping from prim structure to capabilities is intentionally
@@ -228,11 +214,8 @@ def probe(inspector: StageInspector) -> StageCapabilities:
     if inspector.prim_exists("/CesiumGeoreference"):
         caps.add(StageCapability.GEOREFERENCE)
 
-    if inspector.prim_exists("/Environment/main_camera"):
-        caps.add(StageCapability.CAMERA)
-
-    if inspector.prim_exists("/semantics"):
-        caps.add(StageCapability.SEMANTICS)
+    # CAMERA and SEMANTICS are not probed: both are satisfied by a layer declaring them in
+    # `provides`, which is how the camera layers supply CAMERA.
 
     return StageCapabilities(frozenset(caps))
 

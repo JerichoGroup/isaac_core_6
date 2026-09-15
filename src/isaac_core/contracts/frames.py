@@ -1,8 +1,7 @@
-"""
-Coordinate-frame, rotation and pose-source conventions.
+"""Coordinate-frame, rotation and pose-source conventions.
 
-Two geographic conventions are in play at once, and conflating them was a
-recurring source of bugs in the previous generation of this tooling:
+Two geographic conventions are in play at once, and conflating them is the single most
+common source of orientation bugs here:
 
 ``NED`` (North-East-Down)
     The aerospace convention. Used on the wire and in every user-facing API.
@@ -33,8 +32,7 @@ class Frame(str, Enum):
 
 
 class RotationFrame(str, Enum):
-    """
-    Frame in which a roll/pitch/yaw delta is applied to an existing attitude.
+    """Frame in which a roll/pitch/yaw delta is applied to an existing attitude.
 
     The distinction is which side of the composition the delta lands on, and it is
     directly observable: commanding ``+yaw`` on a vehicle that is banked steeply
@@ -46,8 +44,7 @@ class RotationFrame(str, Enum):
             R_result = R_delta @ R_current
 
         ``+yaw`` always turns about the world vertical, whatever the current
-        attitude. This is what the previous generation's ``UdpBot`` hardcoded for
-        its ``turn_roll`` / ``turn_pitch`` / ``turn_yaw`` methods.
+        attitude. The natural choice for a movement command such as a turn.
 
     ``BODY``
         Intrinsic. The delta is applied about the vehicle's own axes::
@@ -55,8 +52,7 @@ class RotationFrame(str, Enum):
             R_result = R_current @ R_delta
 
         The natural choice for a gimbal, which is physically mounted on the
-        airframe and so moves with it. This is what the previous generation
-        hardcoded for gimbal offsets (``qmult(q_drone, q_offset)``).
+        airframe and so moves with it (``qmult(q_drone, q_offset)``).
 
     Both behaviours existed before but neither was selectable; this enum makes the
     choice explicit and configurable.
@@ -67,12 +63,10 @@ class RotationFrame(str, Enum):
 
 
 class PoseSource(str, Enum):
-    """
-    Where a vehicle's pose comes from.
+    """Where a vehicle's pose comes from.
 
-    A single axis, replacing the previous generation's mutually-exclusive
-    ``--com-ros`` / ``--com-udp`` boolean pair, so new sources can be added without
-    reworking the flag surface. Each vehicle chooses independently, which means a
+    A single axis rather than a set of mutually-exclusive booleans, so a new source can be
+    added without reworking the surface. Each vehicle chooses independently, which means a
     lead aircraft can fly on real physics while its wingmen are placed by script.
 
     ``UDP``
@@ -81,19 +75,10 @@ class PoseSource(str, Enum):
     ``ROS``
         ``NavSatFix`` + ``PoseStamped``, typically from MAVROS in front of an
         ArduCopter SITL instance. Used when physics does matter.
-    ``SCRIPT``
-        Driven directly over the control plane by a user script.
-    ``REPLAY``
-        Played back from a previously recorded pose track.
-    ``MAVLINK``
-        MAVLink consumed directly, without MAVROS in between.
     """
 
     UDP = "udp"
     ROS = "ros"
-    SCRIPT = "script"
-    REPLAY = "replay"
-    MAVLINK = "mavlink"
 
 
 __all__ = ["EULER_AXES", "Frame", "PoseSource", "RotationFrame"]

@@ -1,13 +1,11 @@
-"""
-Pose transport layer: ship encoded pose packets over the network at a controlled rate.
+"""Pose transport layer: ship encoded pose packets over the network at a controlled rate.
 
 The vehicle module generates poses purely; this module adds the I/O. The split is
 deliberate: vehicle logic stays testable without sockets, and the transport is
 reusable with any pose source.
 
-The ``pace()`` helper implements the accumulating-deadline real-time throttle that
-the previous generation got right: ``next_time += dt`` rather than ``sleep(dt)``,
-which prevents drift over long runs.
+The ``pace()`` helper uses an accumulating deadline -- ``next_time += dt`` rather than
+``sleep(dt)`` -- which prevents drift over long runs.
 """
 
 from __future__ import annotations
@@ -24,15 +22,13 @@ from isaac_core.protocol import encode
 
 @runtime_checkable
 class PoseTransport(Protocol):
-    """
-    Protocol for shipping a single encoded pose to a consumer.
+    """Protocol for shipping a single encoded pose to a consumer.
 
     Implementations may send over UDP, record for tests, stream to a file, etc.
     """
 
     def send(self, pose: GeodeticPose) -> None:
-        """
-        Transmit one pose.
+        """Transmit one pose.
 
         Args:
             pose: The geodetic pose to ship. Must have NED orientation for UDP.
@@ -46,16 +42,14 @@ class PoseTransport(Protocol):
 
 
 class UdpPoseTransport:
-    """
-    Send encoded 51-byte pose packets over a UDP socket.
+    """Send encoded 51-byte pose packets over a UDP socket.
 
     Uses :func:`isaac_core.protocol.encode` to produce the wire bytes, then sends
     them as a single datagram to the configured host and port.
     """
 
     def __init__(self, host: str = "127.0.0.1", port: int = DEFAULT_POSE_UDP_PORT) -> None:
-        """
-        Initialise the transport.
+        """Initialise the transport.
 
         Args:
             host: Destination host.
@@ -77,8 +71,7 @@ class UdpPoseTransport:
         return self._port
 
     def send(self, pose: GeodeticPose) -> None:
-        """
-        Encode and send a single pose datagram.
+        """Encode and send a single pose datagram.
 
         Creates the socket lazily on first send.
 
@@ -103,8 +96,7 @@ class UdpPoseTransport:
 
 
 class FakePoseTransport:
-    """
-    Record poses instead of sending them, for testing vehicle/mission logic.
+    """Record poses instead of sending them, for testing vehicle/mission logic.
 
     Acts as a drop-in for :class:`UdpPoseTransport` in test harnesses.
     """
@@ -125,8 +117,7 @@ class FakePoseTransport:
         return self._closed
 
     def send(self, pose: GeodeticPose) -> None:
-        """
-        Record a pose.
+        """Record a pose.
 
         Args:
             pose: The pose to record.
@@ -150,11 +141,10 @@ def pace(
     transport: PoseTransport,
     rate_hz: float,
 ) -> int:
-    """
-    Send poses at a fixed real-time rate using an accumulating deadline.
+    """Send poses at a fixed real-time rate using an accumulating deadline.
 
     Uses ``time.perf_counter`` with ``next_time += dt`` to prevent drift. This is
-    the technique the previous generation got right in ``base_udp_sender`` and is
+    the technique that avoids compounding jitter and is
     worth preserving: each iteration targets an absolute deadline rather than
     sleeping a relative duration, so accumulated jitter cannot compound.
 

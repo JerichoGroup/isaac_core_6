@@ -1,5 +1,4 @@
-"""
-Pure configuration applicator: decide what to write, never how to write it.
+"""Pure configuration applicator: decide what to write, never how to write it.
 
 Given a resolved configuration, a feature plan and the ENU reference, this module
 produces a deterministic, ordered list of ``(prim_path, attribute_name, value)``
@@ -9,9 +8,8 @@ Isaac dependency.
 
 This is the replacement for the scattered ``_configure_camera``,
 ``_configure_extensions_ros2`` and ``_set_cesium_tilesets_url`` methods that the
-previous generation fused into a 353-line god class. Each method hard-coded prim
-paths and duplicated config lookups; here, wiring is declared in layer manifests
-and applied uniformly.
+alternative is one method per feature, each hard-coding prim paths and duplicating
+config lookups. Here, wiring is declared in layer manifests and applied uniformly.
 
 Every runtime resolver is scoped to an explicit vehicle and camera threaded from
 :func:`compute_writes`, never picked with ``next(iter(...))``. There is no module-level
@@ -33,6 +31,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from isaac_core.config import IsaacCoreConfig
 from isaac_core.config.schema import CameraConfig
+from isaac_core.contracts.topics import MAVROS_LLA_LEAF, MAVROS_ORIENTATION_LEAF
 from isaac_core.sim.georeference import ResolvedEnuReference
 from isaac_core.sim.planner import FeaturePlan, ResolvedBinding
 
@@ -45,8 +44,7 @@ class ConfigKeyError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class AttributeWrite:
-    """
-    One concrete write: apply ``value`` to ``attribute`` on ``prim``.
+    """One concrete write: apply ``value`` to ``attribute`` on ``prim``.
 
     Ordering matters: later writes to the same (prim, attribute) pair win.
     """
@@ -58,15 +56,13 @@ class AttributeWrite:
 
 @runtime_checkable
 class AttributeWriter(Protocol):
-    """
-    Narrow interface for writing a single attribute value to a USD prim.
+    """Narrow interface for writing a single attribute value to a USD prim.
 
     A real implementation uses ``pxr.Usd.Stage``; tests use :class:`RecordingWriter`.
     """
 
-    def write(self, prim: str, attribute: str, value: Any) -> None:  # noqa: ANN401
-        """
-        Set an attribute on a prim.
+    def write(self, prim: str, attribute: str, value: Any) -> None:
+        """Set an attribute on a prim.
 
         Args:
             prim: Absolute USD prim path.
@@ -79,22 +75,20 @@ class AttributeWriter(Protocol):
 
 @dataclass(slots=True)
 class RecordingWriter:
-    """
-    In-memory writer for testing: records every write in order.
+    """In-memory writer for testing: records every write in order.
 
     Use ``writes`` to inspect the full sequence after configuration is applied.
     """
 
     writes: list[AttributeWrite] = field(default_factory=list)
 
-    def write(self, prim: str, attribute: str, value: Any) -> None:  # noqa: ANN401
+    def write(self, prim: str, attribute: str, value: Any) -> None:
         """Record a write."""
         self.writes.append(AttributeWrite(prim=prim, attribute=attribute, value=value))
 
 
-def _lookup_config(config: IsaacCoreConfig, dotted_key: str) -> Any:  # noqa: ANN401
-    """
-    Traverse the config model by a dotted path.
+def _lookup_config(config: IsaacCoreConfig, dotted_key: str) -> Any:
+    """Traverse the config model by a dotted path.
 
     Supports both pydantic model attributes and dict keys for the ``vehicles``
     and ``layers`` dicts. Examples: ``"vehicles.drone_0.cameras.eo.fov_deg"``,
@@ -140,9 +134,8 @@ def _resolve_runtime_value(
     camera_prim: str | None,
     vehicle_id: str,
     camera_id: str | None,
-) -> Any:  # noqa: ANN401
-    """
-    Compute a runtime-derived value by its resolve name.
+) -> Any:
+    """Compute a runtime-derived value by its resolve name.
 
     Every resolver produces the value for the specific ``vehicle_id`` and, where the
     value is camera-scoped, ``camera_id``. The identity is supplied by the caller
@@ -187,8 +180,8 @@ def _resolve_runtime_value(
         ),
         "camera_horizontal_aperture": lambda: _resolve_horizontal_aperture(config, vehicle_id, camera_id),
         "camera_vertical_aperture": lambda: _resolve_vertical_aperture(config, vehicle_id, camera_id),
-        "lla_topic": lambda: _resolve_mavros_topic(config, "global_position/global", vehicle_id),
-        "orientation_topic": lambda: _resolve_mavros_topic(config, "local_position/pose", vehicle_id),
+        "lla_topic": lambda: _resolve_mavros_topic(config, MAVROS_LLA_LEAF, vehicle_id),
+        "orientation_topic": lambda: _resolve_mavros_topic(config, MAVROS_ORIENTATION_LEAF, vehicle_id),
     }
 
     resolver = resolvers.get(name)
@@ -199,11 +192,7 @@ def _resolve_runtime_value(
 
 
 def _first_vehicle_id(config: IsaacCoreConfig) -> str:
-    """
-    Return the first vehicle id in declaration order.
-
-    Used only as the default identity when a caller does not supply one, preserving the
-    single-vehicle behaviour that predates per-vehicle plumbing.
+    """Return the first vehicle id in declaration order.
 
     Args:
         config: The resolved configuration.
@@ -212,12 +201,11 @@ def _first_vehicle_id(config: IsaacCoreConfig) -> str:
         The first vehicle's key.
 
     """
-    return next(iter(config.vehicles))
+    return config.first_vehicle_id
 
 
 def _first_camera_id(config: IsaacCoreConfig, vehicle_id: str) -> str:
-    """
-    Return the first camera id of a vehicle in declaration order.
+    """Return the first camera id of a vehicle in declaration order.
 
     Args:
         config: The resolved configuration.
@@ -231,8 +219,7 @@ def _first_camera_id(config: IsaacCoreConfig, vehicle_id: str) -> str:
 
 
 def _resolve_mavros_topic(config: IsaacCoreConfig, leaf: str, vehicle_id: str) -> str:
-    """
-    Return a vehicle's MAVROS topic, explicit if configured, else derived.
+    """Return a vehicle's MAVROS topic, explicit if configured, else derived.
 
     MAVROS topic names default to ``None`` in config, meaning "derive from this
     vehicle's ``mavros_namespace``". Deriving keeps a swarm working, where each aircraft
@@ -249,15 +236,14 @@ def _resolve_mavros_topic(config: IsaacCoreConfig, leaf: str, vehicle_id: str) -
 
     """
     vehicle = config.vehicles[vehicle_id]
-    explicit = vehicle.lla_topic if leaf.startswith("global_position") else vehicle.orientation_topic
+    explicit = vehicle.lla_topic if leaf == MAVROS_LLA_LEAF else vehicle.orientation_topic
     if explicit is not None:
         return explicit
     return f"{vehicle.mavros_namespace.rstrip('/')}/{leaf}"
 
 
 def _resolve_camera_prim_value(camera_prim: str | None) -> str:
-    """
-    Return the camera prim or raise if not available.
+    """Return the camera prim or raise if not available.
 
     Args:
         camera_prim: The active camera prim path, or ``None``.
@@ -276,8 +262,7 @@ def _resolve_camera_prim_value(camera_prim: str | None) -> str:
 
 
 def _camera_for(config: IsaacCoreConfig, vehicle_id: str, camera_id: str | None) -> CameraConfig:
-    """
-    Return a specific vehicle's camera, defaulting to its first when unspecified.
+    """Return a specific vehicle's camera, defaulting to its first when unspecified.
 
     Args:
         config: The resolved configuration.
@@ -302,8 +287,7 @@ def _resolve_horizontal_aperture(
     vehicle_id: str | None = None,
     camera_id: str | None = None,
 ) -> float:
-    """
-    Compute the camera horizontal aperture in mm, honouring an explicit override.
+    """Compute the camera horizontal aperture in mm, honouring an explicit override.
 
     A pinhole camera relates horizontal field of view, focal length and sensor width by
     ``aperture = 2 * focal_length * tan(fov / 2)``. Isaac's camera prim is driven by focal
@@ -344,8 +328,7 @@ def _resolve_vertical_aperture(
     vehicle_id: str | None = None,
     camera_id: str | None = None,
 ) -> float:
-    """
-    Compute the vertical aperture in mm, honouring an explicit override.
+    """Compute the vertical aperture in mm, honouring an explicit override.
 
     Keeping the vertical aperture consistent with the resolution's aspect ratio avoids a
     stretched image, which is the usual symptom of setting one aperture and leaving the
@@ -370,8 +353,7 @@ def _resolve_vertical_aperture(
 
 
 def _resolve_rtsp_mount_path(config: IsaacCoreConfig, vehicle_id: str, camera_id: str | None) -> str:
-    """
-    Return a camera's RTSP mount path, explicit if set, otherwise derived.
+    """Return a camera's RTSP mount path, explicit if set, otherwise derived.
 
     Mirrors the topic convention: a single camera streams at ``/stream``, and once there is
     more than one vehicle or camera the path is namespaced so two streams cannot collide on
@@ -401,9 +383,12 @@ def _resolve_rtsp_mount_path(config: IsaacCoreConfig, vehicle_id: str, camera_id
     return "/" + "/".join([*parts, "stream"])
 
 
+# The three topic resolvers below repeat an "explicit config value wins, else derive" shape. That
+# is deliberate: what differs is the config field each reads and how each derives, which is the
+# entire substance. Folding them into one parameterised helper would trade three readable lines for
+# a callable or a dotted-path argument, and hide which field feeds which topic.
 def _resolve_distance_topic(config: IsaacCoreConfig, vehicle_id: str) -> str:
-    """
-    Return the distance sensor's topic, explicit if set, otherwise derived.
+    """Return the distance sensor's topic, explicit if set, otherwise derived.
 
     Same contract as the image and MAVROS topics: an explicit value in config wins, and the
     conventional namespaced name is derived otherwise. Deriving keeps a swarm working without
@@ -417,7 +402,7 @@ def _resolve_distance_topic(config: IsaacCoreConfig, vehicle_id: str) -> str:
         The fully resolved topic name.
 
     """
-    from isaac_core.contracts.topics import DISTANCE_SENSOR  # noqa: PLC0415
+    from isaac_core.contracts.topics import DISTANCE_SENSOR
 
     explicit = config.vehicles[vehicle_id].distance_sensor.topic
     if explicit is not None:
@@ -426,8 +411,7 @@ def _resolve_distance_topic(config: IsaacCoreConfig, vehicle_id: str) -> str:
 
 
 def _resolve_image_topic(config: IsaacCoreConfig, vehicle_id: str, camera_id: str | None) -> str:
-    """
-    Return a camera's image topic, explicit if set, otherwise derived.
+    """Return a camera's image topic, explicit if set, otherwise derived.
 
     Deriving keeps the namespacing convention working for a swarm, while an explicit
     ``image_topic`` in config is honoured as written -- the same contract the MAVROS
@@ -443,7 +427,7 @@ def _resolve_image_topic(config: IsaacCoreConfig, vehicle_id: str, camera_id: st
         The fully resolved image topic name.
 
     """
-    from isaac_core.contracts.topics import IMAGE_RGB  # noqa: PLC0415
+    from isaac_core.contracts.topics import IMAGE_RGB
 
     resolved_camera_id = camera_id if camera_id is not None else _first_camera_id(config, vehicle_id)
     explicit = config.vehicles[vehicle_id].cameras[resolved_camera_id].image_topic
@@ -460,8 +444,7 @@ def _resolve_topic(
     *,
     camera_scoped: bool = False,
 ) -> str:
-    """
-    Resolve a topic name for a specific vehicle and camera.
+    """Resolve a topic name for a specific vehicle and camera.
 
     Args:
         config: The resolved configuration.
@@ -483,8 +466,7 @@ def _resolve_topic(
 
 
 def _resolve_vehicle_topic(config: IsaacCoreConfig, leaf: str, vehicle_id: str) -> str:
-    """
-    Resolve a vehicle-scoped topic for a specific vehicle.
+    """Resolve a vehicle-scoped topic for a specific vehicle.
 
     Args:
         config: The resolved configuration.
@@ -500,14 +482,13 @@ def _resolve_vehicle_topic(config: IsaacCoreConfig, leaf: str, vehicle_id: str) 
 
 
 def compute_horizontal_aperture(fov_deg: float, focal_length_mm: float) -> float:
-    """
-    Compute horizontal aperture from field of view and focal length.
+    """Compute horizontal aperture from field of view and focal length.
 
     Uses the rectilinear projection formula::
 
         aperture = 2 * focal_length * tan(fov / 2)
 
-    Matching the old repo's camera configuration logic.
+    Aperture follows from the field of view and the sensor width.
 
     Args:
         fov_deg: Horizontal field of view in degrees.
@@ -530,8 +511,7 @@ def compute_writes(
     vehicle_id: str | None = None,
     camera_id: str | None = None,
 ) -> list[AttributeWrite]:
-    """
-    Produce the ordered list of attribute writes for a simulation run.
+    """Produce the ordered list of attribute writes for a simulation run.
 
     The order is deterministic and always:
 
@@ -613,9 +593,8 @@ def _resolve_binding_value(
     camera_prim: str | None,
     vehicle_id: str,
     camera_id: str | None,
-) -> Any:  # noqa: ANN401
-    """
-    Resolve the value for a single binding.
+) -> Any:
+    """Resolve the value for a single binding.
 
     Args:
         binding: The resolved binding from the plan.
@@ -648,8 +627,7 @@ def _resolve_binding_value(
 
 
 def apply_writes(writer: AttributeWriter, writes: Sequence[AttributeWrite]) -> None:
-    """
-    Execute a sequence of attribute writes through the given writer.
+    """Execute a sequence of attribute writes through the given writer.
 
     Args:
         writer: The writer implementation (real or fake).
