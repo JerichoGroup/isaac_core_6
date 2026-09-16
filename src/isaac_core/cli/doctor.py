@@ -10,11 +10,14 @@ from __future__ import annotations
 import importlib
 from importlib.metadata import version
 import os
-from pathlib import Path
+import subprocess
 import sys
-from typing import Sequence
+from typing import Final, Sequence
 
 from isaac_core.install import IsaacInstall, IsaacInstallError
+
+# Importing isaac_core in Isaac's Python loads no Kit extension, so this is generous.
+_ISAAC_IMPORT_TIMEOUT_S: Final = 60.0
 
 # Minimum Python version for the project.
 _MIN_PYTHON = (3, 10)
@@ -256,10 +259,13 @@ def _check_isaac_python(install: IsaacInstall) -> tuple[str, str]:
 
 
 def _check_isaac_core_in_isaac(install: IsaacInstall) -> tuple[str, str]:
-    """Check whether isaac_core is likely installed into Isaac's interpreter.
+    """Check whether isaac_core can actually be imported by Isaac's interpreter.
 
-    This is a heuristic: we look for a ``isaac_core`` directory or ``.egg-link``
-    in Isaac's site-packages. We cannot run Isaac's interpreter from here.
+    This used to guess from the filesystem, looking for an ``isaac_core`` directory or an
+    ``.egg-link`` in Isaac's site-packages. A modern editable install (PEP 660) creates neither --
+    it writes a ``__editable__*.pth`` and a ``dist-info`` -- so a correctly installed package was
+    reported as unconfirmed, which is exactly the sort of warning people learn to ignore. Asking the
+    interpreter is both definitive and cheap: it costs about 20 ms because no Kit extension loads.
 
     Args:
         install: Validated install.
@@ -268,27 +274,26 @@ def _check_isaac_core_in_isaac(install: IsaacInstall) -> tuple[str, str]:
         Status and message tuple.
 
     """
-    # Look for common install indicators
-    kit_python = install.root / "kit" / "python"
-    possible_sites: list[Path] = []
-    if kit_python.is_dir():
-        possible_sites.extend(kit_python.glob("lib/python*/site-packages"))
-    # Also check the root-level python lib
-    possible_sites.extend(install.root.glob("kit/python/lib/python*/site-packages"))
-    possible_sites.extend(install.root.glob("python_packages"))
-
-    for site_dir in possible_sites:
-        if (site_dir / "isaac_core").is_dir():
-            return "PASS", "isaac_core appears installed in Isaac's interpreter"
-        # Check for editable install marker
-        egg_links = list(site_dir.glob("isaac-core*.egg-link")) + list(site_dir.glob("isaac_core*.egg-link"))
-        if egg_links:
-            return "PASS", "isaac_core appears installed in Isaac's interpreter (editable)"
-
+    python_sh = install.python_path
+    if not python_sh.is_file():
+        return "FAIL", f"Isaac python.sh missing at {python_sh}; cannot check isaac_core there."
+    try:
+        result = subprocess.run(
+            [str(python_sh), "-c", "import isaac_core; print(isaac_core.__file__)"],
+            capture_output=True,
+            text=True,
+            timeout=_ISAAC_IMPORT_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "WARN", f"Could not run {python_sh} to check isaac_core ({type(exc).__name__}). Check the install."
+    if result.returncode == 0:
+        location = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "unknown location"
+        return "PASS", f"isaac_core imports in Isaac's interpreter ({location})"
     return (
-        "WARN",
-        "Cannot confirm isaac_core is installed in Isaac's interpreter. "
-        "Run: $ISAAC_PATH/python.sh -m pip install -e '.[sim]'",
+        "FAIL",
+        "isaac_core is NOT importable in Isaac's interpreter, so `isaac-core run` cannot start. "
+        f"Run: {python_sh} -m pip install -e '.[sim]'",
     )
 
 

@@ -159,11 +159,14 @@ Do **not** import `rclpy` in a node. It cannot be imported inside Isaac's interp
 wiring your node's output into one of Isaac's generic ROS 2 bridge nodes — see
 [ros2_and_python.md](ros2_and_python.md).
 
-If your layer ships as an installable package, register it so it is found without a search path:
+A layer that ships inside an installed package still hands over a directory: discovery scans paths, so
+put the package's layer directory on `assets.layer_search_paths`. Use `importlib.resources` when you do
+not know the install prefix:
 
-```toml
-[project.entry-points."isaac_core.layers"]
-thermal_cam = "my_package.layers:thermal_cam_dir"
+```python
+from importlib.resources import files
+
+Sim.launch(overrides={"assets.layer_search_paths": [str(files("my_package") / "layers")]})
 ```
 
 ## Checking it worked

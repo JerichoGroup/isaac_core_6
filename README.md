@@ -61,6 +61,17 @@ At this point you should be set to run Isaac Sim 6.0.1 for the first time:
 cd ~/isaacsim
 ./isaac-sim.sh
 ```
+After first launching Isaac Sim (normally takes several minutes) you will need to install cesium. start by adding the community extensions registry.
+* Navigate to the `Extensions` tab: `Window` (top left) -> `Extensions`
+* Enter the Extensions settings: `≡` -> `Settings`
+* Add the community registry under `Extension Registries`: click the green `+`, name: `kit/community`, url: `https://dw290v42wisod.cloudfront.net/exts/kit/community`
+
+ Now you can install the cesium extensions.
+ * From the extensions tab click refresh under `≡` to apply the community registry.
+ * In the extensions search bar search `cesium`, and install both extensions (they will appear under the `THIRD PARTY`)
+ * Toggle both extensions to `AUTOLOAD`, and restart the app (the extensions will ask for it)
+
+ Verify that when Isaac Sim reopens you see the `Cesium` tab next to the `Stage` tab.
 
 </details>
 
@@ -307,7 +318,6 @@ Aim the camera independently of the airframe. Angles are offsets on top of the v
 [vehicles.drone_0.gimbal]
 start_pitch_deg = -15.0    # camera tilted down at launch
 max_rate_deg_s  = 20.0     # omit or 0 to snap instantly
-rotation_frame  = "body"   # the gimbal is bolted to the airframe (keep this as "body")
 ```
 
 ```python
@@ -588,8 +598,16 @@ agree.
 
 ## Configuration ⚙️
 
-Everything lives in a single file. [`config/default.toml`](config/default.toml) which includes inline documents for every key,
- it is the file to copy as a new project starting point.
+Everything lives in a single file. Two are shipped, both listing every key and both matching the
+built-in defaults, so copying either changes nothing until you edit it:
+
+| File | What it is |
+|---|---|
+| [`config/full.toml`](config/full.toml) | every setting, one comment line each. The one to copy |
+| [`config/default.toml`](config/default.toml) | the same settings with the reasoning spelled out, for when a one-liner is not enough |
+
+Neither is loaded automatically, which catches people out: editing one and running `isaac-core run`
+with no `--config` changes nothing. Pass it explicitly.
 
 Values are resolved from five places. Later beats earlier:
 
@@ -650,7 +668,7 @@ Sim.attach(
 ```
 
 Connects to a simulator someone else started, possibly on another machine. Needs no filesystem
-knowledge. Leaves the simulator running when the block ends, because it belongs to whoever started
+knowledge. Leaves the simulator running $ISAACwhen the block ends, because it belongs to whoever started
 it.
 
 ```python
@@ -681,6 +699,7 @@ process**: leaving the block stops it, including on an exception or Ctrl-C.
 | `set_gimbal(*, roll_deg=None, pitch_deg=None, yaw_deg=None)` | aim the camera; omitted axes hold. Single vehicle only |
 | `capture_frame(path, *, width=None, height=None)` | write a still. `width`/`height` together, or neither. Single vehicle only |
 | `get_capabilities()` | which layers composed, and which were skipped |
+| `state()` | lifecycle state, including whether the stage is `ready` |
 | `pause()` / `resume()` | stop and start the timeline; the control plane stays responsive |
 | `step(count=1)` | advance `count` frames, including while paused |
 | `reset()` | stop, restore the opening state, play again |
@@ -689,9 +708,11 @@ process**: leaving the block stops it, including on an exception or Ctrl-C.
 
 | Property | What it is |
 |---|---|
-| `state` | lifecycle state, including whether the stage is `ready` |
 | `config` | `.get()` the resolved config, `.patch(key, value)` a runtime-mutable key |
 | `client` | the raw `ControlClient`, for anything not wrapped here |
+
+`state()` is a call, not a property, because it asks the simulator: everything that crosses the wire
+is a method, and only `config` and `client` — which are local objects — are attributes.
 
 `set_gimbal` returns when the target is accepted, not when the camera arrives — with a rate limit the
 move takes time, so poll `get_pose()` to watch it get there.
@@ -899,7 +920,7 @@ if __name__ == "__main__":
 ```
 
 `save_video` writes at the measured frame rate rather than a nominal one, and drops a
-`orbit.timestamps.txt` beside the mp4 with the real per-frame presentation times, since a
+`orbit.mp4.timestamps.txt` beside the mp4 with the real per-frame presentation times, since a
 constant-rate container cannot express them.
 
 </details>

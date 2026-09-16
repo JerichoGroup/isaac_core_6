@@ -21,8 +21,10 @@ from collections.abc import Callable, Iterator
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import tempfile
 import time
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -41,7 +43,11 @@ TEARDOWN_GRACE_S = 30.0
 # How many times a fixture retries a launch that never becomes ready.
 LAUNCH_ATTEMPTS = 2
 
-# Rounds of waiting for a launched simulator to report a composed, ready stage.
+# Rounds of waiting for a launched simulator to report a composed, ready stage, at two seconds each.
+# Twenty seconds is deliberate. Raising it to two minutes was tried and made things worse rather than
+# better: when a two-vehicle stage in a multi-module run does not compose, it does not compose at all,
+# so a longer budget converts a quick, informative skip into a very long hang. Failing fast is the
+# more useful behaviour.
 READINESS_ATTEMPTS = 10
 
 # Module order, heaviest simulator first. Measured: running the two-vehicle module LAST made it
@@ -184,31 +190,71 @@ def _await_responsive(session: Any) -> None:
         pytest.skip.Exception: If the simulator never becomes usable.
 
     """
+    last_state: object = None
+    last_error: str | None = None
     for _ in range(READINESS_ATTEMPTS):
         try:
             state = session.state()
+            last_state = state
             if state.get("ready") and state.get("stage_composed"):
                 session.step(count=STEP_CHUNK_FRAMES)
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
         time.sleep(2.0)
-    pytest.skip("the simulator launched but never reported a composed, ready stage")
+    # Swallowing the reason cost hours once: the simulator's own log showed it had composed and was
+    # running, so the failure was on this side of the wire and the message said nothing about it.
+    pytest.skip(
+        "the simulator launched but never reported a composed, ready stage; "
+        f"last state={last_state!r}, last error={last_error}"
+    )
 
 
-def _clear_cesium_write_ahead_log() -> None:
-    """Delete the Cesium request cache's write-ahead log before a launch.
+def _clear_startup_hazards() -> None:
+    """Remove the two things that reliably make a launch fail to reach a composed stage.
 
-    A present write-ahead log stalls startup badly, and size is not the trigger: measured, a
-    two-vehicle launch with a 763 MiB log never reached a composed stage across three runs, taking
+    The Cesium request cache's write-ahead log stalls startup badly, and size is not the trigger:
+    measured, a two-vehicle launch with a 763 MiB log never became ready across three runs, taking
     over ten minutes each to give up, and passed in 24 seconds with the log removed. The same
-    behaviour appeared at 23 GiB. Deleting it is safe while no simulator is running, and it only
-    costs re-streaming terrain the tests do not assert on.
+    behaviour appeared at 23 GiB. Stale ``/tmp/carb.*`` directories left by a crashed Kit make the
+    startup segfault more likely. Both are caches: deleting them while no simulator is running costs
+    only re-streamed terrain, which no test asserts on.
 
     """
     cache = Path.home() / ".cache" / "ov"
     for name in ("cesium-request-cache.sqlite-wal", "cesium-request-cache.sqlite-shm"):
         (cache / name).unlink(missing_ok=True)
+    for leftover in Path("/tmp").glob("carb.*"):
+        if leftover.is_dir():
+            shutil.rmtree(leftover, ignore_errors=True)
+
+
+# Where each launched simulator's output goes. Kept out of pytest's capture on purpose, and kept on
+# disk because it is the only record of why a launch failed.
+ISAAC_LOG_DIR: Final = Path(tempfile.gettempdir()) / "isaac_core_system_logs"
+
+
+def _file_logging_launcher(command: list[str]) -> subprocess.Popen[bytes]:
+    """Spawn the simulator with its output going to a file rather than to pytest's capture.
+
+    Isaac prints thousands of lines while starting. Inheriting pytest's captured file descriptors
+    meant that output had nowhere to drain, and a two-vehicle launch -- which prints roughly twice as
+    much -- blocked partway through startup, so the stage never composed. That surfaced as the swarm
+    tests skipping with "never reported a composed, ready stage" in a full run while passing on their
+    own, and cost about ten minutes per run in timeouts. Running the same two modules with ``-s``
+    passed in 61 seconds, which is what identified the capture as the cause rather than the code.
+
+    Args:
+        command: The command to run.
+
+    Returns:
+        The spawned process.
+
+    """
+    ISAAC_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = ISAAC_LOG_DIR / f"isaac-{os.getpid()}-{time.monotonic_ns()}.log"
+    with log_path.open("wb") as handle:
+        return subprocess.Popen(command, start_new_session=True, stdout=handle, stderr=subprocess.STDOUT)
 
 
 def _launch_with_retry(port: int, overrides: dict[str, Any], *, headless: bool) -> Any:
@@ -235,13 +281,14 @@ def _launch_with_retry(port: int, overrides: dict[str, Any], *, headless: bool) 
 
     last: Exception | None = None
     for attempt in range(1, LAUNCH_ATTEMPTS + 1):
-        _clear_cesium_write_ahead_log()
+        _clear_startup_hazards()
         try:
             return Sim.launch(
                 headless=headless,
                 port=port,
                 timeout_s=LAUNCH_TIMEOUT_S,
                 overrides=overrides,
+                launcher=_file_logging_launcher,
             )
         except (TimeoutError, ConnectionError) as exc:
             last = exc

@@ -7,7 +7,7 @@ import pytest
 
 from isaac_core.control.messages import Method
 from isaac_core.control.server import ControlServer
-from isaac_core.devkit.session import Sim
+from isaac_core.devkit.session import Sim, SimSession
 
 # -- fixtures --------------------------------------------------------------- #
 
@@ -309,3 +309,17 @@ def test_session_state(fake_server: ControlServer) -> None:
     with Sim.attach(host="127.0.0.1", port=port, timeout_s=5.0) as session:
         state = session.state()
     assert state == {"vehicles": {"lead": {"pose_source": "udp"}}}
+
+
+def test_the_readme_agrees_with_which_members_are_properties() -> None:
+    # The README listed `state` as a property while it was a method, so the documented
+    # `session.state.get("ready")` raised AttributeError. Anything that crosses the wire is a method;
+    # only the local objects are attributes.
+    from pathlib import Path as _Path
+    import re
+
+    readme = (_Path(__file__).resolve().parents[3] / "README.md").read_text(encoding="utf-8")
+    property_table = readme.split("| Property | What it is |")[1].split("\n\n")[0]
+    documented = set(re.findall(r"\| `([a-z_]+)` \|", property_table))
+    actual = {name for name in dir(SimSession) if isinstance(getattr(SimSession, name, None), property)}
+    assert documented == actual, f"README property table {documented} does not match the class {actual}"

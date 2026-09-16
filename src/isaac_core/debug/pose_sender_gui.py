@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import contextlib
+import signal
 import sys
 import threading
 import time
@@ -441,6 +443,52 @@ def _push_widgets_to_controller(
         return
 
 
+def _run_until_closed(root: tk.Tk, stop_event: threading.Event, controller: PoseSenderController) -> None:
+    """Run the Tk event loop, closing cleanly on the window button or a single Ctrl-C.
+
+    Tk prints exceptions raised inside callbacks and then carries on, so a ``KeyboardInterrupt``
+    arriving during the periodic UI refresh was reported and swallowed -- which is why the first
+    Ctrl-C appeared to do nothing and a second was needed to kill the process. Handling ``SIGINT``
+    explicitly and scheduling the shutdown onto Tk's own loop makes the first one enough.
+
+    Args:
+        root: The Tk root window.
+        stop_event: Event that stops the sender thread.
+        controller: The controller owning the UDP socket.
+
+    """
+    import tkinter as tk
+
+    closing = False
+
+    def on_close() -> None:
+        # Reachable from the window manager, from Ctrl-C, and from the cleanup below, so calling it
+        # more than once has to be harmless.
+        nonlocal closing
+        if closing:
+            return
+        closing = True
+        stop_event.set()
+        controller.close()
+        root.quit()
+
+    def on_interrupt(_signal_number: int, _frame: object) -> None:
+        root.after(0, on_close)
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    previous_handler = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, on_interrupt)
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        on_close()
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+        on_close()
+        with contextlib.suppress(tk.TclError):
+            root.destroy()
+
+
 def launch_gui(controller: "PoseSenderController | None" = None) -> None:
     """Launch the tkinter GUI.
 
@@ -503,13 +551,7 @@ def launch_gui(controller: "PoseSenderController | None" = None) -> None:
     sender = threading.Thread(target=_run_sender_loop, args=(controller, stop_event), daemon=True)
     sender.start()
 
-    def on_close() -> None:
-        stop_event.set()
-        controller.close()
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_close)
-    root.mainloop()
+    _run_until_closed(root, stop_event, controller)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -15,14 +15,16 @@ Subcommands:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from isaac_core.config import IsaacCoreConfig
     from isaac_core.install import IsaacInstall
 
 import argparse
+import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -106,6 +108,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 1
 
 
+def _warn_about_an_unloaded_config_file() -> None:
+    """Say so when a config file is sitting right there and is not being used.
+
+    ``config/default.toml`` is a documented reference whose values match the schema defaults, and it
+    is deliberately not auto-loaded: which file won would otherwise depend on the working directory.
+    That is defensible and still catches people out, because editing it and seeing no change is
+    silent and the only clue is the word "(defaults)" on the line above. Naming the file being
+    ignored costs one line and removes the trap.
+
+    """
+    for candidate in (Path("config/default.toml"), Path("default.toml")):
+        if candidate.is_file():
+            print(f"           note: {candidate} exists but is NOT loaded automatically.")
+            print(f"                 Pass it explicitly: --config {candidate}")
+            return
+
+
 def _run_command(args: argparse.Namespace) -> int:
     """Handle the ``run`` subcommand.
 
@@ -147,7 +166,11 @@ def _run_command(args: argparse.Namespace) -> int:
         print(f"WARNING: {install.support_message}")
     print(f"Launcher:  {install.launcher_path}")
     print(f"Python:    {install.python_path}")
-    print(f"Config:    {config_path or '(defaults)'}")
+    env_config = os.environ.get("ISAAC_CORE_CONFIG")
+    effective_config = config_path or (Path(env_config) if env_config else None)
+    print(f"Config:    {effective_config or '(defaults)'}")
+    if effective_config is None:
+        _warn_about_an_unloaded_config_file()
     print(f"Headless:  {config.sim.headless}")
     print()
 
@@ -156,6 +179,40 @@ def _run_command(args: argparse.Namespace) -> int:
         return 0
 
     return _launch_simulator(install, config=config)
+
+
+# Isaac ignores SIGTERM, so a polite request is only worth a short wait before SIGKILL.
+_SIGTERM_GRACE_S: Final = 5.0
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Stop the simulator and everything it spawned, and do not return until it is gone.
+
+    Isaac Sim starts Kit with ``installSignalHandlers=0`` and ignores ``SIGTERM``, and it spawns
+    children of its own, so terminating just the direct child by just one signal leaves processes
+    holding the GPU, the RTSP port and the UDP port. The process is its own session leader, so its
+    group id is its pid and one call reaches the whole tree.
+
+    Args:
+        process: The simulator process, started with ``start_new_session=True``.
+
+    """
+    if process.poll() is not None:
+        return
+    try:
+        group = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+    for signal_number in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(group, signal_number)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=_SIGTERM_GRACE_S if signal_number == signal.SIGTERM else _SIGTERM_GRACE_S)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _launch_simulator(install: IsaacInstall, *, config: IsaacCoreConfig) -> int:
@@ -193,13 +250,22 @@ def _launch_simulator(install: IsaacInstall, *, config: IsaacCoreConfig) -> int:
     print(f"resolved config: {resolved_path}")
     print()
     try:
-        return subprocess.call(command)
-    except KeyboardInterrupt:
-        print("\ninterrupted")
-        return 130
+        # Its own session, so Ctrl-C reaches this process only and stopping the simulator is
+        # unambiguously our job. Sharing the terminal's process group meant SIGINT arrived while Kit
+        # was still starting up, Kit carried on regardless, and returning 130 here left it running --
+        # it would finish loading minutes later and pop a window belonging to a command that had
+        # already exited.
+        process = subprocess.Popen(command, start_new_session=True)
     except OSError as exc:
         print(f"ERROR: could not launch the simulator: {exc}", file=sys.stderr)
         return 1
+
+    try:
+        return process.wait()
+    except KeyboardInterrupt:
+        print("\ninterrupted; stopping the simulator")
+        _terminate_process_group(process)
+        return 130
 
 
 def _dispatch_config(args: argparse.Namespace) -> int:

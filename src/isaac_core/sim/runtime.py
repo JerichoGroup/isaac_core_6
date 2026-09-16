@@ -1318,8 +1318,21 @@ class SimulationRuntime:
         }
 
     def _handle_get_config(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
-        """Return the current config as a dict."""
+        """Return the config currently in force, including any runtime patches.
+
+        The config models are frozen, so ``set_config`` records a patch beside them rather than
+        mutating them. Dumping the model alone therefore reported the value the simulator started
+        with, so patching a key and reading it back showed the old number while the new one was
+        being used -- the one thing a config reader must not do.
+
+        Returns:
+            The resolved config as a JSON-safe dict, with patched keys replaced by their live values.
+
+        """
         dumped: dict[str, Any] = self._config.model_dump(mode="json")
+        for key, value in self._config_overrides.items():
+            if key == "gimbal.max_rate_deg_s":
+                dumped["vehicles"][self._config.first_vehicle_id]["gimbal"]["max_rate_deg_s"] = value
         return dumped
 
     def _handle_pause(self, params: dict[str, Any] | list[Any] | None) -> str:

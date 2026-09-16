@@ -117,8 +117,28 @@ def test_no_document_uses_the_equals_form_of_set() -> None:
     assert not offenders, f"--set takes two arguments, not key=value: {offenders}"
 
 
-def test_the_readme_does_not_claim_layers_can_be_registered_by_entry_point() -> None:
+def test_no_user_facing_document_claims_layers_register_by_entry_point() -> None:
     # Layer discovery only scans directories on assets.layer_search_paths plus the packaged layers.
     # There is no importlib.metadata lookup, so a layer registered only by entry point is never found.
-    text = README.read_text(encoding="utf-8")
-    assert "isaac_core.layers" not in text, "entry-point layer registration is documented but not implemented"
+    # This checked the README alone at first, and the same false claim was sitting in three other pages.
+    offenders: list[str] = []
+    pages = [README, *(page for page in (REPO_ROOT / "docs").glob("*.md") if page.name != "development-log.md")]
+    for page in pages:
+        for number, line in enumerate(page.read_text(encoding="utf-8").splitlines(), start=1):
+            if "isaac_core.layers" in line:
+                offenders.append(f"{page.relative_to(REPO_ROOT)}:{number}")
+    assert not offenders, f"entry-point layer registration is documented but not implemented: {offenders}"
+
+
+def test_no_user_facing_document_quotes_a_test_count() -> None:
+    # A number like "1571 tests" is true on the day it is written and wrong within a week.
+    # docs/development-log.md is exempt: its entries are dated records of what was true then.
+    import re
+
+    offenders: list[str] = []
+    pages = [README, *(page for page in (REPO_ROOT / "docs").glob("*.md") if page.name != "development-log.md")]
+    for page in pages:
+        for number, line in enumerate(page.read_text(encoding="utf-8").splitlines(), start=1):
+            if re.search(r"\b[0-9]{3,5}\s+tests?\b", line):
+                offenders.append(f"{page.relative_to(REPO_ROOT)}:{number}: {line.strip()[:70]}")
+    assert not offenders, f"these will go stale: {offenders}"

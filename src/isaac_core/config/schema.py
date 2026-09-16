@@ -270,7 +270,6 @@ class GimbalConfig(_Strict):
     start_pitch_deg: float = 0.0
     start_yaw_deg: float = 0.0
     max_rate_deg_s: float | None = Field(None, gt=0.0)
-    rotation_frame: RotationFrame = RotationFrame.BODY
 
 
 class DistanceSensorConfig(_Strict):

@@ -196,7 +196,7 @@ def compose_stage(
 
     apply_target_semantics(stage, BBOXES_ROOT)
 
-    apply_hdri(stage, config.assets.hdri)
+    apply_hdri(stage, config.assets.hdri, config.assets.search_paths)
 
     return stage
 
@@ -289,19 +289,49 @@ def apply_stage_units(stage: Any, meters_per_unit: float) -> bool:
     return True
 
 
-def apply_hdri(stage: Any, hdri: str | None) -> bool:
+def resolve_hdri(hdri: str | None, search_paths: Sequence[Path] = ()) -> Path | None:
+    """Resolve an HDRI setting to a file, searching the asset paths for a bare name.
+
+    A user who sets ``search_paths`` and then names the image alone -- ``sky.exr`` rather than
+    an absolute path -- is spelling out where to look and what to look for, so a bare name is
+    searched there. An absolute or working-directory-relative path that exists is used as given.
+
+    Args:
+        hdri: The configured value, or ``None``.
+        search_paths: ``assets.search_paths``, searched in order for a bare name.
+
+    Returns:
+        The resolved file, or ``None`` if there is nothing to apply or it cannot be found.
+
+    """
+    if not hdri:
+        return None
+    direct = Path(hdri).expanduser()
+    if direct.is_file():
+        return direct.resolve()
+    # Only a bare name or relative path can meaningfully be searched; an absolute miss is a miss.
+    if not direct.is_absolute():
+        for search_dir in search_paths:
+            candidate = Path(search_dir).expanduser() / direct
+            if candidate.is_file():
+                return candidate.resolve()
+    return None
+
+
+def apply_hdri(stage: Any, hdri: str | None, search_paths: Sequence[Path] = ()) -> bool:
     """Light the scene from an HDRI image.
 
-    `assets.hdri` is a path to an ``.exr`` / ``.hdr`` latlong image. If the scene already
-    has a dome light -- the shipped ``earth`` scene has one at
-    ``/World/Environment/DomeLight`` -- its texture is repointed at the image, which is what
-    a user actually wants: change the sky, not add a second competing light. Only when no
-    dome light exists is one created.
+    `assets.hdri` is an ``.exr`` / ``.hdr`` latlong image, given as a path or as a bare name to
+    find on ``assets.search_paths``. If the scene already has a dome light -- the shipped
+    ``earth`` scene has one at ``/World/Environment/DomeLight`` -- its texture is repointed at
+    the image, which is what a user actually wants: change the sky, not add a second competing
+    light. Only when no dome light exists is one created.
 
     Args:
         stage: The open USD stage.
-        hdri: Path to the HDRI image. Empty or ``None`` does nothing, so a scene with its
-            own lighting is left untouched.
+        hdri: Path or bare name of the HDRI image. Empty or ``None`` does nothing, so a scene
+            with its own lighting is left untouched.
+        search_paths: ``assets.search_paths``, searched when the value is a bare name.
 
     Returns:
         ``True`` if a dome light was created or updated.
@@ -310,9 +340,10 @@ def apply_hdri(stage: Any, hdri: str | None) -> bool:
     if not hdri:
         return False
 
-    path = Path(hdri).expanduser()
-    if not path.is_file():
-        logger.warning("assets.hdri %s does not exist; not applying an HDRI", path)
+    path = resolve_hdri(hdri, search_paths)
+    if path is None:
+        searched = ", ".join(str(Path(p).expanduser()) for p in search_paths) or "no assets.search_paths set"
+        logger.warning("assets.hdri %r could not be resolved (searched: %s); not applying an HDRI", hdri, searched)
         return False
 
     usdlux = _usdlux()

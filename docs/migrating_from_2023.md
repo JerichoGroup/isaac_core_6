@@ -37,8 +37,7 @@ Sim install, located and validated by `isaac-core doctor`. There is no container
 ### Features are layers, not code branches
 
 Adding a sensor in 2023 meant editing the simulation app. Now a feature is a directory with a
-manifest, discovered from `assets.layer_search_paths` or a `isaac_core.layers` entry point, and
-composed by dependency order. Adding one requires no change to `isaac_core`.
+manifest, discovered from `assets.layer_search_paths`, and composed by dependency order. Adding one requires no change to `isaac_core`.
 
 ### The geodesy left the OmniGraph nodes
 

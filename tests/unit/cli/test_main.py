@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import signal
+import subprocess
+from typing import cast
+from unittest import mock
 
 import pytest
 
-from isaac_core.cli.main import main
+from isaac_core.cli.main import _terminate_process_group, main
 
 
 def test_no_args_prints_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
@@ -130,6 +134,37 @@ def test_run_dry_run_reports_without_launching(
     assert not called, "dry run must not launch anything"
 
 
+def _recording_popen(recorded: list[list[str]], *, returncode: int) -> object:
+    """Return a fake ``Popen`` class that records the command and exits with *returncode*.
+
+    The launcher owns the simulator process now, rather than handing control to
+    ``subprocess.call``, because returning from a Ctrl-C without killing the child left Isaac
+    running and it would open a window minutes later.
+
+    Args:
+        recorded: List that receives each command.
+        returncode: Exit status the fake process reports.
+
+    Returns:
+        A class usable in place of ``subprocess.Popen``.
+
+    """
+
+    class _FakePopen:
+        def __init__(self, cmd: list[str], *args: object, **kwargs: object) -> None:
+            recorded.append(cmd)
+            self.pid = 4242
+            self.returncode = returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            return returncode
+
+        def poll(self) -> int:
+            return returncode
+
+    return _FakePopen
+
+
 def test_run_launches_the_sim_module_in_isaacs_interpreter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Decision D7: launch a MODULE inside Isaac's python, never a path into this repo.
     install = _fake_isaac_install(tmp_path / "isaacsim")
@@ -138,11 +173,7 @@ def test_run_launches_the_sim_module_in_isaacs_interpreter(monkeypatch: pytest.M
 
     called: list[list[str]] = []
 
-    def fake_call(cmd: list[str], *args: object, **kwargs: object) -> int:
-        called.append(cmd)
-        return 0
-
-    monkeypatch.setattr("subprocess.call", fake_call)
+    monkeypatch.setattr("subprocess.Popen", _recording_popen(called, returncode=0))
 
     assert main(["run"]) == 0
     assert len(called) == 1
@@ -160,6 +191,96 @@ def test_run_propagates_the_simulator_exit_code(monkeypatch: pytest.MonkeyPatch,
     install = _fake_isaac_install(tmp_path / "isaacsim")
     monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: (str(install),))
     monkeypatch.delenv("ISAACSIM_PATH", raising=False)
-    monkeypatch.setattr("subprocess.call", lambda *a, **k: 42)
+    monkeypatch.setattr("subprocess.Popen", _recording_popen([], returncode=42))
 
     assert main(["run"]) == 42
+
+
+def test_ctrl_c_during_launch_kills_the_simulator_process_group() -> None:
+    # A Ctrl-C used to return 130 while leaving the child alive: Isaac ignores SIGTERM, kept
+    # initialising, and opened a window belonging to a command that had already exited. The launcher
+    # must signal the whole group and not return until the process is gone.
+    signals: list[tuple[int, int]] = []
+
+    class _StubbornProcess:
+        """Ignores SIGTERM, like Isaac, and only dies on SIGKILL."""
+
+        pid = 7777
+
+        def __init__(self) -> None:
+            self._alive = True
+
+        def poll(self) -> int | None:
+            return None if self._alive else -9
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self._alive:
+                raise subprocess.TimeoutExpired(cmd="isaac", timeout=timeout or 0.0)
+            return -9
+
+        def kill_with(self, signal_number: int) -> None:
+            if signal_number == signal.SIGKILL:
+                self._alive = False
+
+    process = _StubbornProcess()
+
+    def fake_killpg(group: int, signal_number: int) -> None:
+        signals.append((group, signal_number))
+        process.kill_with(signal_number)
+
+    with (
+        mock.patch("os.getpgid", return_value=process.pid),
+        mock.patch("os.killpg", side_effect=fake_killpg),
+    ):
+        _terminate_process_group(cast("subprocess.Popen[bytes]", process))
+
+    assert [s for _, s in signals] == [signal.SIGTERM, signal.SIGKILL], f"expected SIGTERM then SIGKILL, got {signals}"
+    assert process.poll() is not None, "the process was left running"
+
+
+def test_terminating_an_already_dead_process_signals_nothing() -> None:
+    # Signalling a pid that has exited can hit a recycled pid, so an early exit matters.
+    class _Finished:
+        pid = 5555
+
+        def poll(self) -> int:
+            return 0
+
+    with mock.patch("os.killpg", side_effect=AssertionError("must not signal a finished process")):
+        _terminate_process_group(cast("subprocess.Popen[bytes]", _Finished()))
+
+
+def test_run_names_a_config_file_it_is_not_loading(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Reported from a fresh machine: edits to config/default.toml had no effect, because that file is
+    # documentation and is never auto-loaded. The only clue was the word "(defaults)", so the run
+    # banner now names the file it is ignoring.
+    from contextlib import redirect_stdout
+    import io
+
+    from isaac_core.cli.main import _warn_about_an_unloaded_config_file
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "default.toml").write_text("", encoding="utf-8")
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        _warn_about_an_unloaded_config_file()
+    printed = buffer.getvalue()
+    assert "config/default.toml" in printed
+    assert "NOT loaded" in printed
+    assert "--config config/default.toml" in printed
+
+
+def test_run_says_nothing_when_there_is_no_config_file_to_confuse_anyone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from contextlib import redirect_stdout
+    import io
+
+    from isaac_core.cli.main import _warn_about_an_unloaded_config_file
+
+    monkeypatch.chdir(tmp_path)
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        _warn_about_an_unloaded_config_file()
+    assert buffer.getvalue() == ""

@@ -47,20 +47,23 @@ def test_config_is_frozen_so_runtime_patches_must_go_through_the_control_plane()
 
 
 # --------------------------------------------------------------------------- #
-# rotation frame defaults differ by purpose (D14)
+# the airframe's rotation frame, which is also what the gimbal offset composes onto
 # --------------------------------------------------------------------------- #
 
 
-def test_gimbal_defaults_to_body_frame_because_it_is_bolted_to_the_airframe() -> None:
-    assert GimbalConfig().rotation_frame is RotationFrame.BODY
-
-
-def test_vehicle_defaults_to_world_frame_matching_the_previous_udp_bot() -> None:
+def test_vehicle_defaults_to_world_frame_so_heading_holds_when_pitched_down() -> None:
     assert VehicleConfig().rotation_frame is RotationFrame.WORLD
 
 
 def test_rotation_frame_accepts_a_plain_string_from_toml() -> None:
-    assert GimbalConfig(rotation_frame="world").rotation_frame is RotationFrame.WORLD
+    assert VehicleConfig(rotation_frame="body").rotation_frame is RotationFrame.BODY
+
+
+def test_the_gimbal_has_no_rotation_frame_of_its_own() -> None:
+    # It used to offer one, defaulting to body, that nothing read: only the vehicle's frame reaches
+    # the pose node, and that frame is what the gimbal offset composes onto. A key that validates
+    # and is documented while doing nothing is worse than no key.
+    assert "rotation_frame" not in GimbalConfig.model_fields
 
 
 def test_gimbal_rate_limit_is_optional_but_must_be_positive() -> None:

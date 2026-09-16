@@ -34,10 +34,10 @@ config/          default.toml, the documented configuration reference
 
 **The kernel never imports Isaac Sim, ROS 2 or GStreamer.**
 
-`contracts`, `config`, `geo`, `protocol` and `vehicle` are pure Python. That is why 1571 tests run in
-about 17 seconds with no GPU, no Isaac Sim and no ROS 2 installed, and it is the single biggest
-difference from the previous generation, where the geodesy lived inside OmniGraph nodes and could only
-be exercised by launching the simulator.
+`contracts`, `config`, `geo`, `protocol` and `vehicle` are pure Python. That is why the whole unit
+suite runs in under twenty seconds with no GPU, no Isaac Sim and no ROS 2 installed, and it is the
+single biggest difference from the previous generation, where the geodesy lived inside OmniGraph nodes
+and could only be exercised by launching the simulator.
 
 Twenty-three import-linter contracts enforce this. They are not decoration: `PYTHONPATH=src
 lint-imports` fails the commit if `sim` starts importing `geo`, or if a kernel module reaches for
@@ -85,9 +85,8 @@ Manifests contain *wiring*, never values. Values come from config. Planning reso
 against both the stage and other layers as a fixed point, which is also what makes composition order
 deterministic.
 
-This is the extension seam: a layer in `assets.layer_search_paths`, or registered through the
-`isaac_core.layers` entry point, composes with no change to `isaac_core`. See
-[authoring_layers.md](authoring_layers.md).
+This is the extension seam: a layer on `assets.layer_search_paths` composes with no change to
+`isaac_core`. See [authoring_layers.md](authoring_layers.md).
 
 ## Control plane
 

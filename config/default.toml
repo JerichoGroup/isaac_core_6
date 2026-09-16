@@ -232,10 +232,6 @@ start_yaw_deg = 0.0
 # limit the move takes simulated time -- poll `get_pose()` to watch it get there.
 max_rate_deg_s = 60.0
 
-# A gimbal is bolted to the airframe, so the body frame is the physical default. Changing this
-# is almost certainly a mistake.
-rotation_frame = "body"
-
 
 # -----------------------------------------------------------------------------
 # [vehicles.<id>.cameras.<id>] -- the vehicle's camera

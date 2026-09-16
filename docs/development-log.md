@@ -4306,6 +4306,144 @@ commands and reading the diff establishes fact.
   Worth remembering that the first explanation was confidently wrong and survived one confirming
   experiment. It took a second failure at a thirtieth of the size to disprove it.
 
+- **2026-09-16** — **Second machine, then an exhaustive pass over every feature, config key and devkit
+  function.**
+
+  **What the fresh machine proved.** A clean clone on different hardware installed from the README
+  without edits, on **Isaac Sim 6.1.0-rc.26** rather than the 6.0.1-rc.7 everything was built against:
+  driver 580.178.04, system Python 3.10.12, Isaac's 3.12.13. 1733 unit tests and all 13 system tests
+  passed there, terrain streamed, and **startup did not segfault once in about five runs** -- so the
+  one-in-three crash looks specific to this machine or to 6.0.1, not to the code. Eyes-on scenarios 1,
+  3, 5, 6 and 8 all passed.
+
+  **Four defects came back, and the first one was not what it looked like.** Setting `assets.hdri` did
+  nothing. The reported cause was HDRI resolution; the actual cause was that `config/default.toml` had
+  been edited in place, and that file is documentation which is never auto-loaded. The run banner said
+  `Config: (defaults)` and nothing else. Both are now fixed: the banner names the file it is ignoring
+  and how to pass it, and it no longer claims "(defaults)" when `$ISAAC_CORE_CONFIG` is set. The real
+  HDRI gap underneath was that a bare filename was resolved against the working directory rather than
+  `assets.search_paths`, so a new `resolve_hdri` handles bare names, absolute paths and `~`.
+
+  **Ctrl-C left Isaac running.** `subprocess.call` plus `return 130` meant the interrupt was reported
+  while the child carried on: Isaac ignores SIGTERM, kept initialising, and opened a window belonging
+  to a command that had already exited. The launcher now owns the process in its own session and
+  signals the whole group, SIGTERM then SIGKILL. Measured: two Isaac processes during startup, zero at
+  3, 6, 12 and 20 seconds after one SIGINT, exit code 130 -- and a normal run still reaches a composed
+  stage.
+
+  **`doctor` warned about a working install.** The check looked for an `isaac_core` directory or an
+  `.egg-link`; a PEP 660 editable install writes neither, only a `__editable__*.pth` and a `dist-info`.
+  It now runs Isaac's interpreter and imports the package, which is definitive and costs 22 ms, and a
+  real failure is now FAIL rather than a warning people learn to scroll past.
+
+  **The pose sender needed two Ctrl-Cs.** Tk prints exceptions raised in callbacks and continues, so
+  the first `KeyboardInterrupt` was swallowed by the periodic UI refresh. A SIGINT handler now
+  schedules the shutdown onto Tk's own loop; measured, the window and process go two seconds after one
+  SIGINT with exit code 0.
+
+  **Every config key, properly this time.** `test_no_dead_keys.py` only greps for a field name
+  appearing somewhere in the tree, which a mention in a comment satisfies. The new
+  `test_every_key_is_wired.py` sets each of 63 leaf keys to a different valid value and diffs what the
+  configuration layer actually produces -- the feature plan, the attribute writes, the resolved
+  mounts, ports and topics -- with the config dump deliberately excluded, since "the value I set is in
+  the config" proves nothing. Result: 30 keys reach the stage or the naming, 31 are runtime-only and
+  each names the test that covers it, and **zero** do nothing. Keys that only matter in context are
+  compared in that context, and a sampled value that fails validation is a test failure rather than a
+  pass, so a key cannot drop out of the check unnoticed.
+
+  That found a real one: **`vehicles.<id>.gimbal.rotation_frame` was consumed by nothing.** Only the
+  vehicle's own `rotation_frame` is bound to the pose node, and that is the frame the gimbal offset
+  composes onto. Two keys with the same name and different defaults, and the README documented the dead
+  one, telling people to "keep this as body" -- advice about a setting that could not do anything.
+  Removed from the schema, the config reference and the README.
+
+  **Everything else, live.** 25 devkit checks against one running simulator: both `Sim` entry points,
+  every `SimSession` method, the config proxy, the raw client, and `Sim.attach` from a separate process
+  leaving the simulator alone afterwards. `set_pose` lands at z=483.3000 for 1000 m. `capture_frame`
+  writes 1280x720, then 3840x2160, then **restores the viewport** -- proven by reading IHDR back off
+  the PNGs. Path confinement, `width` without `height`, and an unknown vehicle name are all refused
+  with useful messages.
+
+  12 feature checks with ROS 2 sourced: 1441 frames on `image_rgb` at 1280x720 rgb8, 1446 `global_pose`
+  messages reporting exactly the commanded position, 1446 `Range` messages reading **81.91 m** from
+  600 m over terrain at 518 m, and 1446 `FrameBboxes` whose nine arrays are all the same length and
+  name `Cube` and `Cube_01`. RTSP answers `RTSP/1.0 200 OK`.
+
+  `pose_source = "ros"` drove the stage to z=883.30 for 1400 m and z=383.30 for 900 m from MAVROS-style
+  `NavSatFix`. Two vehicles each followed their own UDP port to 483.30 and 883.30, published
+  `/isaac_core/lead/...` and `/isaac_core/wing/...` with the un-namespaced names correctly absent, and
+  served RTSP on 8554 and 8555. The recording devkit captured live topics into a 3.7 MB mp4 and 434
+  pose records.
+
+  Two smaller things fell out of that. `get_config` dumped the model while patches lived beside it, so
+  patching `gimbal.max_rate_deg_s` and reading it back returned the startup value while the new one was
+  in force -- the one thing a config reader must not do. And the README named the video timestamps
+  sidecar `orbit.timestamps.txt` when the code writes `orbit.mp4.timestamps.txt`, a file the reader
+  would never find.
+
+  **Both scenario questions answered as "leave it".** Capture resizing the viewport is forced, not
+  incidental: `IsaacCreateRenderProduct` reuses a product already targeting that camera, so the
+  camera's product *is* the viewport's and there is no second surface to render into. It is restored
+  afterwards, which the PNG sizes above confirm. And the lead viewport cannot be renamed, because
+  `omni.kit.viewport_widgets_manager` looks its window up by the literal string `"Viewport"`; renaming
+  it is the regression that broke every launch once already.
+
+- **2026-09-16 (ii)** — **The swarm system tests, and a fix that made things worse.** After the
+  verification above, the full system suite started reporting the three two-vehicle tests as skipped
+  with "never reported a composed, ready stage", taking twelve minutes to do it, while the same module
+  on its own passed in 24 seconds and a two-vehicle launch driven by hand was ready in 20.6 s windowed
+  and 20.6 s headless, with both cameras composed.
+
+  The readiness wait gave a launch twenty seconds after the control plane first answered, so the
+  obvious move was to raise it. That was wrong, and measurably so: at two minutes the suite stopped
+  skipping and started **hanging for forty minutes** on the first swarm test, and had to be killed,
+  leaking two Isaac processes. When a two-vehicle stage in a multi-module run does not compose, it does
+  not compose *at all*, so a longer budget only buys a longer wait for the same answer. Reverted to
+  twenty seconds, with the reasoning written down so the next person does not try the same thing.
+
+  What actually restores it is clearing the Cesium write-ahead log and the stale `/tmp/carb.*`
+  directories before the run: **13 passed in 83 s**. The harness now clears both before every launch
+  attempt rather than only the cache file, which is the honest fix -- these are the two documented
+  causes of a launch that never becomes ready, and both are caches.
+
+  Recording this because the first diagnosis was a guess dressed as a fix, and the experiment that
+  disproved it took forty minutes to run.
+
+- **2026-09-16 (iii)** — **What the swarm system tests are actually doing, and two wrong guesses on the
+  way.** The three two-vehicle tests skip in roughly half of full-suite runs on this machine while
+  passing on their own in 24 seconds, passing on the second machine 13/13, and passing here 13/13
+  several times. Each failed run costs about eleven minutes in timeouts, so it looks far worse than it
+  is.
+
+  First guess: the readiness budget was too small. Raising it from twenty seconds to two minutes turned
+  a quick skip into a **forty-minute hang** that had to be killed and leaked two Isaac processes.
+  Reverted. Second guess: pytest's output capture was blocking a very chatty startup, since the same
+  two modules passed with `-s` in 61 seconds. The launcher now writes the simulator's output to a file
+  instead, and the tests skipped anyway -- the `-s` run had simply been a lucky one.
+
+  That redirect is worth keeping regardless, because it produced the first real evidence. The
+  simulator's own log from a *failed* run shows it composed both vehicles and started:
+
+  ```
+  control plane listening on 127.0.0.1:8792
+  Feature layers:
+    ✓ camera_udp [lead]
+    ✓ camera_udp [wing]
+  simulation running
+  ```
+
+  So the stage was ready and the failure is on this side of the wire: `session.state()` did not return a
+  ready state within its ten rounds even though the simulator was serving. The readiness helper caught
+  every exception and threw the reason away, which is why this took so long to see. It now reports the
+  last state it saw and the last error, so the next failure names its own cause instead of being a
+  mystery.
+
+  Leaving it there for V2. The two-vehicle **product** is verified by direct measurement rather than by
+  this fixture: lead and wing at exactly 483.30 and 883.30 on their own UDP ports, namespaced topics
+  present and the un-namespaced names correctly absent, RTSP answering on both ports, both cameras
+  composed, ready in 20.6 s headless and 22.4 s windowed, nothing leaked. What is unreliable is the
+  harness, on this machine, and it now leaves a log and a reason behind when it fails.
+
 ### Known remaining issues
 
 - **Sensor layers** are not built: distance sensor, bounding-box publishing, satellite

@@ -361,3 +361,16 @@ def test_save_video_fps_override_is_used(tmp_path: Path) -> None:
         assert cap.get(cv2.CAP_PROP_FPS) == pytest.approx(12.0, rel=1e-3)
     finally:
         cap.release()
+
+
+def test_the_readme_names_the_timestamps_sidecar_correctly() -> None:
+    # save_video appends the suffix to the whole filename, so orbit.mp4 gets orbit.mp4.timestamps.txt.
+    # The README called it orbit.timestamps.txt, which is a file the user would never find.
+    from pathlib import Path as _Path
+
+    readme = (_Path(__file__).resolve().parents[3] / "README.md").read_text(encoding="utf-8")
+    example = _Path("orbit.mp4")
+    actual = example.with_suffix(example.suffix + ".timestamps.txt").name
+    assert actual == "orbit.mp4.timestamps.txt"
+    assert actual in readme, f"the README should name {actual}"
+    assert "`orbit.timestamps.txt`" not in readme, "the README names a sidecar that is never written"
