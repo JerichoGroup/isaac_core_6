@@ -544,7 +544,7 @@ def _resolve_camera_prim(config: IsaacCoreConfig, stage: Any) -> str | None:
     Falls back to searching the vehicle's mount for the first ``Camera``-typed prim, which keeps
     a custom camera layer working without anyone editing config.
 
-    This used to guess ``{mount}/Camera_{camera_id}``, a path no shipped layer has ever used
+    This used to guess a camera prim path no shipped layer has ever used
     (the real one is ``{mount}/Xform/main_camera_01``). It therefore always returned ``None``,
     and any layer binding ``resolve = "camera_prim"`` aborted composition with
     "no camera path is available" -- which is what stopped the bbox layer from ever loading.

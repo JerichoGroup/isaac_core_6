@@ -16,7 +16,7 @@
 #   1. package defaults (the schema)
 #   2. a config file: `--config my.toml`, or $ISAAC_CORE_CONFIG
 #   3. environment variables, one per key, `__` for each level of nesting:
-#        ISAAC_CORE__VEHICLES__DRONE_0__CAMERAS__EO__FOV_DEG=90
+#        ISAAC_CORE__VEHICLES__DRONE_0__CAMERA__FOV_DEG=90
 #   4. `--set` flags: `isaac-core run --set sim.headless true`
 #   5. a runtime patch over the control plane, for the few keys that allow it
 #
@@ -81,6 +81,11 @@ extension_search_paths = ["~/.local/share/ov/data/exts/v2"]
 # false: skip the feature and log why (good for a sandbox).
 # true:  fail immediately (good for CI).
 strict_features = false
+
+# Where Isaac Sim is installed. Unset means probe the usual places: ~/isaacsim, /opt/isaacsim,
+# /opt/nvidia/isaac-sim, /isaac-sim. No environment variable is consulted, so an install anywhere else
+# is named here once rather than passed to every command.
+# isaac_sim_path = "/path/to/isaacsim"
 
 # Physics step, in seconds. 1/60. The pose pipeline is kinematic -- poses are written straight
 # to the prim -- so this matters only if you add something that needs physics.
@@ -234,12 +239,12 @@ max_rate_deg_s = 60.0
 
 
 # -----------------------------------------------------------------------------
-# [vehicles.<id>.cameras.<id>] -- the vehicle's camera
+# [vehicles.<id>.camera] -- the vehicle's camera
 # -----------------------------------------------------------------------------
-# One camera per vehicle is what ships. Declaring a second is accepted by the schema but only
-# the first is composed, so it would publish nothing -- see docs/dev/roadmap.md. Use a second
-# vehicle if you need a second camera.
-[vehicles.drone_0.cameras.eo]
+# Exactly one camera per vehicle, and it has no name. A second imaging sensor -- thermal, for
+# instance -- comes from a feature layer, which mounts under the same vehicle so it moves with the
+# airframe and brings its own prims, topic and RTSP node. See docs/authoring_layers.md.
+[vehicles.drone_0.camera]
 # Pixel dimensions of the published image and the RTSP stream. `capture_frame` can write a
 # still at a different resolution without changing this.
 resolution = [1280, 720]

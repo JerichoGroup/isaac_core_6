@@ -46,7 +46,7 @@ def test_set_gimbal_refuses_a_swarm_instead_of_silently_aiming_the_first_vehicle
     # script asking for wing's gimbal moved lead's and got a success response. Refusing is honest;
     # per-vehicle gimbal state is roadmapped.
     config = IsaacCoreConfig(
-        vehicles={"lead": {"cameras": {"eo": {}}}, "wing": {"cameras": {"eo": {}}}},
+        vehicles={"lead": {"camera": {}}, "wing": {"camera": {}}},
     )
     runtime = SimulationRuntime.__new__(SimulationRuntime)
     runtime._config = config
@@ -58,7 +58,7 @@ def test_set_gimbal_refuses_a_swarm_instead_of_silently_aiming_the_first_vehicle
 
 
 def test_require_single_vehicle_returns_the_only_vehicle() -> None:
-    config = IsaacCoreConfig(vehicles={"drone_0": {"cameras": {"eo": {}}}})
+    config = IsaacCoreConfig(vehicles={"drone_0": {"camera": {}}})
     runtime = SimulationRuntime.__new__(SimulationRuntime)
     runtime._config = config
     assert runtime._require_single_vehicle("capture_frame") == "drone_0"
@@ -75,7 +75,7 @@ def _bare_runtime(config: IsaacCoreConfig) -> SimulationRuntime:
 
 def _single_vehicle(**gimbal: float) -> IsaacCoreConfig:
     """Return a one-vehicle config with the given gimbal start angles."""
-    return IsaacCoreConfig(vehicles={"drone_0": {"cameras": {"eo": {}}, "gimbal": gimbal}})
+    return IsaacCoreConfig(vehicles={"drone_0": {"camera": {}, "gimbal": gimbal}})
 
 
 def test_an_omitted_axis_falls_back_to_the_configured_start_angle() -> None:

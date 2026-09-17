@@ -16,19 +16,6 @@ Worth doing because it is the one remaining place where installing a layer is no
 package, and it is a small change: read the entry-point group during discovery and treat each
 resolved directory as another search path.
 
-## More than one camera per vehicle
-
-`[vehicles.<id>.cameras.<id>]` accepts a second camera and the schema validates it, but only the
-first is composed: the planner produces one camera layer per **vehicle**, scoped to the first camera
-id, so a second camera publishes no image topic and gets no RTSP stream.
-
-Measured: a vehicle declaring `eo` and `ir` plans a single layer scoped to `eo`, and
-`compute_writes` emits `/isaac_core/eo/image_rgb` and nothing for `ir`.
-
-Either plan one camera layer per camera and give each its own topic and port, or reject a second
-camera at config load so it fails where the mistake is. Until then a second vehicle is the way to get
-a second camera, and `config/default.toml` says so rather than documenting the feature.
-
 ## Per-vehicle gimbal and frame capture
 
 `set_gimbal` and `capture_frame` act on a single vehicle. With more than one configured they now
@@ -42,21 +29,6 @@ one runtime-wide pair, and route both through the same `_vehicle_from` resolutio
 
 Everything else is already per-vehicle: ports, topics, mounts, render products and RTSP streams. Only
 these two commands are not.
-
-## Live stage manipulation (lowest priority)
-
-Both items below were removed from the shipped surface rather than left raising
-`NotImplementedError`, so v2 ships nothing that is known not to work. Neither blocks any workflow
-and neither existed in the 2023 repo. **These are the least important things on this roadmap.**
-
-- **Runtime feature toggling** (`features.enable/disable`) — compose or remove a feature layer on a
-  live stage. Today: list features in config before launch.
-- **Runtime scene swap** (`load_scene`) — open a different scene without restarting. Today: set
-  `sim.scene` and restart, which takes about fifteen seconds.
-
-Whoever picks these up should know why they were deferred: every stage-lifecycle shortcut tried in
-this project produced a *silent abort* rather than an error, so both need a crash-rate harness
-before being considered done.
 
 ## Version 1 — shipped (2026-09-02)
 
@@ -430,7 +402,6 @@ Genuinely new ground, not parity. Not planned in detail yet; candidates raised s
 - Velocity/acceleration-limited motion — `MotionLimits` is coded and tested but nothing
   enforces it at runtime (today the sim injects poses, it does not simulate dynamics).
 - Target tracking / follow-me — pure vehicle logic, no new nodes needed.
-- Physics-based flight instead of pose injection.
 - Multi-sensor payloads (IR alongside EO) — the camera dict already supports it, M6 unblocks.
 
 ---

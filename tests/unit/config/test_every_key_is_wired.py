@@ -60,6 +60,7 @@ RUNTIME_ONLY: Final[dict[str, str]] = {
     "sim.extension_search_paths": "search paths registered at app start; test_gui_setup.py",
     "sim.extensions": "extensions enabled at app start; test_gui_setup.py",
     "sim.headless": "SimulationApp argument; the system tests run both ways",
+    "sim.isaac_sim_path": "which Isaac install is launched; test_no_isaac_env_var.py",
     "sim.physics_dt": "timeline timestep; test_startup_warmup.py",
     "sim.renderer": "RTX render mode at app start; test_renderer.py",
     "sim.scene": "which USD is opened; test_scene_resolution.py",
@@ -172,7 +173,7 @@ def _leaf_keys() -> dict[str, tuple[Any, Any]]:
         if key in found:
             found[key] = (field.annotation, found[key][1])
     for name, field in CameraConfig.model_fields.items():
-        key = f"vehicles.drone_0.cameras.eo.{name}"
+        key = f"vehicles.drone_0.camera.{name}"
         if key in found:
             found[key] = (field.annotation, found[key][1])
     return found
@@ -195,7 +196,6 @@ def _signature(config: IsaacCoreConfig) -> str:
     parts: list[Any] = []
     manifests = discover_layers((_LAYERS_ROOT,))
     for vehicle_id, vehicle in config.vehicles.items():
-        camera_id = next(iter(vehicle.cameras))
         try:
             plan = plan_features(
                 requested_ids=list(config.required_feature_ids()),
@@ -203,23 +203,19 @@ def _signature(config: IsaacCoreConfig) -> str:
                 capabilities=probe(FakeStageInspector(prims=frozenset())),
                 strict=config.sim.strict_features,
                 instance=vehicle_id,
-                camera=camera_id,
             )
             parts.append([planned.manifest.id for planned in plan.enabled])
             parts.append([(skipped.id, skipped.reason) for skipped in plan.skipped])
             enu = ResolvedEnuReference(reference=config.geo.enu_reference, source="config")
-            writes = compute_writes(
-                config, plan, enu, camera_prim="/World/cam", vehicle_id=vehicle_id, camera_id=camera_id
-            )
+            writes = compute_writes(config, plan, enu, camera_prim="/World/cam", vehicle_id=vehicle_id)
             parts.append([(w.prim, w.attribute, repr(w.value)) for w in writes])
         except Exception as exc:
             parts.append(f"PLAN-ERROR {type(exc).__name__}: {exc}")
         parts.append(config.resolved_mount(vehicle_id))
         parts.append(config.resolved_udp_port(vehicle_id))
-        for cid in vehicle.cameras:
-            parts.append(config.resolved_rtsp_port(vehicle_id, cid))
-            resolver = config.topic_resolver(vehicle_id, cid)
-            parts.append([resolver.root, resolver.vehicle, resolver.camera])
+        parts.append(config.resolved_rtsp_port(vehicle_id))
+        resolver = config.topic_resolver(vehicle_id)
+        parts.append([resolver.root, resolver.vehicle, resolver.camera])
     return json.dumps(parts, sort_keys=True, default=str)
 
 
@@ -269,7 +265,7 @@ def test_the_key_walker_found_the_whole_schema() -> None:
     for expected in (
         "sim.headless",
         "geo.enu_reference.lat_deg",
-        "vehicles.drone_0.cameras.eo.fov_deg",
+        "vehicles.drone_0.camera.fov_deg",
         "vehicles.drone_0.gimbal.start_pitch_deg",
         "cesium.tileset_server_url",
     ):

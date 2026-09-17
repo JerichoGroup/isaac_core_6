@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 from importlib.metadata import version
 import os
+from pathlib import Path
 import subprocess
 import sys
 from typing import Final, Sequence
@@ -91,6 +92,7 @@ def _run_all_checks() -> bool:
         has_fail = _emit(_check_extensions_linked(install)) or has_fail
 
     has_fail = _emit(_check_config()) or has_fail
+    has_fail = _emit(_check_completion()) or has_fail
     return has_fail
 
 
@@ -110,6 +112,24 @@ def _run_dependency_checks() -> bool:
     return has_fail
 
 
+def _configured_isaac_path() -> str | None:
+    """Return ``sim.isaac_sim_path`` from the user's config, or ``None``.
+
+    Read separately from the rest of the doctor so a config that fails to load does not stop the
+    install check from running -- the install check is often what explains the config error.
+
+    Returns:
+        The configured path, or ``None`` if unset or unreadable.
+
+    """
+    try:
+        from isaac_core.config import load
+
+        return load().sim.isaac_sim_path
+    except Exception:
+        return None
+
+
 def _run_isaac_checks(has_fail: bool) -> tuple[bool, IsaacInstall | None]:
     """Run Isaac Sim installation checks.
 
@@ -120,7 +140,7 @@ def _run_isaac_checks(has_fail: bool) -> tuple[bool, IsaacInstall | None]:
         Updated has_fail flag and the install if found.
 
     """
-    status, msg, install = _check_isaac_install()
+    status, msg, install = _check_isaac_install(_configured_isaac_path())
     has_fail = _emit((status, msg)) or has_fail
 
     if install is not None:
@@ -206,15 +226,19 @@ def _get_version(mod: object, name: str) -> str | None:
         return None
 
 
-def _check_isaac_install() -> tuple[str, str, IsaacInstall | None]:
+def _check_isaac_install(configured_path: str | None = None) -> tuple[str, str, IsaacInstall | None]:
     """Attempt to locate Isaac Sim.
+
+    Args:
+        configured_path: ``sim.isaac_sim_path`` from the user's config, if set. Without this the
+            doctor hint told people to set a key that it then ignored.
 
     Returns:
         Status, message, and the install (or ``None``).
 
     """
     try:
-        install = IsaacInstall.locate()
+        install = IsaacInstall.locate(config_path=Path(configured_path) if configured_path else None)
     except IsaacInstallError:
         return (
             "FAIL",
@@ -351,6 +375,26 @@ def _check_extensions_linked(install: IsaacInstall) -> tuple[str, str]:
     )
 
 
+def _check_completion() -> tuple[str, str]:
+    """Report whether shell completion is installed.
+
+    A feature nobody knows about is not shipped. The generator worked from the start while nothing
+    installed the script, so pressing TAB completed filenames and the feature was invisible.
+
+    Returns:
+        Status and message tuple.
+
+    """
+    from isaac_core.cli.completion import detect_shell, is_installed
+
+    shell = detect_shell()
+    if shell is None:
+        return "WARN", "Cannot tell which shell you use; install completion with: isaac-core completion --install bash"
+    if is_installed(shell):
+        return "PASS", f"Shell completion installed for {shell}"
+    return "WARN", f"Shell completion not installed. Run: isaac-core completion --install {shell}"
+
+
 def _check_config() -> tuple[str, str]:
     """Check that the configuration loads without error.
 
@@ -388,7 +432,7 @@ def doctor_checks() -> Sequence[tuple[str, str]]:
     if sys.version_info < (3, 11):
         results.append(_check_dependency("tomli", "2.0"))
 
-    _status, _msg, install = _check_isaac_install()
+    _status, _msg, install = _check_isaac_install(_configured_isaac_path())
     results.append((_status, _msg))
 
     if install is not None:
@@ -402,5 +446,6 @@ def doctor_checks() -> Sequence[tuple[str, str]]:
         results.append(_check_extensions_linked(install))
 
     results.append(_check_config())
+    results.append(_check_completion())
 
     return results

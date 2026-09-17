@@ -33,7 +33,6 @@ def test_every_requested_resolver_exists(name: str) -> None:
     config = load()
     enu = ResolvedEnuReference(reference=config.geo.enu_reference, source="config")
     vehicle_id = next(iter(config.vehicles))
-    camera_id = next(iter(config.vehicles[vehicle_id].cameras))
     try:
         _resolve_runtime_value(
             name,
@@ -41,7 +40,6 @@ def test_every_requested_resolver_exists(name: str) -> None:
             enu_reference=enu,
             camera_prim="/World/Environment/drone_0/Xform/main_camera_01",
             vehicle_id=vehicle_id,
-            camera_id=camera_id,
         )
     except ConfigKeyError as exc:  # pragma: no cover - only on a real regression
         pytest.fail(f"manifest asks for resolver {name!r} but it is not registered: {exc}")

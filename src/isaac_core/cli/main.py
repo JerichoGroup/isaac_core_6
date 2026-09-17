@@ -155,7 +155,8 @@ def _run_command(args: argparse.Namespace) -> int:
 
     isaac_path_arg = Path(args.isaac_path) if args.isaac_path else None
     try:
-        install = IsaacInstall.locate(explicit_path=isaac_path_arg)
+        configured = Path(config.sim.isaac_sim_path) if config.sim.isaac_sim_path else None
+        install = IsaacInstall.locate(explicit_path=isaac_path_arg, config_path=configured)
     except IsaacInstallError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

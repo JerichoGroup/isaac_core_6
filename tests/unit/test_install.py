@@ -64,10 +64,20 @@ def test_locate_config_path_used_when_no_explicit(tmp_path: Path) -> None:
     assert install.root == fake
 
 
-def test_locate_env_var_used_when_valid(tmp_path: Path) -> None:
+def test_locate_ignores_the_environment_entirely(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A shell variable naming an install is a setting the user cannot see and usually cannot remember
+    # setting, and it is stale more often than not. Nothing in resolution reads the environment now, so
+    # a perfectly valid install named only by the old variable must NOT be found.
     fake = _make_fake_install(tmp_path)
-    install = IsaacInstall.locate(environ={"ISAACSIM_PATH": str(fake)})
-    assert install.root == fake
+    monkeypatch.setenv("ISAACSIM_PATH", str(fake))
+    monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: ())
+
+    with pytest.raises(IsaacInstallError):
+        IsaacInstall.locate()
+
+    # And passing it in explicitly through the ignored parameter changes nothing either.
+    with pytest.raises(IsaacInstallError):
+        IsaacInstall.locate(environ={"ISAACSIM_PATH": str(fake)})
 
 
 def test_locate_ignores_stale_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

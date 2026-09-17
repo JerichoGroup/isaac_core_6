@@ -35,9 +35,9 @@ def test_toml_file_source_parses_valid_file(tmp_path: Path) -> None:
 
 def test_toml_file_source_returns_nested_structure(tmp_path: Path) -> None:
     config_file = tmp_path / "test.toml"
-    config_file.write_text("[vehicles.drone_0.cameras.eo]\nfov_deg = 90.0\n")
+    config_file.write_text("[vehicles.drone_0.camera]\nfov_deg = 90.0\n")
     result = toml_file_source(config_file)
-    assert result["vehicles"]["drone_0"]["cameras"]["eo"]["fov_deg"] == 90.0
+    assert result["vehicles"]["drone_0"]["camera"]["fov_deg"] == 90.0
 
 
 # --------------------------------------------------------------------------- #
@@ -84,9 +84,9 @@ def test_env_source_splits_on_double_underscore() -> None:
 
 
 def test_env_source_deep_nesting() -> None:
-    environ = {"ISAAC_CORE__VEHICLES__DRONE_0__CAMERAS__EO__FOV_DEG": "90.0"}
+    environ = {"ISAAC_CORE__VEHICLES__DRONE_0__CAMERA__FOV_DEG": "90.0"}
     result = env_source(environ)
-    assert result["vehicles"]["drone_0"]["cameras"]["eo"]["fov_deg"] == 90.0
+    assert result["vehicles"]["drone_0"]["camera"]["fov_deg"] == 90.0
 
 
 def test_env_source_lowercases_all_segments() -> None:
@@ -234,8 +234,8 @@ def test_cli_source_expands_dotted_key() -> None:
 
 
 def test_cli_source_expands_deeply_nested_key() -> None:
-    result = cli_source({"vehicles.drone_0.cameras.eo.fov_deg": 90.0})
-    assert result["vehicles"]["drone_0"]["cameras"]["eo"]["fov_deg"] == 90.0
+    result = cli_source({"vehicles.drone_0.camera.fov_deg": 90.0})
+    assert result["vehicles"]["drone_0"]["camera"]["fov_deg"] == 90.0
 
 
 def test_cli_source_multiple_keys() -> None:
@@ -260,8 +260,8 @@ def test_cli_source_coerces_string_values_like_env() -> None:
     assert cli_source({"sim.extensions": '["a", "b"]'}) == {"sim": {"extensions": ["a", "b"]}}
     assert cli_source({"sim.headless": "true"}) == {"sim": {"headless": True}}
     assert cli_source({"sim.control_plane.port": "9000"}) == {"sim": {"control_plane": {"port": 9000}}}
-    assert cli_source({"vehicles.drone_0.cameras.eo.fov_deg": "60.0"}) == {
-        "vehicles": {"drone_0": {"cameras": {"eo": {"fov_deg": 60.0}}}}
+    assert cli_source({"vehicles.drone_0.camera.fov_deg": "60.0"}) == {
+        "vehicles": {"drone_0": {"camera": {"fov_deg": 60.0}}}
     }
 
 

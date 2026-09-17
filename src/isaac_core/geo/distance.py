@@ -61,3 +61,29 @@ def meters_to_latlon_offset(north_m: float, east_m: float, ref_lat_deg: float) -
     d_lon_rad = east_m / (EARTH_RADIUS_M * math.cos(math.radians(ref_lat_deg)))
 
     return (math.degrees(d_lat_rad), math.degrees(d_lon_rad))
+
+
+def look_at_angles(observer: Lla, target: Lla) -> tuple[float, float]:
+    """Return the NED yaw and pitch that point an observer at a target.
+
+    Flat-earth offsets, which is accurate at the ranges this simulator flies and matches how every
+    other conversion here approximates. Extracted so aiming has one implementation: ``turn_to_point``
+    and ``move_to_point(face_target=True)`` must agree, or a bot that turns and then flies visibly
+    re-aims at the start of the move.
+
+    Args:
+        observer: Where the vehicle is.
+        target: What to look at.
+
+    Returns:
+        ``(yaw_r, pitch_r)`` in radians, NED. Positive pitch looks up.
+
+    """
+    cos_lat = math.cos(math.radians(observer.lat_deg))
+    north_m = math.radians(target.lat_deg - observer.lat_deg) * EARTH_RADIUS_M
+    east_m = math.radians(target.lon_deg - observer.lon_deg) * EARTH_RADIUS_M * cos_lat
+    up_m = target.alt_m - observer.alt_m
+
+    yaw_r = math.atan2(east_m, north_m)
+    pitch_r = math.atan2(up_m, math.hypot(east_m, north_m))
+    return (yaw_r, pitch_r)

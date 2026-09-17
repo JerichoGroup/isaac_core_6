@@ -14,11 +14,11 @@ config lookups. Here, wiring is declared in layer manifests and applied uniforml
 Every runtime resolver is scoped to an explicit vehicle and camera threaded from
 :func:`compute_writes`, never picked with ``next(iter(...))``. There is no module-level
 "current vehicle" state. The identity a resolver uses should ultimately come from the
-plan: a :class:`~isaac_core.sim.planner.PlannedLayer` is planned for one instance and
-one camera. It does not record them yet, so :func:`compute_writes` takes ``vehicle_id``
-and ``camera_id`` as parameters instead; when ``PlannedLayer`` gains ``instance`` and
-``camera`` fields, per-layer scoping is a matter of reading them off each planned layer
-inside the loop rather than passing one identity for the whole call.
+plan: a :class:`~isaac_core.sim.planner.PlannedLayer` is planned for one instance. It does
+not record it yet, so :func:`compute_writes` takes ``vehicle_id`` as a parameter instead;
+when ``PlannedLayer`` gains an ``instance`` field, per-layer scoping is a matter of reading
+it off each planned layer inside the loop rather than passing one identity for the whole
+call.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def _lookup_config(config: IsaacCoreConfig, dotted_key: str) -> Any:
     """Traverse the config model by a dotted path.
 
     Supports both pydantic model attributes and dict keys for the ``vehicles``
-    and ``layers`` dicts. Examples: ``"vehicles.drone_0.cameras.eo.fov_deg"``,
+    and ``layers`` dicts. Examples: ``"vehicles.drone_0.camera.fov_deg"``,
     ``"cesium.tileset_server_url"``.
 
     Args:
@@ -133,12 +133,10 @@ def _resolve_runtime_value(
     enu_reference: ResolvedEnuReference,
     camera_prim: str | None,
     vehicle_id: str,
-    camera_id: str | None,
 ) -> Any:
     """Compute a runtime-derived value by its resolve name.
 
-    Every resolver produces the value for the specific ``vehicle_id`` and, where the
-    value is camera-scoped, ``camera_id``. The identity is supplied by the caller
+    Every resolver produces the value for the specific ``vehicle_id``, supplied by the caller
     (ultimately the plan) rather than picked with ``next(iter(...))``, so the same
     resolvers serve every aircraft in a swarm without any global "current vehicle" state.
 
@@ -148,8 +146,6 @@ def _resolve_runtime_value(
         enu_reference: The computed ENU reference for this run.
         camera_prim: The active camera prim path, if known.
         vehicle_id: The vehicle this binding belongs to.
-        camera_id: The camera this binding belongs to, or ``None`` for vehicle-scoped
-            values.
 
     Returns:
         The value to write.
@@ -170,16 +166,14 @@ def _resolve_runtime_value(
         "camera_prim": lambda: _resolve_camera_prim_value(camera_prim),
         "bboxes_root": lambda: BBOXES_ROOT,
         "udp_port": lambda: config.resolved_udp_port(vehicle_id),
-        "image_topic": lambda: _resolve_image_topic(config, vehicle_id, camera_id),
+        "image_topic": lambda: _resolve_image_topic(config, vehicle_id),
         "global_pose_topic": lambda: _resolve_vehicle_topic(config, GLOBAL_POSE, vehicle_id),
         "distance_topic": lambda: _resolve_distance_topic(config, vehicle_id),
         "bbox_topic": lambda: _resolve_vehicle_topic(config, BBOX, vehicle_id),
-        "rtsp_mount_path": lambda: _resolve_rtsp_mount_path(config, vehicle_id, camera_id),
-        "rtsp_port": lambda: config.resolved_rtsp_port(
-            vehicle_id, camera_id if camera_id is not None else _first_camera_id(config, vehicle_id)
-        ),
-        "camera_horizontal_aperture": lambda: _resolve_horizontal_aperture(config, vehicle_id, camera_id),
-        "camera_vertical_aperture": lambda: _resolve_vertical_aperture(config, vehicle_id, camera_id),
+        "rtsp_mount_path": lambda: _resolve_rtsp_mount_path(config, vehicle_id),
+        "rtsp_port": lambda: config.resolved_rtsp_port(vehicle_id),
+        "camera_horizontal_aperture": lambda: _resolve_horizontal_aperture(config, vehicle_id),
+        "camera_vertical_aperture": lambda: _resolve_vertical_aperture(config, vehicle_id),
         "lla_topic": lambda: _resolve_mavros_topic(config, MAVROS_LLA_LEAF, vehicle_id),
         "orientation_topic": lambda: _resolve_mavros_topic(config, MAVROS_ORIENTATION_LEAF, vehicle_id),
     }
@@ -202,20 +196,6 @@ def _first_vehicle_id(config: IsaacCoreConfig) -> str:
 
     """
     return config.first_vehicle_id
-
-
-def _first_camera_id(config: IsaacCoreConfig, vehicle_id: str) -> str:
-    """Return the first camera id of a vehicle in declaration order.
-
-    Args:
-        config: The resolved configuration.
-        vehicle_id: The vehicle whose first camera to return.
-
-    Returns:
-        The first camera's key.
-
-    """
-    return next(iter(config.vehicles[vehicle_id].cameras))
 
 
 def _resolve_mavros_topic(config: IsaacCoreConfig, leaf: str, vehicle_id: str) -> str:
@@ -261,20 +241,18 @@ def _resolve_camera_prim_value(camera_prim: str | None) -> str:
     return camera_prim
 
 
-def _camera_for(config: IsaacCoreConfig, vehicle_id: str, camera_id: str | None) -> CameraConfig:
+def _camera_for(config: IsaacCoreConfig, vehicle_id: str) -> CameraConfig:
     """Return a specific vehicle's camera, defaulting to its first when unspecified.
 
     Args:
         config: The resolved configuration.
         vehicle_id: The vehicle whose camera to return.
-        camera_id: The camera key, or ``None`` to take the vehicle's first camera.
 
     Returns:
-        The selected camera's config.
+        The vehicle's camera config.
 
     """
-    resolved_camera_id = camera_id if camera_id is not None else _first_camera_id(config, vehicle_id)
-    return config.vehicles[vehicle_id].cameras[resolved_camera_id]
+    return config.vehicles[vehicle_id].camera
 
 
 # Default ``fov_deg`` declared on CameraConfig. Used to tell "the user left fov alone" from
@@ -285,7 +263,6 @@ _DEFAULT_FOV_DEG: float = CameraConfig.model_fields["fov_deg"].default
 def _resolve_horizontal_aperture(
     config: IsaacCoreConfig,
     vehicle_id: str | None = None,
-    camera_id: str | None = None,
 ) -> float:
     """Compute the camera horizontal aperture in mm, honouring an explicit override.
 
@@ -303,14 +280,13 @@ def _resolve_horizontal_aperture(
     Args:
         config: The resolved configuration.
         vehicle_id: The vehicle whose camera to resolve, or ``None`` for the first vehicle.
-        camera_id: The camera to resolve, or ``None`` for that vehicle's first camera.
 
     Returns:
         Horizontal aperture in millimetres.
 
     """
     resolved_vehicle_id = vehicle_id if vehicle_id is not None else _first_vehicle_id(config)
-    camera = _camera_for(config, resolved_vehicle_id, camera_id)
+    camera = _camera_for(config, resolved_vehicle_id)
     if camera.horizontal_aperture_mm is not None:
         if camera.fov_deg != _DEFAULT_FOV_DEG:
             logger.warning(
@@ -326,7 +302,6 @@ def _resolve_horizontal_aperture(
 def _resolve_vertical_aperture(
     config: IsaacCoreConfig,
     vehicle_id: str | None = None,
-    camera_id: str | None = None,
 ) -> float:
     """Compute the vertical aperture in mm, honouring an explicit override.
 
@@ -339,20 +314,19 @@ def _resolve_vertical_aperture(
     Args:
         config: The resolved configuration.
         vehicle_id: The vehicle whose camera to resolve, or ``None`` for the first vehicle.
-        camera_id: The camera to resolve, or ``None`` for that vehicle's first camera.
 
     Returns:
         Vertical aperture in millimetres.
 
     """
     resolved_vehicle_id = vehicle_id if vehicle_id is not None else _first_vehicle_id(config)
-    camera = _camera_for(config, resolved_vehicle_id, camera_id)
+    camera = _camera_for(config, resolved_vehicle_id)
     if camera.vertical_aperture_mm is not None:
         return camera.vertical_aperture_mm
-    return _resolve_horizontal_aperture(config, resolved_vehicle_id, camera_id) * (camera.height / camera.width)
+    return _resolve_horizontal_aperture(config, resolved_vehicle_id) * (camera.height / camera.width)
 
 
-def _resolve_rtsp_mount_path(config: IsaacCoreConfig, vehicle_id: str, camera_id: str | None) -> str:
+def _resolve_rtsp_mount_path(config: IsaacCoreConfig, vehicle_id: str) -> str:
     """Return a camera's RTSP mount path, explicit if set, otherwise derived.
 
     Mirrors the topic convention: a single camera streams at ``/stream``, and once there is
@@ -364,22 +338,18 @@ def _resolve_rtsp_mount_path(config: IsaacCoreConfig, vehicle_id: str, camera_id
     Args:
         config: The resolved configuration.
         vehicle_id: The vehicle whose camera to resolve.
-        camera_id: The camera to resolve, or ``None`` for that vehicle's first camera.
 
     Returns:
         The mount path, always beginning with ``/``.
 
     """
-    resolved_camera_id = camera_id if camera_id is not None else _first_camera_id(config, vehicle_id)
-    explicit = config.vehicles[vehicle_id].cameras[resolved_camera_id].rtsp_mount_path
+    explicit = config.vehicles[vehicle_id].camera.rtsp_mount_path
     if explicit is not None:
         return explicit if explicit.startswith("/") else f"/{explicit}"
 
     parts = []
     if not config.is_single_vehicle:
         parts.append(vehicle_id)
-    if len(config.vehicles[vehicle_id].cameras) > 1:
-        parts.append(resolved_camera_id)
     return "/" + "/".join([*parts, "stream"])
 
 
@@ -410,7 +380,7 @@ def _resolve_distance_topic(config: IsaacCoreConfig, vehicle_id: str) -> str:
     return _resolve_vehicle_topic(config, DISTANCE_SENSOR, vehicle_id)
 
 
-def _resolve_image_topic(config: IsaacCoreConfig, vehicle_id: str, camera_id: str | None) -> str:
+def _resolve_image_topic(config: IsaacCoreConfig, vehicle_id: str) -> str:
     """Return a camera's image topic, explicit if set, otherwise derived.
 
     Deriving keeps the namespacing convention working for a swarm, while an explicit
@@ -421,7 +391,6 @@ def _resolve_image_topic(config: IsaacCoreConfig, vehicle_id: str, camera_id: st
     Args:
         config: The resolved configuration.
         vehicle_id: The vehicle whose camera to resolve.
-        camera_id: The camera to resolve, or ``None`` for that vehicle's first camera.
 
     Returns:
         The fully resolved image topic name.
@@ -429,18 +398,16 @@ def _resolve_image_topic(config: IsaacCoreConfig, vehicle_id: str, camera_id: st
     """
     from isaac_core.contracts.topics import IMAGE_RGB
 
-    resolved_camera_id = camera_id if camera_id is not None else _first_camera_id(config, vehicle_id)
-    explicit = config.vehicles[vehicle_id].cameras[resolved_camera_id].image_topic
+    explicit = config.vehicles[vehicle_id].camera.image_topic
     if explicit is not None:
         return explicit
-    return _resolve_topic(config, IMAGE_RGB, vehicle_id, resolved_camera_id, camera_scoped=True)
+    return _resolve_topic(config, IMAGE_RGB, vehicle_id, camera_scoped=True)
 
 
 def _resolve_topic(
     config: IsaacCoreConfig,
     leaf: str,
     vehicle_id: str,
-    camera_id: str | None = None,
     *,
     camera_scoped: bool = False,
 ) -> str:
@@ -450,8 +417,6 @@ def _resolve_topic(
         config: The resolved configuration.
         leaf: Topic leaf name.
         vehicle_id: The vehicle whose topic to resolve.
-        camera_id: The camera to resolve when ``camera_scoped``, or ``None`` for the
-            vehicle's first camera.
         camera_scoped: Whether to include the camera in the resolution.
 
     Returns:
@@ -459,8 +424,7 @@ def _resolve_topic(
 
     """
     if camera_scoped:
-        resolved_camera_id = camera_id if camera_id is not None else _first_camera_id(config, vehicle_id)
-        resolver = config.topic_resolver(vehicle_id, resolved_camera_id)
+        resolver = config.topic_resolver(vehicle_id)
         return resolver.resolve(leaf)
     return config.topic_resolver(vehicle_id).vehicle_scoped(leaf)
 
@@ -509,7 +473,6 @@ def compute_writes(
     *,
     camera_prim: str | None = None,
     vehicle_id: str | None = None,
-    camera_id: str | None = None,
 ) -> list[AttributeWrite]:
     """Produce the ordered list of attribute writes for a simulation run.
 
@@ -522,11 +485,10 @@ def compute_writes(
     Overrides applied last guarantee the escape hatch wins over any layer binding
     that targets the same (prim, attribute) pair.
 
-    Every runtime-derived value resolves for an explicit ``vehicle_id`` and
-    ``camera_id`` rather than silently for the first vehicle. When these are omitted
-    they default to the first vehicle and its first camera, preserving the
-    single-vehicle behaviour existing callers rely on. A ``PlannedLayer`` is planned
-    for one instance and camera today, so per-layer scoping is available once the plan
+    Every runtime-derived value resolves for an explicit ``vehicle_id`` rather than
+    silently for the first vehicle. When it is omitted it defaults to the first vehicle,
+    preserving the single-vehicle behaviour existing callers rely on. A ``PlannedLayer``
+    is planned for one instance today, so per-layer scoping is available once the plan
     carries that identity (see the module docstring's note on the planner).
 
     Args:
@@ -535,8 +497,6 @@ def compute_writes(
         enu_reference: The computed ENU reference for this run.
         camera_prim: Path to the active camera prim, if known.
         vehicle_id: The vehicle these writes serve, or ``None`` for the first vehicle.
-        camera_id: The camera these writes serve, or ``None`` for that vehicle's first
-            camera.
 
     Returns:
         Ordered writes ready to be applied.
@@ -555,7 +515,6 @@ def compute_writes(
         # topics, so taking one identity for the whole call would give every vehicle the first
         # vehicle's values.
         layer_vehicle = planned.instance if planned.instance in config.vehicles else resolved_vehicle_id
-        layer_camera = planned.camera or camera_id
         for binding in planned.resolved_bindings:
             value = _resolve_binding_value(
                 binding,
@@ -563,7 +522,6 @@ def compute_writes(
                 enu_reference=enu_reference,
                 camera_prim=camera_prim,
                 vehicle_id=layer_vehicle,
-                camera_id=layer_camera,
             )
             writes.append(AttributeWrite(prim=binding.prim, attribute=binding.attribute, value=value))
 
@@ -592,7 +550,6 @@ def _resolve_binding_value(
     enu_reference: ResolvedEnuReference,
     camera_prim: str | None,
     vehicle_id: str,
-    camera_id: str | None,
 ) -> Any:
     """Resolve the value for a single binding.
 
@@ -602,7 +559,6 @@ def _resolve_binding_value(
         enu_reference: The computed ENU reference for this run.
         camera_prim: Active camera prim path.
         vehicle_id: The vehicle this binding serves.
-        camera_id: The camera this binding serves, or ``None`` for vehicle-scoped values.
 
     Returns:
         The value to write.
@@ -620,7 +576,6 @@ def _resolve_binding_value(
             enu_reference=enu_reference,
             camera_prim=camera_prim,
             vehicle_id=vehicle_id,
-            camera_id=camera_id,
         )
     msg = f"binding for {binding.prim}:{binding.attribute} has neither config nor resolve"
     raise ConfigKeyError(msg)

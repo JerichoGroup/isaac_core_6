@@ -1,4 +1,4 @@
-"""Immutable vehicle state: geodetic position plus a world-frame rotation matrix.
+"""Immutable vehicle state: geodetic position, a rotation matrix, and the frame it is read in.
 
 A ``VehicleState`` is never mutated -- every transition returns a **new** state.
 The rotation matrix is the authoritative orientation; Euler angles and direction
@@ -15,7 +15,7 @@ import math
 import numpy as np
 from numpy.typing import NDArray
 
-from isaac_core.contracts.frames import Frame
+from isaac_core.contracts.frames import Frame, RotationFrame
 from isaac_core.contracts.pose import GeodeticPose, Lla, Rpy
 from isaac_core.geo.rotations import euler_to_matrix, matrix_to_euler
 
@@ -24,15 +24,24 @@ from isaac_core.geo.rotations import euler_to_matrix, matrix_to_euler
 class VehicleState:
     """Immutable snapshot of a vehicle's kinematic state.
 
-    Carries a WGS84 position and a world-frame 3×3 rotation matrix. All
-    transitions produce a new instance rather than mutating this one. Direction
-    vectors and heading are derived from the matrix on the fly.
+    Carries a WGS84 position, a 3×3 rotation matrix, and the frame its Euler angles are expressed
+    in. All transitions produce a new instance rather than mutating this one. Direction vectors and
+    heading are derived from the matrix on the fly.
+
+    The frame is part of the state because the wire carries Euler angles, not a matrix, and the
+    simulator rebuilds them using the vehicle's configured ``rotation_frame``. Converting with a
+    different frame than the consumer will use is silently wrong for any attitude with two non-zero
+    angles: composing a world yaw onto a pitched airframe and then decomposing in the body frame
+    reported roll 30, pitch 0 where the truth was roll 0, pitch -30. Single-axis attitudes agree in
+    both frames, which is why it went unnoticed.
 
     Args:
         lat_deg: Latitude in degrees.
         lon_deg: Longitude in degrees.
         alt_m: Altitude in metres above the WGS84 ellipsoid.
-        rotation: A 3×3 rotation matrix (world-frame, intrinsic-XYZ convention).
+        rotation: A 3×3 rotation matrix.
+        frame: The frame this state's Euler angles are expressed in. Defaults to ``WORLD``, matching
+            the schema default for ``vehicles.<id>.rotation_frame``.
 
     """
 
@@ -40,9 +49,49 @@ class VehicleState:
     lon_deg: float
     alt_m: float
     rotation: NDArray[np.float64]
+    frame: RotationFrame = RotationFrame.WORLD
 
     @classmethod
-    def from_pose(cls, pose: GeodeticPose) -> VehicleState:
+    def from_angles(
+        cls,
+        lat_deg: float,
+        lon_deg: float,
+        alt_m: float,
+        roll_r: float = 0.0,
+        pitch_r: float = 0.0,
+        yaw_r: float = 0.0,
+        frame: RotationFrame = RotationFrame.WORLD,
+    ) -> VehicleState:
+        """Build a state from angles, with the matrix and the frame guaranteed to agree.
+
+        Constructing the matrix separately and passing it to ``VehicleState(...)`` makes it easy to
+        build one whose matrix was composed in a different frame than the state declares, which reads
+        back the wrong angles for any attitude with two non-zero components. This is the path that
+        cannot be got wrong.
+
+        Args:
+            lat_deg: Latitude in degrees.
+            lon_deg: Longitude in degrees.
+            alt_m: Altitude in metres.
+            roll_r: Roll in radians.
+            pitch_r: Pitch in radians.
+            yaw_r: Yaw in radians.
+            frame: The frame these angles are expressed in.
+
+        Returns:
+            A consistent :class:`VehicleState`.
+
+        """
+        return cls(
+            lat_deg=lat_deg,
+            lon_deg=lon_deg,
+            alt_m=alt_m,
+            rotation=euler_to_matrix(roll_r, pitch_r, yaw_r, frame),
+            frame=frame,
+        )
+
+    @classmethod
+    def from_pose(cls, pose: GeodeticPose, frame: RotationFrame = RotationFrame.WORLD) -> VehicleState:
         """Construct a state from a :class:`~isaac_core.contracts.pose.GeodeticPose`.
 
         The pose must be in NED frame (the wire/user-facing convention). The
@@ -50,6 +99,7 @@ class VehicleState:
 
         Args:
             pose: A geodetic pose tagged NED.
+            frame: The frame the pose's Euler angles are expressed in.
 
         Returns:
             A new :class:`VehicleState`.
@@ -62,7 +112,7 @@ class VehicleState:
             msg = f"VehicleState.from_pose requires NED orientation, got {pose.frame.value}"
             raise ValueError(msg)
         rpy = pose.orientation
-        mat = euler_to_matrix(rpy.roll_r, rpy.pitch_r, rpy.yaw_r)
+        mat = euler_to_matrix(rpy.roll_r, rpy.pitch_r, rpy.yaw_r, frame)
         return cls(
             lat_deg=pose.position.lat_deg,
             lon_deg=pose.position.lon_deg,
@@ -79,7 +129,7 @@ class VehicleState:
             A geodetic pose with NED orientation.
 
         """
-        roll_r, pitch_r, yaw_r = matrix_to_euler(self.rotation)
+        roll_r, pitch_r, yaw_r = matrix_to_euler(self.rotation, self.frame)
         return GeodeticPose(
             position=Lla(lat_deg=self.lat_deg, lon_deg=self.lon_deg, alt_m=self.alt_m),
             orientation=Rpy(roll_r=roll_r, pitch_r=pitch_r, yaw_r=yaw_r, frame=Frame.NED),
@@ -92,7 +142,7 @@ class VehicleState:
         This is the compass heading in the NED intrinsic-XYZ convention.
 
         """
-        _roll_r, _pitch_r, yaw_r = matrix_to_euler(self.rotation)
+        _roll_r, _pitch_r, yaw_r = matrix_to_euler(self.rotation, self.frame)
         return float(yaw_r)
 
     @property
@@ -142,7 +192,7 @@ class VehicleState:
             A new :class:`VehicleState`.
 
         """
-        return VehicleState(lat_deg=lat_deg, lon_deg=lon_deg, alt_m=alt_m, rotation=self.rotation)
+        return VehicleState(lat_deg=lat_deg, lon_deg=lon_deg, alt_m=alt_m, rotation=self.rotation, frame=self.frame)
 
     def with_rotation(self, rotation: NDArray[np.float64]) -> VehicleState:
         """Return a new state with the given rotation and the same position.
@@ -154,7 +204,9 @@ class VehicleState:
             A new :class:`VehicleState`.
 
         """
-        return VehicleState(lat_deg=self.lat_deg, lon_deg=self.lon_deg, alt_m=self.alt_m, rotation=rotation)
+        return VehicleState(
+            lat_deg=self.lat_deg, lon_deg=self.lon_deg, alt_m=self.alt_m, rotation=rotation, frame=self.frame
+        )
 
     def with_heading_r(self, yaw_r: float) -> VehicleState:
         """Return a new state with the given yaw, preserving roll and pitch.
@@ -166,8 +218,8 @@ class VehicleState:
             A new :class:`VehicleState`.
 
         """
-        roll_r, pitch_r, _yaw_r = matrix_to_euler(self.rotation)
-        new_mat = euler_to_matrix(roll_r, pitch_r, yaw_r)
+        roll_r, pitch_r, _yaw_r = matrix_to_euler(self.rotation, self.frame)
+        new_mat = euler_to_matrix(roll_r, pitch_r, yaw_r, self.frame)
         return self.with_rotation(new_mat)
 
     def distance_to(self, other_lat_deg: float, other_lon_deg: float, other_alt_m: float) -> float:

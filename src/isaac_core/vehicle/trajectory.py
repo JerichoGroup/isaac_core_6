@@ -267,8 +267,14 @@ class PathTrajectory:
         if total_steps == 0:
             return
 
-        for step in range(total_steps):
-            target_dist = step * self.speed_mps / rate_hz
+        # range(total_steps + 1) so the last emitted pose sits exactly on the final waypoint. Emitting
+        # only whole steps left the path short by up to one step -- 1098.7 m instead of the 1100 m
+        # asked for -- so "fly to this point" never actually arrived there.
+        for step in range(total_steps + 1):
+            # The final iteration is pinned to the end of the path rather than to a step boundary,
+            # because total_steps truncates: whole steps alone left the path short by up to one step
+            # (1098.7 m instead of the 1100 m asked for), so "fly to this point" never arrived.
+            target_dist = total_dist if step == total_steps else step * self.speed_mps / rate_hz
 
             # Find the segment containing target_dist
             seg_idx = 1

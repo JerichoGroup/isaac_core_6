@@ -11,7 +11,16 @@ set -uo pipefail
 TRIALS="${1:-10}"
 LABEL="${2:-run}"
 CONFIG=/tmp/cfg_run.toml
-ISAAC="${ISAACSIM_PATH:-$HOME/isaacsim}/python.sh"
+# Resolve the install the same way everything else does, rather than guessing from the
+# environment: defaulting to a shell variable meant this could benchmark a different install
+# than the one isaac-core actually runs, and say nothing about it.
+ISAAC="$(PYTHONPATH="$(cd "$(dirname "$0")/.." && pwd)/src" python3 -c \
+    'from isaac_core.install import IsaacInstall; print(IsaacInstall.locate().python_path)' 2>/dev/null)"
+if [[ -z "$ISAAC" || ! -x "$ISAAC" ]]; then
+    echo "ERROR: no Isaac Sim install found. Pass --isaac-path to scripts/setup.sh first," >&2
+    echo "       or set sim.isaac_sim_path in your config." >&2
+    exit 1
+fi
 WINDOW="${3:-45}"
 
 kill_sims() {

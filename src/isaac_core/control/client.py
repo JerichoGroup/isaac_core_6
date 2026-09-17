@@ -47,7 +47,11 @@ class ControlClient:
     """
 
     def __init__(
-        self, host: str = "127.0.0.1", port: int = DEFAULT_CONTROL_PLANE_PORT, token: str | None = None
+        self,
+        host: str = "127.0.0.1",
+        port: int = DEFAULT_CONTROL_PLANE_PORT,
+        token: str | None = None,
+        call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S,
     ) -> None:
         """Initialise the client.
 
@@ -55,11 +59,17 @@ class ControlClient:
             host: Server host.
             port: Server port.
             token: Authentication token for non-loopback servers.
+            call_timeout_s: How long to wait for a reply. Methods that must run on the simulator's
+                main thread -- ``step``, ``set_pose``, ``capture_frame`` -- wait for that thread, and a
+                heavy stage can hold it for longer than the default: a two-vehicle headless stage was
+                measured exceeding 60 s while the control plane kept answering ``get_state`` promptly.
+                There was previously no way to raise this from outside.
 
         """
         self._host = host
         self._port = port
         self._token = token
+        self._call_timeout_s = call_timeout_s
         self._sock: socket.socket | None = None
         self._buffer: bytes = b""
         self._request_id: int = 0
@@ -74,11 +84,16 @@ class ControlClient:
         """Return the target port."""
         return self._port
 
-    def connect(self, timeout: float = DEFAULT_CALL_TIMEOUT_S) -> None:
+    @property
+    def call_timeout_s(self) -> float:
+        """Return how long a call waits for a reply."""
+        return self._call_timeout_s
+
+    def connect(self, timeout: float | None = None) -> None:
         """Establish TCP connection to the server.
 
         Args:
-            timeout: Socket timeout in seconds.
+            timeout: Socket timeout in seconds. Defaults to this client's ``call_timeout_s``.
 
         Raises:
             ConnectionRefusedError: If the server is not listening.
@@ -86,7 +101,7 @@ class ControlClient:
 
         """
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.settimeout(timeout)
+        self._sock.settimeout(self._call_timeout_s if timeout is None else timeout)
         self._sock.connect((self._host, self._port))
         self._buffer = b""
 
@@ -208,7 +223,7 @@ class ControlClient:
                 # A generous socket timeout, not the poll interval: some methods legitimately take
                 # seconds (a capture spans several frames, `step` runs N of them), and a short
                 # socket timeout made them fail as TimeoutError while the work was still going.
-                self.connect(timeout=max(DEFAULT_CALL_TIMEOUT_S, poll_interval))
+                self.connect(timeout=max(self._call_timeout_s, poll_interval))
                 self.ping()
                 if not require_stage or self._stage_ready():
                     return

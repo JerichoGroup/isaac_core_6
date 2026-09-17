@@ -212,8 +212,8 @@ def test_every_vehicle_beyond_the_first_gets_its_own_viewport() -> None:
     # second vehicle's image had missing ground while still publishing normally.
     config = IsaacCoreConfig(
         vehicles={
-            "lead": {"cameras": {"eo": {"resolution": (1280, 720)}}},
-            "wing": {"cameras": {"eo": {"resolution": (640, 480)}}},
+            "lead": {"camera": {"resolution": (1280, 720)}},
+            "wing": {"camera": {"resolution": (640, 480)}},
         },
     )
     runtime = SimulationRuntime.__new__(SimulationRuntime)
@@ -248,7 +248,7 @@ def test_every_vehicle_beyond_the_first_gets_its_own_viewport() -> None:
 
 
 def test_a_single_vehicle_opens_no_extra_viewport() -> None:
-    config = IsaacCoreConfig(vehicles={"drone_0": {"cameras": {"eo": {}}}})
+    config = IsaacCoreConfig(vehicles={"drone_0": {"camera": {}}})
     runtime = SimulationRuntime.__new__(SimulationRuntime)
     runtime._config = config
     calls: list[object] = []
@@ -269,9 +269,9 @@ def test_the_startup_viewport_is_never_renamed() -> None:
     # "Viewport" and then calls .get_frame() on the None it gets back -- an AttributeError on every
     # launch. Cosmetic consistency is not worth a startup error.
     for config in (
-        IsaacCoreConfig(vehicles={"lead": {"cameras": {"eo": {}}}, "wing": {"cameras": {"eo": {}}}}),
-        IsaacCoreConfig(vehicles={"drone_0": {"cameras": {"eo": {}}}}),
-        IsaacCoreConfig(sim={"headless": True}, vehicles={"lead": {"cameras": {"eo": {}}}}),
+        IsaacCoreConfig(vehicles={"lead": {"camera": {}}, "wing": {"camera": {}}}),
+        IsaacCoreConfig(vehicles={"drone_0": {"camera": {}}}),
+        IsaacCoreConfig(sim={"headless": True}, vehicles={"lead": {"camera": {}}}),
     ):
         runtime = SimulationRuntime.__new__(SimulationRuntime)
         runtime._config = config
@@ -279,6 +279,6 @@ def test_the_startup_viewport_is_never_renamed() -> None:
 
 
 def test_no_kit_startup_argument_renames_the_viewport_window() -> None:
-    config = IsaacCoreConfig(vehicles={"drone_0": {"cameras": {"eo": {}}}})
+    config = IsaacCoreConfig(vehicles={"drone_0": {"camera": {}}})
     args = _BareRuntime(config)._kit_startup_args()
     assert not [arg for arg in args if "windowName" in arg]

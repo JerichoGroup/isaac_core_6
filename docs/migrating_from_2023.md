@@ -97,3 +97,18 @@ tileset_server_url = "http://your-server:8088"
   message array. Index `i` is the same object in every array.
 - **Out-of-range distance readings** saturate at the rated limits rather than reporting infinity, so a
   consumer casting to `int` no longer crashes when the sensor sees nothing.
+
+### Cameras have no name
+
+`[vehicles.<id>.cameras.eo]` from earlier versions of this repo is now `[vehicles.<id>.camera]`. A
+vehicle has exactly one camera, and the loader rejects the old table with a message naming the new
+form rather than a generic validation error.
+
+The name existed to distinguish cameras that could not coexist: the schema accepted several while the
+planner composed only the first. An extra imaging sensor -- thermal, for instance -- arrives as a
+feature layer instead. Layers mount under the same vehicle, so it moves with the airframe and its
+gimbal and brings its own camera prim, topic and RTSP node. See
+[authoring_layers.md](authoring_layers.md).
+
+Topics lost a level with the name: there is no `/isaac_core/eo/image_rgb`, only
+`/isaac_core/image_rgb`, namespaced by vehicle when there is more than one.

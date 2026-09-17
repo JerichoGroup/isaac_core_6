@@ -12,8 +12,8 @@ version. This is the same path with the verification steps filled in.
 isaac-core doctor
 ```
 
-This is the fastest way to catch the two things that most often go wrong: an Isaac Sim install that is
-not where `$ISAACSIM_PATH` claims, and the package not installed into Isaac's own interpreter. Each
+This is the fastest way to catch the two things that most often go wrong: an Isaac Sim install
+somewhere the probe does not look, and the package not installed into Isaac's own interpreter. Each
 failure line prints the exact command that fixes it.
 
 **Expect:** every check `OK`, and a reported Isaac Sim version of 6.0.1 or newer.
@@ -21,7 +21,7 @@ failure line prints the exact command that fixes it.
 If it reports the package missing from Isaac's Python:
 
 ```bash
-$ISAAC_PATH/python.sh -m pip install -e ".[sim]"
+/path/to/isaacsim/python.sh -m pip install -e ".[sim]"
 ```
 
 ## 2. Make sure you have terrain to look at

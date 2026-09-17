@@ -299,7 +299,7 @@ def test_dump_toml_round_trip_with_custom_values(tmp_path: Path) -> None:
         vehicles={
             "lead": VehicleConfig(
                 udp_port=40000,
-                cameras={"eo": CameraConfig(fov_deg=90.0, resolution=(1920, 1080))},
+                camera=CameraConfig(fov_deg=90.0, resolution=(1920, 1080)),
             ),
         },
     )
@@ -330,14 +330,14 @@ def test_dump_toml_round_trip_preserves_per_vehicle_derived_ports(tmp_path: Path
     # skipped, and both vehicles asked for 8554 -> "Address already in use". The existing round-trip
     # test compared configs for *equality*, which passed while the behaviour differed.
     original = load(cli_overrides={"vehicles.lead.pose_source": "udp", "vehicles.wing.pose_source": "udp"})
-    before = {v: original.resolved_rtsp_port(v, "eo") for v in original.vehicles}
+    before = {v: original.resolved_rtsp_port(v) for v in original.vehicles}
     assert before == {"lead": 8554, "wing": 8555}
 
     path = tmp_path / "resolved.toml"
     path.write_text(dump_toml(original), encoding="utf-8")
     reloaded = load(path=path)
 
-    after = {v: reloaded.resolved_rtsp_port(v, "eo") for v in reloaded.vehicles}
+    after = {v: reloaded.resolved_rtsp_port(v) for v in reloaded.vehicles}
     assert after == before, "a dump/reload changed the derived RTSP ports"
 
 
@@ -356,8 +356,8 @@ def test_an_explicitly_pinned_rtsp_port_is_never_offset() -> None:
     # The other half of the contract: pinning a port must give exactly that port.
     config = load(
         cli_overrides={
-            "vehicles.lead.cameras.eo.rtsp_port": 9000,
+            "vehicles.lead.camera.rtsp_port": 9000,
             "vehicles.wing.pose_source": "udp",
         }
     )
-    assert config.resolved_rtsp_port("lead", "eo") == 9000
+    assert config.resolved_rtsp_port("lead") == 9000

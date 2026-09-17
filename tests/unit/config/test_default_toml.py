@@ -47,9 +47,8 @@ def test_default_config_describes_a_working_single_vehicle_setup() -> None:
     config = IsaacCoreConfig(**_load_default_toml())
     assert config.is_single_vehicle
     assert list(config.vehicles) == ["drone_0"]
-    assert list(config.vehicles["drone_0"].cameras) == ["eo"]
     # Single vehicle, single camera collapses to the flat legacy topic names.
-    assert config.topic_resolver("drone_0", "eo").resolve("image_rgb") == "/isaac_core/image_rgb"
+    assert config.topic_resolver("drone_0").resolve("image_rgb") == "/isaac_core/image_rgb"
 
 
 def test_default_config_ships_no_hardcoded_tile_server() -> None:

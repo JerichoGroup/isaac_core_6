@@ -7,7 +7,7 @@
 # Isaac Sim's bundled interpreter is a SEPARATE environment and needs its own
 # copy of these:
 #
-#     $ISAACSIM_PATH/python.sh -m pip install -r requirements.txt
+#     <isaac-sim>/python.sh -m pip install -r requirements.txt
 #
 # This file and [project.dependencies] in pyproject.toml must agree.
 # tests/unit/test_packaging.py fails if they drift apart.

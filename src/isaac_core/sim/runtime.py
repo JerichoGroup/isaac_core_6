@@ -606,10 +606,7 @@ class SimulationRuntime:
             ``(width, height)`` for the viewport window.
 
         """
-        cameras = self._config.vehicles[vehicle_id].cameras
-        if not cameras:
-            return (1280, 720)
-        camera = cameras[next(iter(cameras))]
+        camera = self._config.vehicles[vehicle_id].camera
         width, height = camera.resolution
         return (int(width), int(height))
 

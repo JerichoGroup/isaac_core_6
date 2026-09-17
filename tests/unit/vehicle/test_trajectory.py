@@ -242,13 +242,37 @@ def test_path_rejects_non_positive_speed() -> None:
         PathTrajectory(waypoints=wps, speed_mps=0.0)
 
 
-def test_path_exact_sample_count() -> None:
+def test_path_emits_one_sample_per_step_plus_the_arrival() -> None:
+    # The extra sample is the final waypoint itself. Whole steps alone left the path short by up to
+    # one step, so a path asked to end at 1100 m ended at 1098.7 and never arrived.
     wps = (Lla(32.0, 35.0, 100.0), Lla(32.001, 35.0, 100.0))
     path = PathTrajectory(waypoints=wps, speed_mps=5.0)
     rate = 30.0
     poses = list(path.poses(rate_hz=rate))
-    expected = int(path.duration_s * rate)
-    assert len(poses) == expected
+    assert len(poses) == int(path.duration_s * rate) + 1
+
+
+@pytest.mark.parametrize("speed_mps", [200.0, 57.3, 13.0, 5.0])
+def test_path_arrives_exactly_at_its_final_waypoint(speed_mps: float) -> None:
+    # "Fly to this point" has to end at that point, at any speed: the step count truncates, so the
+    # remainder used to be dropped rather than flown.
+    end = Lla(32.23, 35.26, 1100.0)
+    poses = list(PathTrajectory(waypoints=(Lla(32.22, 35.25, 900.0), end), speed_mps=speed_mps).poses(rate_hz=30.0))
+    final = poses[-1].position
+    assert final.lat_deg == pytest.approx(end.lat_deg, abs=1e-12)
+    assert final.lon_deg == pytest.approx(end.lon_deg, abs=1e-12)
+    assert final.alt_m == pytest.approx(end.alt_m, abs=1e-9)
+
+
+def test_path_through_three_waypoints_still_arrives() -> None:
+    end = Lla(32.24, 35.27, 1200.0)
+    poses = list(
+        PathTrajectory(
+            waypoints=(Lla(32.22, 35.25, 900.0), Lla(32.23, 35.26, 1000.0), end),
+            speed_mps=100.0,
+        ).poses(rate_hz=30.0)
+    )
+    assert poses[-1].position.alt_m == pytest.approx(end.alt_m, abs=1e-9)
 
 
 def test_path_hits_waypoints() -> None:

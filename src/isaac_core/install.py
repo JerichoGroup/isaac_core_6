@@ -1,17 +1,16 @@
 """Locate and validate an Isaac Sim installation.
 
-The resolution order avoids trusting ``$ISAACSIM_PATH`` blindly -- that variable
+The resolution order deliberately ignores every environment variable -- such a variable
 is stale on many team machines, pointing at the old 2023.1.1 install while the
 real Isaac Sim 6.x lives elsewhere.
 
-Order: explicit path -> config -> ``$ISAACSIM_PATH`` *if it validates* -> probe
-a list of known candidate locations. "Validates" means the directory actually
-contains ``python.sh``, ``isaac-sim.sh`` and a ``VERSION`` file.
+Order: explicit path -> config -> probe a list of known candidate locations.
+"Validates" means the directory actually contains ``python.sh``, ``isaac-sim.sh``
+and a ``VERSION`` file.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Sequence
 
@@ -35,7 +34,6 @@ _ABSOLUTE_CANDIDATES: tuple[str, ...] = (
 )
 
 # Environment variable that might point at the install (often stale).
-_ENV_VAR = "ISAACSIM_PATH"
 
 # Major version required for the new extension namespace (isaacsim.* vs omni.isaac.*).
 _MINIMUM_SUPPORTED_MAJOR = 6
@@ -175,26 +173,29 @@ class IsaacInstall:
         structurally valid but unsupported install (say a leftover 2023.1.1) is
         remembered as a fallback and used only when nothing better is found.
 
-        That distinction is the whole point of this function. On a machine that has
-        been through several Isaac Sim versions, ``$ISAACSIM_PATH`` very often still
-        points at an old install that passes every structural check while being
-        useless -- every ``omni.isaac.*`` extension was renamed to ``isaacsim.*`` in
-        4.5, so our extensions cannot load there. Preferring the newest supported
-        install means the tooling does the right thing without the user having to
-        notice their shell configuration is stale.
+        That distinction is the whole point of this function. On a machine that has been
+        through several Isaac Sim versions, an old install passes every structural check
+        while being useless -- every ``omni.isaac.*`` extension was renamed to
+        ``isaacsim.*`` in 4.5, so our extensions cannot load there. Preferring the newest
+        supported install means the tooling does the right thing on its own.
+
+        No environment variable is consulted. A shell variable naming an install is a
+        setting the user cannot see and usually cannot remember setting, and the value is
+        stale more often than not. Where it is genuinely needed, an explicit
+        ``--isaac-path`` says the same thing visibly and only for the command that needs it.
 
         Sources, in order:
             1. *explicit_path* argument
             2. *config_path* from the configuration file
-            3. ``$ISAACSIM_PATH`` from the environment
-            4. Probe a list of known candidate locations
+            3. Probe a list of known candidate locations
 
         Args:
             explicit_path: Directly supplied path (e.g. from a CLI ``--isaac-path``
                 flag).
             config_path: Path read from the configuration file's
                 ``sim.isaac_sim_path``.
-            environ: Environment variable mapping. Defaults to ``os.environ``.
+            environ: Accepted and ignored, so an existing caller keeps working. No
+                environment variable takes part in resolution.
             extra_candidates: Additional directories to probe after the built-in
                 candidates.
 
@@ -207,7 +208,6 @@ class IsaacInstall:
 
         """
 
-        env_map = environ if environ is not None else dict(os.environ)
         tried: list[str] = []
         fallback: IsaacInstall | None = None
 
@@ -242,12 +242,6 @@ class IsaacInstall:
 
         if config_path is not None:
             found = consider(config_path, "config")
-            if found is not None:
-                return found
-
-        env_value = env_map.get(_ENV_VAR)
-        if env_value:
-            found = consider(Path(env_value), f"${_ENV_VAR}")
             if found is not None:
                 return found
 

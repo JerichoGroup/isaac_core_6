@@ -20,7 +20,7 @@ import tempfile
 from typing import Any
 
 from isaac_core.contracts.ports import DEFAULT_CONTROL_PLANE_PORT
-from isaac_core.control.client import ControlClient
+from isaac_core.control.client import DEFAULT_CALL_TIMEOUT_S, ControlClient
 from isaac_core.control.messages import Method
 
 logger = logging.getLogger(__name__)
@@ -416,6 +416,7 @@ class Sim:
         *,
         token: str | None = None,
         timeout_s: float = 30.0,
+        call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S,
     ) -> SimSession:
         """Connect to an already-running simulator.
 
@@ -428,6 +429,9 @@ class Sim:
             port: Control plane port.
             token: Authentication token (required for non-loopback hosts).
             timeout_s: Maximum time to wait for the server to become ready.
+            call_timeout_s: How long any single call waits for a reply. Raise it for a heavy stage:
+                methods that run on the simulator's main thread wait for that thread, and a
+                two-vehicle stage was measured holding it for longer than the default.
 
         Returns:
             A connected :class:`SimSession`.
@@ -436,7 +440,7 @@ class Sim:
             TimeoutError: If the server does not become ready within ``timeout_s``.
 
         """
-        client = ControlClient(host=host, port=port, token=token)
+        client = ControlClient(host=host, port=port, token=token, call_timeout_s=call_timeout_s)
         client.wait_until_ready(timeout_s=timeout_s)
         logger.info("attached to simulation at %s:%d", host, port)
         return SimSession(client)
@@ -450,13 +454,14 @@ class Sim:
         scene: str = "earth",
         headless: bool = False,
         timeout_s: float = 120.0,
+        call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S,
         overrides: dict[str, Any] | None = None,
         launcher: Any = None,
     ) -> SimSession:
         """Launch a new simulator instance and connect to it.
 
         Resolves the Isaac install (validating it rather than trusting
-        ``$ISAACSIM_PATH``), writes the fully resolved config to a temporary file, spawns
+        the probed candidates), writes the fully resolved config to a temporary file, spawns
         ``python.sh -m isaac_core.sim`` in Isaac's bundled interpreter, and waits for the
         control plane to answer. Port opening is the readiness signal.
 
@@ -469,6 +474,9 @@ class Sim:
             scene: Scene to load by logical name.
             headless: Whether to launch headless.
             timeout_s: Maximum time to wait for readiness after spawning.
+            call_timeout_s: How long any single call waits for a reply, once running. Raise it for a
+                heavy stage: main-thread methods wait for that thread, and a two-vehicle stage was
+                measured holding it for longer than the default.
             overrides: Extra dotted config keys, e.g. ``{"features.enabled": ["bbox"]}`` or
                 ``{"vehicles.wing.pose_source": "udp"}``. Anything the explicit arguments also
                 set wins over these, so ``headless`` cannot be silently contradicted.
@@ -488,8 +496,6 @@ class Sim:
         from isaac_core.config.loader import dump_toml
         from isaac_core.install import IsaacInstall
 
-        install = IsaacInstall.locate()
-
         # The simulator reads one fully resolved TOML rather than a pile of flags, so
         # precedence is decided in exactly one place. Same mechanism the CLI uses.
         # Explicit arguments are applied last so they cannot be silently contradicted by an
@@ -503,6 +509,12 @@ class Sim:
             }
         )
         config = load(cli_overrides=cli_overrides)
+
+        # Resolved after the config, so sim.isaac_sim_path can name an install outside the probed
+        # locations. Nothing reads an environment variable, so without this a non-standard install
+        # would be reachable only from the CLI.
+        configured = config.sim.isaac_sim_path
+        install = IsaacInstall.locate(config_path=Path(configured) if configured else None)
         config_dir = Path(tempfile.mkdtemp(prefix="isaac-core-launch-"))
         config_path = config_dir / "resolved.toml"
         config_path.write_text(dump_toml(config), encoding="utf-8")
@@ -512,7 +524,7 @@ class Sim:
         logger.info("launching simulator: %s", " ".join(command))
         process = spawn(command)
 
-        client = ControlClient(host=host, port=port)
+        client = ControlClient(host=host, port=port, call_timeout_s=call_timeout_s)
         session = SimSession(client, process=process)
         try:
             session.wait_until_ready(timeout_s=timeout_s)

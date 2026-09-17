@@ -21,7 +21,7 @@ from isaac_core.contracts.frames import PoseSource, RotationFrame
 def test_empty_config_yields_one_vehicle_with_one_camera() -> None:
     config = IsaacCoreConfig()
     assert list(config.vehicles) == ["drone_0"]
-    assert list(config.vehicles["drone_0"].cameras) == ["eo"]
+    assert isinstance(config.vehicles["drone_0"].camera, CameraConfig)
 
 
 def test_default_pose_source_is_udp() -> None:
@@ -100,9 +100,11 @@ def test_non_positive_resolution_is_rejected(resolution: tuple[int, int]) -> Non
         CameraConfig(resolution=resolution)
 
 
-def test_vehicle_without_a_camera_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="at least one camera"):
-        VehicleConfig(cameras={})
+def test_the_old_named_camera_table_is_rejected_with_the_new_form() -> None:
+    # [vehicles.x.cameras.eo] was the shape through V2. Left to the strict-extra rule it fails with
+    # "Extra inputs are not permitted", which does not say what to write instead.
+    with pytest.raises(ValidationError, match=r"\[vehicles\.<id>\.camera\]"):
+        VehicleConfig(cameras={"eo": CameraConfig()})
 
 
 def test_config_without_a_vehicle_is_rejected() -> None:
@@ -203,44 +205,33 @@ def test_malformed_explicit_mount_is_rejected() -> None:
 
 def test_one_vehicle_one_camera_gives_flat_topics() -> None:
     config = IsaacCoreConfig()
-    resolver = config.topic_resolver("drone_0", "eo")
+    resolver = config.topic_resolver("drone_0")
     assert resolver.resolve("image_rgb") == "/isaac_core/image_rgb"
 
 
-def test_one_vehicle_two_cameras_namespaces_by_camera_only() -> None:
-    config = IsaacCoreConfig(vehicles={"drone_0": VehicleConfig(cameras={"eo": CameraConfig(), "ir": CameraConfig()})})
-    assert config.topic_resolver("drone_0", "ir").resolve("image_rgb") == "/isaac_core/ir/image_rgb"
+def test_a_camera_never_adds_a_topic_segment() -> None:
+    # One camera per vehicle, unnamed, so there is nothing for a camera segment to disambiguate.
+    assert IsaacCoreConfig().topic_resolver("drone_0").camera is None
 
 
-def test_swarm_namespaces_by_vehicle_and_camera() -> None:
-    config = IsaacCoreConfig(
-        vehicles={
-            "lead": VehicleConfig(cameras={"eo": CameraConfig(), "ir": CameraConfig()}),
-            "wing_1": VehicleConfig(),
-        }
-    )
-    assert config.topic_resolver("lead", "eo").resolve("image_rgb") == "/isaac_core/lead/eo/image_rgb"
-
-
-def test_swarm_with_one_camera_each_still_namespaces_by_vehicle() -> None:
+def test_swarm_namespaces_by_vehicle() -> None:
     config = IsaacCoreConfig(vehicles={"lead": VehicleConfig(), "wing_1": VehicleConfig()})
-    assert config.topic_resolver("wing_1", "eo").resolve("image_rgb") == "/isaac_core/wing_1/image_rgb"
+    assert config.topic_resolver("lead").resolve("image_rgb") == "/isaac_core/lead/image_rgb"
+    assert config.topic_resolver("wing_1").resolve("image_rgb") == "/isaac_core/wing_1/image_rgb"
 
 
-def test_vehicle_scoped_topics_ignore_the_camera_level() -> None:
+def test_vehicle_scoped_and_camera_scoped_topics_coincide() -> None:
+    # With no camera level the two scopes are the same string, which is the point of removing it.
     config = IsaacCoreConfig(vehicles={"lead": VehicleConfig(), "wing_1": VehicleConfig()})
-    resolver = config.topic_resolver("lead", "eo")
+    resolver = config.topic_resolver("lead")
     assert resolver.vehicle_scoped("global_pose") == "/isaac_core/lead/global_pose"
+    assert resolver.resolve("image_rgb") == "/isaac_core/lead/image_rgb"
 
 
-def test_camera_keys_are_dotted_and_ordered() -> None:
-    config = IsaacCoreConfig(
-        vehicles={
-            "lead": VehicleConfig(cameras={"eo": CameraConfig(), "ir": CameraConfig()}),
-            "wing_1": VehicleConfig(),
-        }
-    )
-    assert config.camera_keys() == ("lead.eo", "lead.ir", "wing_1.eo")
+def test_camera_keys_are_the_vehicle_ids_in_order() -> None:
+    # A camera no longer has a key of its own, so a vehicle id identifies one uniquely.
+    config = IsaacCoreConfig(vehicles={"lead": VehicleConfig(), "wing_1": VehicleConfig()})
+    assert config.camera_keys() == ("lead", "wing_1")
 
 
 def test_is_single_vehicle_reflects_the_vehicle_count() -> None:

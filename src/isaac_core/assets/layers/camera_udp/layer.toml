@@ -40,7 +40,7 @@ resolve = "image_topic"
 [[bindings]]
 prim = "{mount}/Xform/main_camera_01"
 attribute = "focalLength"
-config = "vehicles.{instance}.cameras.{camera}.focal_length_mm"
+config = "vehicles.{instance}.camera.focal_length_mm"
 
 [[bindings]]
 # Derived from fov_deg + focal_length_mm so the field of view actually takes effect.
@@ -58,13 +58,13 @@ resolve = "camera_vertical_aperture"
 # Lens focus distance in scene units; only visible when fStop is non-zero.
 prim = "{mount}/Xform/main_camera_01"
 attribute = "focusDistance"
-config = "vehicles.{instance}.cameras.{camera}.focus_distance"
+config = "vehicles.{instance}.camera.focus_distance"
 
 [[bindings]]
 # f-number. 0 means depth of field OFF, which is the default pinhole look.
 prim = "{mount}/Xform/main_camera_01"
 attribute = "fStop"
-config = "vehicles.{instance}.cameras.{camera}.f_stop"
+config = "vehicles.{instance}.camera.f_stop"
 
 [[bindings]]
 # Native RTSP stream (D21): always on, so these are the only knobs.
@@ -102,9 +102,9 @@ config = "vehicles.{instance}.gimbal.start_yaw_deg"
 [[bindings]]
 prim = "{mount}/CameraImageExport/isaac_create_render_product"
 attribute = "inputs:width"
-config = "vehicles.{instance}.cameras.{camera}.width"
+config = "vehicles.{instance}.camera.width"
 
 [[bindings]]
 prim = "{mount}/CameraImageExport/isaac_create_render_product"
 attribute = "inputs:height"
-config = "vehicles.{instance}.cameras.{camera}.height"
+config = "vehicles.{instance}.camera.height"

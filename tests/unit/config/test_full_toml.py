@@ -109,14 +109,11 @@ def test_no_comment_block_runs_longer_than_two_lines() -> None:
     assert not offenders, f"comment blocks longer than two lines end at these line numbers: {offenders}"
 
 
-def test_it_does_not_advertise_a_second_camera_per_vehicle() -> None:
-    # The schema accepts one but the planner composes only the first, so showing it would document a
-    # feature that does not work.
+def test_it_shows_exactly_one_unnamed_camera_table_per_vehicle() -> None:
+    # A vehicle has one camera and it has no name. Showing [vehicles.x.cameras.eo] would document a
+    # shape the loader now rejects, and showing two would document a feature that does not exist.
     text = FULL_CONFIG.read_text(encoding="utf-8")
-    camera_tables = re.findall(r"^\s*#?\s*\[vehicles\.[a-z_0-9]+\.cameras\.([a-z_0-9]+)\]", text, re.M)
-    per_vehicle: dict[str, list[str]] = {}
-    for match in re.finditer(r"^\s*#?\s*\[vehicles\.([a-z_0-9]+)\.cameras\.([a-z_0-9]+)\]", text, re.M):
-        per_vehicle.setdefault(match.group(1), []).append(match.group(2))
-    assert camera_tables, "no camera table found, so this guard is not checking anything"
-    for vehicle, cameras in per_vehicle.items():
-        assert len(cameras) == 1, f"{vehicle} shows {cameras}; only the first camera is composed"
+    assert "cameras" not in text, "the old named-camera table is still shown"
+    tables = re.findall(r"^\s*#?\s*\[vehicles\.([a-z_0-9]+)\.camera\]", text, re.M)
+    assert tables, "no camera table found, so this guard is not checking anything"
+    assert len(tables) == len(set(tables)), f"a vehicle shows more than one camera table: {tables}"

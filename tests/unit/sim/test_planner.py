@@ -252,58 +252,24 @@ config = "vehicles.{instance}.rotation_frame"
 # -- {camera} placeholder -----------------------------------------------------
 
 
-def test_camera_placeholder_substitutes_in_prim_and_config() -> None:
-    bindings = (
-        {
-            "prim": "/Environment/{instance}/{camera}/node",
-            "attribute": "inputs:width",
-            "config": "vehicles.{instance}.cameras.{camera}.width",
-        },
+def test_a_config_key_needs_only_the_instance_placeholder() -> None:
+    # {camera} existed to template a camera's name. A vehicle now has exactly one camera and it has
+    # no name, so a binding names the camera table directly and only {instance} is substituted.
+    manifest = _manifest(
+        "cam",
+        mount="/Environment/{instance}",
+        bindings=(
+            {
+                "prim": "{mount}/node",
+                "attribute": "inputs:x",
+                "config": "vehicles.{instance}.camera.fov_deg",
+            },
+        ),
     )
-    m = _manifest("cam", mount="/Environment/{instance}", bindings=bindings)
-
-    plan = plan_features(["cam"], {"cam": m}, _caps(), instance="drone_0", camera="rgb")
-
-    resolved = plan.enabled[0].resolved_bindings[0]
-    assert resolved.prim == "/Environment/drone_0/rgb/node"
-    assert resolved.config == "vehicles.drone_0.cameras.rgb.width"
-
-
-def test_camera_placeholder_resolves_a_non_eo_camera_name() -> None:
-    # The actual bug: a hardcoded "eo" meant a config whose camera was named "rgb" died
-    # at compose time with ConfigKeyError: vehicles.drone_0.cameras.eo.width does not
-    # exist. Templating {camera} makes the binding follow the real camera key.
-    bindings = (
-        {"prim": "{mount}/node", "attribute": "inputs:width", "config": "vehicles.{instance}.cameras.{camera}.width"},
-    )
-    m = _manifest("cam", mount="/Environment/{instance}", bindings=bindings)
-
-    plan = plan_features(["cam"], {"cam": m}, _caps(), instance="drone_0", camera="rgb")
-
-    assert plan.enabled[0].resolved_bindings[0].config == "vehicles.drone_0.cameras.rgb.width"
-
-
-def test_literal_camera_key_still_resolves_for_backward_compatibility() -> None:
-    # Third-party layers may still hardcode a camera key. A literal must pass through
-    # untouched so those manifests keep composing.
-    bindings = (
-        {"prim": "{mount}/node", "attribute": "inputs:width", "config": "vehicles.{instance}.cameras.eo.width"},
-    )
-    m = _manifest("cam", mount="/Environment/{instance}", bindings=bindings)
-
-    plan = plan_features(["cam"], {"cam": m}, _caps(), instance="drone_0", camera="rgb")
-
-    assert plan.enabled[0].resolved_bindings[0].config == "vehicles.drone_0.cameras.eo.width"
-
-
-def test_camera_placeholder_in_config_without_a_camera_raises() -> None:
-    bindings = (
-        {"prim": "{mount}/node", "attribute": "inputs:width", "config": "vehicles.{instance}.cameras.{camera}.width"},
-    )
-    m = _manifest("cam", mount="/Environment/{instance}", bindings=bindings)
-
-    with pytest.raises(PlanningError, match="camera"):
-        plan_features(["cam"], {"cam": m}, _caps(), instance="drone_0")
+    plan = plan_features(["cam"], {"cam": manifest}, _caps(), instance="drone_7")
+    binding = plan.enabled[0].resolved_bindings[0]
+    assert binding.prim == "/Environment/drone_7/node"
+    assert binding.config == "vehicles.drone_7.camera.fov_deg"
 
 
 def test_unknown_placeholder_in_config_key_raises_rather_than_passing_through() -> None:
@@ -313,4 +279,4 @@ def test_unknown_placeholder_in_config_key_raises_rather_than_passing_through() 
     m = _manifest("cam", mount="/Environment/{instance}", bindings=bindings)
 
     with pytest.raises(PlanningError, match="unknown placeholder"):
-        plan_features(["cam"], {"cam": m}, _caps(), instance="drone_0", camera="eo")
+        plan_features(["cam"], {"cam": m}, _caps(), instance="drone_0")

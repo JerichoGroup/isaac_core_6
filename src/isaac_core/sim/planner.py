@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 from isaac_core.contracts.prims import placeholders, render
 from isaac_core.sim.capabilities import StageCapabilities
-from isaac_core.sim.manifest import CAMERA, INSTANCE, LayerManifest
+from isaac_core.sim.manifest import INSTANCE, LayerManifest
 
 
 class PlanningError(Exception):
@@ -49,7 +49,6 @@ class PlannedLayer:
         manifest: The validated layer manifest.
         resolved_bindings: Bindings with concrete prim paths.
         instance: The vehicle id this layer was planned for.
-        camera: The camera id this layer was planned for, when camera-scoped.
 
     """
 
@@ -58,7 +57,6 @@ class PlannedLayer:
     # The identity this layer was planned for. Carried per layer rather than assumed globally so a
     # swarm can compose one camera layer per vehicle and each resolves its own ports and topics.
     instance: str = "default"
-    camera: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,40 +144,29 @@ def _render_mount(mount_template: str, instance: str) -> str:
     return mount_template.format(instance=instance)
 
 
-def _render_config_key(template: str, *, instance: str, camera: str | None) -> str:
+def _render_config_key(template: str, *, instance: str) -> str:
     """Substitute placeholders in a binding's dotted config key.
 
-    Both ``{instance}`` and ``{camera}`` are substituted here, mirroring what
+    ``{instance}`` is substituted here, mirroring what
     :func:`~isaac_core.contracts.prims.render` does for prim paths. A leftover
-    ``{placeholder}`` raises rather than silently passing through: an unrendered key
-    reaches the configurator as a literal like ``vehicles.{camera}.x``, which fails far
-    from the manifest with a config-key error that does not name the real mistake.
+    ``{placeholder}`` raises rather than silently passing through: an unrendered key reaches
+    the configurator as a literal like ``vehicles.{instance}.x``, which fails far from the
+    manifest with a config-key error that does not name the real mistake.
 
     Args:
         template: The dotted config key from the binding, possibly templated.
         instance: The instance identifier, normally the vehicle id.
-        camera: The camera key to substitute for ``{camera}``, or ``None`` if this
-            layer instance serves no specific camera.
 
     Returns:
         The config key with all supported placeholders substituted.
 
     Raises:
-        PlanningError: If a ``{camera}`` placeholder is present but no camera was
-            supplied, or if any unknown placeholder remains.
+        PlanningError: If any unknown placeholder remains.
 
     """
     found = placeholders(template)
-    if CAMERA in found and camera is None:
-        msg = (
-            f"config key {template!r} uses {{{CAMERA}}} but no camera was supplied to the "
-            f"planner; pass a camera id to resolve it"
-        )
-        raise PlanningError(msg)
 
     substitutions = {INSTANCE: instance}
-    if camera is not None:
-        substitutions[CAMERA] = camera
 
     unknown = found - substitutions.keys()
     if unknown:
@@ -196,7 +183,6 @@ def _resolve_bindings(
     manifest: LayerManifest,
     mount: str,
     instance: str,
-    camera: str | None,
 ) -> tuple[ResolvedBinding, ...]:
     """Render each binding's prim template and config key into concrete strings.
 
@@ -205,30 +191,23 @@ def _resolve_bindings(
     ``{instance}`` becomes a real vehicle id, and leaving it unrendered produced a
     ``ConfigKeyError`` at compose time complaining that ``vehicles.{instance}`` does not
     exist. "Resolved" has to mean resolved on every axis, or the name lies. The same is
-    true of ``{camera}``, which lets a binding template the camera key instead of
     hardcoding one.
 
     Args:
         manifest: The layer manifest whose bindings to resolve.
         mount: The concrete mount path for this layer.
         instance: The instance identifier, normally the vehicle id.
-        camera: The camera key to substitute for ``{camera}``, or ``None`` if this layer
-            instance serves no specific camera.
 
     Returns:
         Resolved bindings with concrete prim paths and config keys.
 
     """
     render_substitutions = {"mount": mount, "instance": instance}
-    if camera is not None:
-        render_substitutions["camera"] = camera
 
     resolved: list[ResolvedBinding] = []
     for binding in manifest.bindings:
         concrete_prim = render(binding.prim, **render_substitutions)
-        concrete_config = (
-            _render_config_key(binding.config, instance=instance, camera=camera) if binding.config is not None else None
-        )
+        concrete_config = _render_config_key(binding.config, instance=instance) if binding.config is not None else None
         resolved.append(
             ResolvedBinding(
                 prim=concrete_prim,
@@ -259,7 +238,6 @@ def plan_features(
     *,
     strict: bool = False,
     instance: str = "default",
-    camera: str | None = None,
 ) -> FeaturePlan:
     """Decide which layers to compose and which to skip.
 
@@ -274,17 +252,12 @@ def plan_features(
             :func:`~isaac_core.sim.capabilities.probe`.
         strict: If ``True``, raise :class:`PlanningError` instead of skipping.
         instance: Instance identifier for prim path template substitution.
-        camera: Camera key for ``{camera}`` substitution in prim paths and config keys.
-            A layer instance today serves one camera; the caller passes that camera's key
-            (for v1 parity, the vehicle's first camera). ``None`` means this plan has no
-            camera, which is only valid when no binding references ``{camera}``.
 
     Returns:
         A complete feature plan.
 
     Raises:
         PlanningError: In strict mode, if any requested layer cannot be composed, or if
-            a binding references ``{camera}`` without a camera being supplied.
 
     """
     builder = _PlanBuilder()
@@ -313,13 +286,12 @@ def plan_features(
                 continue
 
             mount = _render_mount(manifest.mount, instance=instance)
-            resolved = _resolve_bindings(manifest, mount=mount, instance=instance, camera=camera)
+            resolved = _resolve_bindings(manifest, mount=mount, instance=instance)
             builder.enabled.append(
                 PlannedLayer(
                     manifest=manifest,
                     resolved_bindings=resolved,
                     instance=instance,
-                    camera=camera,
                 )
             )
             admitted_this_pass.append(layer_id)

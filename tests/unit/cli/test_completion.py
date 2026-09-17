@@ -23,7 +23,7 @@ def test_config_keys_expand_default_dict_entries() -> None:
     # Dict-typed fields emit the concrete keys of the DEFAULT config (drone_0 / eo).
     keys = set(config_keys())
     assert "vehicles.drone_0.pose_source" in keys
-    assert "vehicles.drone_0.cameras.eo.fov_deg" in keys
+    assert "vehicles.drone_0.camera.fov_deg" in keys
 
 
 def test_config_keys_exclude_private_and_method_names() -> None:
@@ -50,7 +50,7 @@ def test_config_keys_are_sorted_and_unique() -> None:
         "sim.control_plane.port",
         "geo.enu_reference.lat_deg",
         "cesium.tileset_server_url",
-        "vehicles.drone_0.cameras.eo.fov_deg",
+        "vehicles.drone_0.camera.fov_deg",
     ],
 )
 def test_every_sampled_key_actually_resolves(key: str) -> None:

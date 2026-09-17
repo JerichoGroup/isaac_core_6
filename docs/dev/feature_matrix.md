@@ -20,7 +20,7 @@ cycle), or `finding` (see the findings section).
 
 ## 1. Control plane
 
-13 `Method` enum members, 15 registered handlers. Every handler is reachable from a shipped caller
+15 `Method` enum members, 15 registered handlers. Every handler is reachable from a shipped caller
 and every enum member has a handler — enforced by `control/test_method_coverage.py`.
 
 | Capability | Bucket | Evidence | Status |
@@ -73,8 +73,8 @@ the control plane agree.
 |---|---|---|---|
 | LLA ↔ ECEF ↔ ENU | A | `geo/test_enu.py` | pass |
 | NED→ENU with correct axis semantics | A | `geo/test_camera_axes.py` (asserts look direction) | pass |
-| Gimbal composition in body frame | A | `geo/test_gimbal_axes.py` (asserts look direction) | pass |
-| Rotation frames (world/body) | A | `geo/test_rotation_frames.py`, `test_rotation_pipeline.py` | pass |
+| Gimbal composition onto a **non-level** airframe | A | `geo/test_gimbal_axes.py`, `geo/test_gimbal_on_attitude.py` | pass |
+| Rotation frames (world/body), **two and three axes at once** | A | `geo/test_rotation_frames.py`, `test_rotation_pipeline.py`, `vehicle/test_multi_axis_rotation.py` | pass |
 | Saturating rangefinder limits | A | `contracts/test_rangefinder.py` | pass |
 | Georeference unification + mismatch guard | A | `sim/test_georeference.py` | pass |
 | Unit-suffix naming discipline (`_deg`/`_r`/`_m`) | A | `contracts/test_naming.py` | pass |
@@ -102,7 +102,7 @@ Four shipped layers: `camera_udp`, `camera_ros`, `distance_sensor`, `bbox`.
 | Binding prims exist in the USD | A | `test_usd_layers.py`, `test_usd_graph_wiring.py` | pass |
 | Dependency-ordered planning (fixed point, D25) | A | `sim/test_planner.py` | pass |
 | Third-party layers via `layer_search_paths` | A | `sim/test_discovery.py` | pass |
-| Entry-point layers from another package | A | `sim/test_discovery.py` | pass |
+| Entry-point layers from another package | — | not implemented; see `docs/dev/roadmap.md` | **not built** |
 | Multi-vehicle: per-vehicle mount, port, topics | A | `sim/test_configurator.py` | pass |
 | Single-vehicle output unchanged by swarm support | A | `sim/test_configurator.py` | pass |
 | Offscreen render products per camera | B | live: both image topics publish | pass |
@@ -115,11 +115,12 @@ Four console scripts.
 | Capability | Bucket | Evidence | Status |
 |---|---|---|---|
 | `isaac-core run` | A + B | `cli/test_main.py` | pass |
-| `isaac-core doctor` (validates a stale `$ISAACSIM_PATH`) | A | `cli/test_doctor.py`, `test_install_resolution.py` | pass |
+| `isaac-core doctor` (probes for the install, reads no environment variable) | A | `cli/test_doctor.py`, `test_install_resolution.py`, `test_no_isaac_env_var.py` | pass |
 | `isaac-core config dump` / `explain` | A | `cli/test_config_cmd.py` | pass |
-| Shell completion | A | `cli/test_completion.py` | pass |
+| Shell completion, generated from the schema | A | `cli/test_completion.py` | pass |
+| Shell completion, installed where a running shell finds it | A | `cli/test_completion_install.py` drives the installed script in a real bash | pass |
 | `isaac-core-inspect` (live prim read) | A + B | `debug/test_inspector.py` | pass |
-| `isaac-core-pose-sender` (tkinter GUI) | A + C | `debug/test_pose_sender_gui.py` | todo (C) |
+| `isaac-core-pose-sender` — tabs, per-tab pose source, readback | A + C | `debug/test_pose_sender_gui.py` | pass |
 | `isaac-core-mavlink` | A | `devkit/test_mavlink.py` | pass |
 
 ## 8. Configuration
@@ -235,6 +236,33 @@ since the axis fix. If it recurs, capture whether `gimbal target set to roll=…
 in the log for each command.
 
 ---
+
+### F8 — rows certified the implementation, not the thing a user touches — **AUDITED 2026-09-17**
+
+Six bugs shipped past a green suite because each test verified the code as built rather than the
+surface a user meets. Re-auditing every row against that pattern found:
+
+- **`Entry-point layers from another package` claimed pass and is not implemented.** The cited test
+  never mentions entry points and no `importlib.metadata` lookup exists. Row corrected to **not
+  built**; the roadmap already listed it as a gap, so the matrix was the only thing claiming otherwise.
+- **`Shell completion` cited the generator test only.** Generating a correct script and installing it
+  where a shell will load it are different claims; the installed path now has its own row.
+- **Gimbal composition was only ever tested on a level airframe** — the helper hardcodes
+  `(0, 0, 0)`. Measured with a non-level airframe the composition is correct (pitched -30 plus gimbal
+  -30 gives elevation -60; rolled 45 gives the bolted `sin30·cos45` tilt), so this was missing
+  coverage rather than a bug. Pinned now.
+- **`13 Method enum members` was wrong**; there are 15. A test now checks every count in this document
+  against the code, because a hand-maintained number in a certifying document always rots.
+
+Rows verified as genuinely strong, for contrast: the 51-byte packet is anchored to a hex literal
+captured from the 2023 encoder rather than round-tripped through our own; `isaac-core-inspect` drives a
+real `ControlClient` against a real `ControlServer` on an ephemeral port; freeze-on-bad-data covers
+seven distinct malformed inputs; `slew_towards` limits each axis independently along the shortest
+angular path, so the gimbal has none of the mid-path error that SLERP introduced elsewhere.
+
+**The rule this produces.** A row may only cite evidence that exercises the same entry point a user
+does. Testing a generator, a helper, or a default-shaped case is worth doing, but it does not certify
+the capability — and a row that says "pass" while the roadmap says "gap" means the matrix is wrong.
 
 ## What this matrix does **not** cover
 

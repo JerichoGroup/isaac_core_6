@@ -161,14 +161,18 @@ sudo apt install ros-humble-desktop-full
 ./scripts/setup.sh [--isaac-path /path/to/isaacsim]
 ```
 
-Five steps the script runs, in order:
+Six steps the script runs, in order:
 
 1. `pip install --user -r requirements.txt` - runtime dependencies into system Python
 2. `pip install --user -e .` - this package into system Python
-3. `$ISAAC_PATH/python.sh -m pip install -e ".[sim]"` - the same package into Isaac Sim's embedded Python 3.12
+3. `<isaac-sim>/python.sh -m pip install -e ".[sim]"` - the same package into Isaac Sim's embedded Python 3.12, at the install `setup.sh` found
 4. `scripts/link_extensions.sh` - symlink the OmniGraph extensions into `extsUser`
 5. `colcon build --packages-select isaac_core_ros2_msgs` - build the custom ROS2 messages
    (skipped if you have no ROS2)
+6. `isaac-core completion --install` - tab completion for commands, flags and every config key
+
+Completion needs a new shell, or `source ~/.bashrc`. It reads the config keys from the schema at
+completion time, so `--set vehicles.<TAB>` is always current rather than a list that rots.
 
 Then check the environment:
 
@@ -277,7 +281,7 @@ The camera is mounted per vehicle and driven by whichever pose source you choose
 [vehicles.drone_0]
 pose_source = "udp" # or "ros"
 
-[vehicles.drone_0.cameras.eo]
+[vehicles.drone_0.camera]
 fov_deg = 60.0
 resolution = [1280, 720]
 ```
@@ -301,7 +305,7 @@ side of the wire, not by the simulator:
 | MAVLink | `isaac-core-mavlink` | reads `GLOBAL_POSITION_INT` and `ATTITUDE`, sends the UDP packet |
 | Your own code | `UdpPoseTransport` | build a pose and `send()` it |
 | A canned flight | `scripts/send_test_pose.py` | hold, orbit, or fly a path |
-| Hand control | `isaac-core-pose-sender` | a GUI with sliders |
+| Hand control | `isaac-core-pose-sender` | a GUI, one tab per vehicle, UDP or ROS 2 per tab |
 | A recorded track | your own loop | replay poses through `UdpPoseTransport` |
 
 There is no `mavlink` or `replay` value for `pose_source`: they are adapters onto the UDP
@@ -419,7 +423,7 @@ ffplay rtsp://127.0.0.1:8554/stream
 ```
 
 ```toml
-[vehicles.drone_0.cameras.eo]
+[vehicles.drone_0.camera]
 rtsp_port = 8554
 rtsp_mount_path = "/stream"    # unset = derived, namespaced when there is more than one vehicle
 ```
@@ -435,10 +439,10 @@ Declare more than one vehicle and each gets its own camera, ports, topic namespa
 
 ```toml
 [vehicles.lead]
-[vehicles.lead.cameras.eo]
+[vehicles.lead.camera]
 
 [vehicles.wing]
-[vehicles.wing.cameras.eo]
+[vehicles.wing.camera]
 ```
 
 | | `lead` | `wing` |
@@ -615,7 +619,7 @@ Values are resolved from five places. Later beats earlier:
 |---|---|---|
 | 1 | Package defaults | built in; what you get with no config at all |
 | 2 | Your config file | `isaac-core run --config my.toml` |
-| 3 | Environment variables | `ISAAC_CORE__VEHICLES__DRONE_0__CAMERAS__EO__FOV_DEG=90` |
+| 3 | Environment variables | `ISAAC_CORE__VEHICLES__DRONE_0__CAMERA__FOV_DEG=90` |
 | 4 | `--set` flags | `isaac-core run --set sim.headless true` |
 | 5 | Runtime patch | `session.config.patch("gimbal.max_rate_deg_s", 10.0)` |
 
@@ -668,7 +672,7 @@ Sim.attach(
 ```
 
 Connects to a simulator someone else started, possibly on another machine. Needs no filesystem
-knowledge. Leaves the simulator running $ISAACwhen the block ends, because it belongs to whoever started
+knowledge. Leaves the simulator running when the block ends, because it belongs to whoever started
 it.
 
 ```python
@@ -716,6 +720,50 @@ is a method, and only `config` and `client` — which are local objects — are 
 
 `set_gimbal` returns when the target is accepted, not when the camera arrives — with a rate limit the
 move takes time, so poll `get_pose()` to watch it get there.
+
+</details>
+
+<details>
+<summary><b><code>PoseBot</code> — command a vehicle instead of computing poses</b></summary>
+
+The generators below compute geodesy; `PoseBot` holds a position and a transport so calls compose and
+you write commands rather than a pose stream:
+
+```python
+from isaac_core.contracts.pose import Lla
+from isaac_core.devkit import PoseBot
+
+with PoseBot(port=33333) as bot:                       # closes the socket on exit
+    bot.move_to_point(32.22481, 35.25621, 900.0, duration_s=5.0)
+    bot.move_forward_backward(100.0)                   # along its own nose; negative reverses
+    bot.move_right_left(50.0)
+    bot.move_up_down(-200.0)
+    bot.turn_yaw(90.0)                                 # degrees, like everything user-facing
+    bot.turn_to_point(32.22481, 35.25621, 1000.0)      # aims without moving; roll is preserved
+    bot.steer(turn_radius_m=100.0, speed_mps=50.0, duration_s=5.0)
+    bot.orbit(32.22481, 35.25621, radius_m=800.0, speed_mps=30.0, duration_s=60.0)
+    bot.fly_path([Lla(32.22, 35.25, 900.0), Lla(32.24, 35.27, 1200.0)], speed_mps=50.0)
+    print(bot.pose, bot.sent)
+```
+
+Each call streams at `rate_hz` for its duration and leaves the bot where it arrived. `fly_path` points
+the airframe along the direction of travel unless you pass `face_travel=False`, and it ends exactly on
+the last waypoint.
+
+Pass `limits=MotionLimits(max_speed_mps=..., ...)` and every command is bounded by it, so one
+declaration covers a whole flight.
+
+To drive a vehicle whose `pose_source` is `"ros"`, hand it the other transport — nothing else changes:
+
+```python
+from isaac_core.devkit import PoseBot, Ros2PoseTransport
+
+with PoseBot(transport=Ros2PoseTransport(namespace="/mavros")) as bot:
+    bot.move_to_point(32.22481, 35.25621, 1200.0, duration_s=5.0)
+```
+
+There is no `hold()`: the simulator holds the last good pose by design, so staying put needs no
+packets at all.
 
 </details>
 
@@ -932,7 +980,7 @@ constant-rate container cannot express them.
 ```bash
 isaac-core-inspect                 # state, capabilities, live pose, config
 isaac-core-inspect --poll 0.5      # watch the pose change
-isaac-core-pose-sender             # GUI for flying by hand
+isaac-core-pose-sender             # GUI for flying by hand, one tab per vehicle
 isaac-core-pose-sender --check     # validate config and exit, no window
 isaac-core-mavlink                 # bridge MAVLink into the UDP port
 ```
@@ -941,6 +989,31 @@ isaac-core-mavlink                 # bridge MAVLink into the UDP port
 confirm from outside that your pose input source is reaching the camera.
 
 ![Pose sender](docs/images/pose_sender.png)
+
+<details>
+<summary><b>What the pose sender window does</b></summary>
+
+One window, one tab per vehicle. `+ Add target` adds a tab, and each tab picks its own wire, so a
+single window can drive one vehicle over UDP and another over ROS 2 at the same time.
+
+A new tab lands on the port the simulator will actually be listening on: vehicle ports are allocated
+as `33333 + vehicle index`, and tabs follow the same arithmetic, so a two-vehicle swarm needs no
+mental arithmetic.
+
+| | What it does |
+|---|---|
+| Pose source | UDP or ROS 2, per tab. A ROS tab publishes `NavSatFix` + `PoseStamped` under its own namespace |
+| Readback line | what the **simulator** reports, beside what you are sending, so a frozen camera tells you which half is wrong |
+| Arrow keys | nudge yaw and pitch; `PageUp`/`PageDown` nudge altitude |
+| Fly there | ramps to the typed values over three seconds instead of teleporting |
+| Copy call / Copy TOML | the current pose as a `set_pose(...)` line, or a `[geo]` fragment |
+| View stream | opens this vehicle's RTSP stream in `ffplay` or `vlc` |
+| Pause | stops sending; the last good pose is held by the simulator |
+| lock | pins a field so a nudge or a ramp leaves it alone |
+
+Ctrl-C in the terminal closes the window and every sender with it.
+
+</details>
 
 ---
 
@@ -1182,11 +1255,22 @@ every launch attempt for exactly this reason.
 </details>
 
 <details>
-<summary><b>Stale `$ISAACSIM_PATH`</b></summary>
+<summary><b>Isaac Sim is not where the tooling looks for it</b></summary>
 
-`isaac-core doctor` finds the real install anyway. If it cannot, pass `--isaac-path /path/to/isaacsim/install` to `setup.sh`.
+`setup.sh` and `isaac-core doctor` probe the usual locations: `~/isaacsim`, `/opt/isaacsim`,
+`/opt/nvidia/isaac-sim`, `/isaac-sim`. Nothing reads an environment variable, so an install somewhere
+else has to be named:
 
----
+```bash
+./scripts/setup.sh --isaac-path /path/to/isaacsim
+```
+
+Or put it in your config once, and every command finds it:
+
+```toml
+[sim]
+isaac_sim_path = "/path/to/isaacsim"
+```
 
 </details>
 

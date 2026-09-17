@@ -17,7 +17,7 @@ def test_the_allowlist_only_contains_keys_with_runtime_readers() -> None:
     [
         "sim.headless",
         "sim.scene",
-        "vehicles.drone_0.cameras.eo.width",
+        "vehicles.drone_0.camera.width",
         "cesium.tileset_server_url",
         "geo.enu_reference",
     ],

@@ -128,6 +128,11 @@ class SimConfig(_Strict):
     scene: str = "earth"
     headless: bool = False
     strict_features: bool = False
+    # Where Isaac Sim is installed, for an install outside the probed locations. Error messages and
+    # the doctor hint referred to this key before it existed, so setting it was rejected as an unknown
+    # field -- and with no environment variable in resolution it is the only way to name a
+    # non-standard install once, rather than passing --isaac-path to every command.
+    isaac_sim_path: str | None = None
     # Enabled before the stage opens; configurable so a stage needing another extension needs no
     # code change. A missing one degrades rather than crashes -- OmniGraph logs "Could not find node
     # type interface" and those nodes do nothing -- so dropping one is a safe way to bisect.
@@ -369,15 +374,41 @@ class VehicleConfig(_Strict):
     rotation_frame: RotationFrame = RotationFrame.WORLD
     gimbal: GimbalConfig = GimbalConfig()
     distance_sensor: DistanceSensorConfig = DistanceSensorConfig()
-    cameras: dict[str, CameraConfig] = Field(default_factory=lambda: {"eo": CameraConfig()})
+    # One camera, unnamed. It used to be a dict keyed by a name -- defaulting to "eo" -- while the
+    # planner composed only the first entry, so the name existed to distinguish cameras that could
+    # not coexist. A second imaging sensor comes from a layer instead: layers mount under the same
+    # vehicle, so they move with the airframe and bring their own prims, topic and RTSP node.
+    camera: CameraConfig = CameraConfig()
 
-    @model_validator(mode="after")
-    def _require_at_least_one_camera(self) -> "VehicleConfig":
-        """Require a camera, since a vehicle without one cannot produce imagery."""
-        if not self.cameras:
-            msg = "a vehicle must define at least one camera"
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_the_old_camera_dict(cls, data: Any) -> Any:
+        """Name the new form when a config still uses the old named-camera table.
+
+        ``[vehicles.x.cameras.eo]`` was the shape through V2. Left to the strict-extra rule it fails
+        with "Extra inputs are not permitted" and the dict as the offending value, which does not say
+        what to write instead.
+
+        Args:
+            data: The raw mapping before validation, or whatever else was passed.
+
+        Returns:
+            The data unchanged when it does not use the old shape.
+
+        Raises:
+            ValueError: If a ``cameras`` table is present.
+
+        """
+        if isinstance(data, dict) and "cameras" in data:
+            names = ", ".join(repr(k) for k in data["cameras"]) if isinstance(data["cameras"], dict) else "?"
+            msg = (
+                "[vehicles.<id>.cameras.<name>] is no longer used: a vehicle has exactly one camera "
+                f"and it has no name (found {names}). Rename the table to [vehicles.<id>.camera] and "
+                "drop the name. A second imaging sensor comes from a feature layer instead, which "
+                "mounts under the same vehicle -- see docs/authoring_layers.md."
+            )
             raise ValueError(msg)
-        return self
+        return data
 
 
 class Ros2Config(_Strict):
@@ -478,8 +509,6 @@ class IsaacCoreConfig(_Strict):
 
         for vehicle_id in self.vehicles:
             topics.validate_segment(vehicle_id)
-            for camera_id in self.vehicles[vehicle_id].cameras:
-                topics.validate_segment(camera_id)
 
         for feature_id in self.features.enabled:
             topics.validate_segment(feature_id)
@@ -547,7 +576,7 @@ class IsaacCoreConfig(_Strict):
             return configured
         return pose_port_for_index(self.vehicle_index(vehicle_id), DEFAULT_POSE_UDP_PORT)
 
-    def resolved_rtsp_port(self, vehicle_id: str, camera_id: str) -> int:
+    def resolved_rtsp_port(self, vehicle_id: str) -> int:
         """Return a camera's RTSP port, offset per vehicle so a swarm cannot collide.
 
         Every vehicle mounts its own copy of the camera layer, so with a shared port the second
@@ -560,13 +589,12 @@ class IsaacCoreConfig(_Strict):
 
         Args:
             vehicle_id: Key in ``vehicles``.
-            camera_id: Key in that vehicle's ``cameras``.
 
         Returns:
             The port this camera's RTSP server should bind.
 
         """
-        camera = self.vehicles[vehicle_id].cameras[camera_id]
+        camera = self.vehicles[vehicle_id].camera
         # None means derive, matching rtsp_mount_path and the topic fields. This used to key off
         # `model_fields_set`, which does not survive a dump/reload: `Sim.launch` writes the resolved
         # config to TOML and re-reads it, so every field came back "explicitly set" and the offset was
@@ -590,29 +618,25 @@ class IsaacCoreConfig(_Strict):
             return prims.validate_prim_path(configured)
         return prims.child(prims.ENVIRONMENT_ROOT, vehicle_id)
 
-    def topic_resolver(self, vehicle_id: str, camera_id: str | None = None) -> topics.TopicResolver:
-        """Return a resolver producing this vehicle's (and camera's) topic names.
+    def topic_resolver(self, vehicle_id: str) -> topics.TopicResolver:
+        """Return a resolver producing this vehicle's topic names.
 
-        Namespace levels collapse when there is only one of something, so a single
-        vehicle with a single camera yields the flat names the team already uses,
-        and adding a second of either namespaces automatically.
+        The vehicle level collapses when there is only one vehicle, so a single-vehicle setup
+        yields the flat names the team already uses and adding a second namespaces automatically.
+        There is no camera level: a vehicle has one camera, so a camera name in a topic would be
+        noise rather than disambiguation.
 
         Args:
             vehicle_id: Key in ``vehicles``.
-            camera_id: Key in that vehicle's ``cameras``, or ``None`` for
-                vehicle-scoped data such as pose or range.
 
         Returns:
             A configured :class:`~isaac_core.contracts.topics.TopicResolver`.
 
         """
         vehicle_segment = None if self.is_single_vehicle else vehicle_id
-
-        camera_segment = None
-        if camera_id is not None and len(self.vehicles[vehicle_id].cameras) > 1:
-            camera_segment = camera_id
-
-        return topics.TopicResolver(vehicle=vehicle_segment, camera=camera_segment)
+        # No camera segment: a vehicle has exactly one camera, so there is nothing to disambiguate
+        # and a name in the topic would be noise.
+        return topics.TopicResolver(vehicle=vehicle_segment, camera=None)
 
     def required_feature_ids(self) -> tuple[str, ...]:
         """Return every feature layer this configuration needs, in a stable order.
@@ -640,12 +664,11 @@ class IsaacCoreConfig(_Strict):
         return tuple(ordered)
 
     def camera_keys(self) -> tuple[str, ...]:
-        """Return every camera as ``"<vehicle_id>.<camera_id>"``, in declaration order."""
-        return tuple(
-            f"{vehicle_id}.{camera_id}"
-            for vehicle_id, vehicle in self.vehicles.items()
-            for camera_id in vehicle.cameras
-        )
+        """Return the vehicle id of every camera, in declaration order.
+
+        One camera per vehicle, so a vehicle id identifies a camera uniquely.
+        """
+        return tuple(self.vehicles)
 
 
 __all__ = [

@@ -18,9 +18,11 @@ Design decisions that make running these routine rather than a chore:
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+import contextlib
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -197,7 +199,16 @@ def _await_responsive(session: Any) -> None:
             state = session.state()
             last_state = state
             if state.get("ready") and state.get("stage_composed"):
-                session.step(count=STEP_CHUNK_FRAMES)
+                # The stage has reported itself composed, so it IS ready; the warm-up below is a
+                # courtesy. A two-vehicle headless stage can hold its main thread for over a minute
+                # streaming tiles, and `step` is dispatched to that thread, so this call can exceed the
+                # RPC timeout while the control plane keeps answering. Treating that as "never became
+                # ready" is what reported three passing tests as skipped, with a message naming the
+                # wrong cause -- the state right beside it said ready and composed.
+                try:
+                    session.step(count=STEP_CHUNK_FRAMES)
+                except (TimeoutError, OSError) as warm_up_error:
+                    print(f"warm-up step timed out on a ready stage, continuing: {warm_up_error}")
                 return
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
@@ -211,22 +222,75 @@ def _await_responsive(session: Any) -> None:
 
 
 def _clear_startup_hazards() -> None:
-    """Remove the two things that reliably make a launch fail to reach a composed stage.
+    """Remove the three things that reliably make a launch fail to reach a composed stage.
 
     The Cesium request cache's write-ahead log stalls startup badly, and size is not the trigger:
     measured, a two-vehicle launch with a 763 MiB log never became ready across three runs, taking
     over ten minutes each to give up, and passed in 24 seconds with the log removed. The same
     behaviour appeared at 23 GiB. Stale ``/tmp/carb.*`` directories left by a crashed Kit make the
     startup segfault more likely. Both are caches: deleting them while no simulator is running costs
-    only re-streamed terrain, which no test asserts on.
+    only re-streamed terrain, which no test asserts on. A simulator leaked by an earlier run is the
+    third, and is handled by :func:`_kill_leaked_simulators`.
 
     """
     cache = Path.home() / ".cache" / "ov"
-    for name in ("cesium-request-cache.sqlite-wal", "cesium-request-cache.sqlite-shm"):
-        (cache / name).unlink(missing_ok=True)
+    # The whole cache, not just the write-ahead log. Removing only -wal and -shm left a main database
+    # that had grown to 1.19 GiB, and a second consecutive suite run then failed identically at 1041 s
+    # against 83 s for the first -- the same glob the product's own `cesium.delete_cache_on_launch`
+    # uses, so the harness and the product now clear the same thing.
+    for stale in cache.glob("cesium-request-cache.sqlite*"):
+        with contextlib.suppress(OSError):
+            stale.unlink()
     for leftover in Path("/tmp").glob("carb.*"):
         if leftover.is_dir():
             shutil.rmtree(leftover, ignore_errors=True)
+
+
+def _leaked_simulator_pids() -> list[int]:
+    """Return the PIDs of simulators no longer owned by any session.
+
+    `/proc` is walked rather than shelling out to a pattern matcher, because a pattern broad enough to
+    match a simulator also matches the command doing the matching, which would kill the test run.
+
+    Returns:
+        The PIDs found, excluding this process and its parent.
+
+    """
+    mine = {os.getpid(), os.getppid()}
+    found: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) in mine:
+            continue
+        try:
+            command = b" ".join((entry / "cmdline").read_bytes().split(b"\0")).decode(errors="replace")
+        except OSError:
+            continue
+        if "telemetry" in command:
+            continue
+        if "isaac_core.sim" in command or "kit/kit" in command:
+            found.append(int(entry.name))
+    return found
+
+
+def _kill_leaked_simulators() -> None:
+    """Kill simulators left behind by an earlier session, before launching a new one.
+
+    Isaac ignores SIGTERM, so a simulator from a crashed or interrupted run survives and keeps its GPU
+    allocation, its RTSP port and its UDP port. Cleaning up afterwards is not enough, because the run that
+    leaked may itself have been killed before its cleanup ran.
+
+    Called once at session start, deliberately, rather than before each launch: the match is on any
+    simulator command line, so running it while one of ours is alive would kill a session the suite still
+    needs. Today each module uses exactly one session fixture and they are module-scoped, so nothing
+    overlaps -- but that is a property of the current layout, not something this function can rely on.
+    """
+    for pid in _leaked_simulator_pids():
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGKILL)
+    for _ in range(10):
+        if not _leaked_simulator_pids():
+            return
+        time.sleep(1.0)
 
 
 # Where each launched simulator's output goes. Kept out of pytest's capture on purpose, and kept on
@@ -287,6 +351,7 @@ def _launch_with_retry(port: int, overrides: dict[str, Any], *, headless: bool) 
                 headless=headless,
                 port=port,
                 timeout_s=LAUNCH_TIMEOUT_S,
+                call_timeout_s=CALL_TIMEOUT_S,
                 overrides=overrides,
                 launcher=_file_logging_launcher,
             )
@@ -297,6 +362,12 @@ def _launch_with_retry(port: int, overrides: dict[str, Any], *, headless: bool) 
                 continue
     pytest.skip(f"no simulator came up after {LAUNCH_ATTEMPTS} attempts: {last}")
     raise AssertionError  # unreachable, satisfies the type checker
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_leaked_simulators() -> None:
+    """Kill simulators left by an earlier run, once, before any of this session's own exist."""
+    _kill_leaked_simulators()
 
 
 @pytest.fixture(scope="module")
@@ -325,7 +396,7 @@ def sim_session(output_root: Path) -> Iterator[Any]:
     overrides: dict[str, Any] = {
         "sim.control_plane.output_root": str(output_root),
         "vehicles.drone_0.pose_source": "udp",
-        "vehicles.drone_0.cameras.eo.rtsp_port": SINGLE_RTSP_PORT,
+        "vehicles.drone_0.camera.rtsp_port": SINGLE_RTSP_PORT,
         "vehicles.drone_0.udp_port": SINGLE_UDP_PORT,
     }
     with _launch_with_retry(SYSTEM_TEST_PORT, overrides, headless=True) as session:
@@ -356,8 +427,8 @@ def swarm_session(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
         "vehicles.wing.pose_source": "udp",
         # Explicit ports: an explicit value is honoured verbatim, so give each its own rather than
         # relying on the base+index derivation which would land on the other fixture's range.
-        "vehicles.lead.cameras.eo.rtsp_port": SWARM_RTSP_PORT,
-        "vehicles.wing.cameras.eo.rtsp_port": SWARM_RTSP_PORT + 1,
+        "vehicles.lead.camera.rtsp_port": SWARM_RTSP_PORT,
+        "vehicles.wing.camera.rtsp_port": SWARM_RTSP_PORT + 1,
         "vehicles.lead.udp_port": SWARM_UDP_PORT,
         "vehicles.wing.udp_port": SWARM_UDP_PORT + 1,
     }
@@ -393,7 +464,7 @@ def gui_session(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
     overrides: dict[str, Any] = {
         "sim.control_plane.output_root": str(output),
         "vehicles.drone_0.pose_source": "udp",
-        "vehicles.drone_0.cameras.eo.rtsp_port": GUI_RTSP_PORT,
+        "vehicles.drone_0.camera.rtsp_port": GUI_RTSP_PORT,
         "vehicles.drone_0.udp_port": GUI_UDP_PORT,
     }
     with _launch_with_retry(SYSTEM_TEST_PORT + 2, overrides, headless=False) as session:
@@ -406,6 +477,11 @@ def gui_session(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
 # Frames per `step` call. One long call can exceed the control plane's socket timeout on a busy
 # GPU -- a 40-frame step in the swarm session timed out -- and a wedged loop is then indistinguishable
 # from a slow one. Several short calls keep each RPC bounded and fail informatively.
+# Main-thread calls wait for the simulator's main thread, and a two-vehicle stage holds it far longer
+# than the 60 s default -- measured timing out on `step` while `get_state` kept answering promptly. The
+# skip message blamed readiness, which sent an earlier investigation down the wrong path.
+CALL_TIMEOUT_S = 240.0
+
 STEP_CHUNK_FRAMES = 10
 
 

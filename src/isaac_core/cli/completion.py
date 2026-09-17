@@ -14,6 +14,8 @@ completing them is never misleading.
 from __future__ import annotations
 
 import argparse
+import os
+from pathlib import Path
 import sys
 from typing import TypeGuard, get_args, get_origin
 
@@ -30,6 +32,25 @@ _CONFIG_SUBCOMMANDS: tuple[str, ...] = ("dump", "explain")
 
 # Shells the ``completion`` subcommand can emit a script for.
 _SUPPORTED_SHELLS: tuple[str, ...] = ("bash", "zsh")
+
+# Where an installed script is written. One directory for both shells keeps removal obvious.
+_INSTALL_DIR: Path = Path("~/.local/share/isaac-core").expanduser()
+
+# bash-completion loads a file named after the command from here, on demand, at the moment TAB is
+# pressed. Writing it there is what makes completion work in a shell that is ALREADY RUNNING -- the rc
+# line alone only takes effect in a new shell, which is why installing it appeared to do nothing.
+_DYNAMIC_DIR: Path = Path("~/.local/share/bash-completion/completions").expanduser()
+
+# Marker lines wrapping the block appended to the user's shell rc file. Present so installing twice
+# does nothing, and so a user can find and delete the block by searching for the name.
+_RC_BEGIN: str = "# >>> isaac-core completion >>>"
+_RC_END: str = "# <<< isaac-core completion <<<"
+
+# The rc file each shell reads for interactive sessions.
+_RC_FILES: dict[str, Path] = {
+    "bash": Path("~/.bashrc").expanduser(),
+    "zsh": Path("~/.zshrc").expanduser(),
+}
 
 # A ``dict[key, value]`` annotation always resolves to exactly two type arguments.
 _DICT_TYPE_ARG_COUNT: int = 2
@@ -284,6 +305,108 @@ def completion_script(shell: str) -> str:
     return _SCRIPTS[shell]
 
 
+def detect_shell() -> str | None:
+    """Return the user's shell name if it is one we can complete for.
+
+    Reads ``$SHELL`` rather than inspecting the parent process, because the parent of an installer
+    is often not the interactive shell that will read the rc file.
+
+    Returns:
+        ``"bash"``, ``"zsh"``, or ``None`` when the shell is unknown or unsupported.
+
+    """
+    shell_path = os.environ.get("SHELL", "")
+    name = Path(shell_path).name
+    return name if name in _SUPPORTED_SHELLS else None
+
+
+def installed_script_path(shell: str) -> Path:
+    """Return where the completion script for *shell* is written.
+
+    Args:
+        shell: One of the supported shells.
+
+    Returns:
+        The absolute path of the installed script.
+
+    """
+    return _INSTALL_DIR / f"completion.{shell}"
+
+
+def dynamic_script_path(shell: str) -> Path | None:
+    """Return the on-demand load location for *shell*, if it has one.
+
+    Args:
+        shell: One of the supported shells.
+
+    Returns:
+        The path bash-completion loads on demand, or ``None`` for shells without such a mechanism.
+
+    """
+    return _DYNAMIC_DIR / "isaac-core" if shell == "bash" else None
+
+
+def is_installed(shell: str) -> bool:
+    """Report whether completion is installed *and* wired into the shell's rc file.
+
+    Both halves matter: a script nobody sources is not installed, which is the state the project
+    shipped in for a while -- the generator worked and TAB still completed filenames.
+
+    Args:
+        shell: One of the supported shells.
+
+    Returns:
+        ``True`` only if the script exists and the rc file sources it.
+
+    """
+    script = installed_script_path(shell)
+    rc_file = _RC_FILES[shell]
+    if not script.is_file() or not rc_file.is_file():
+        return False
+    return _RC_BEGIN in rc_file.read_text(encoding="utf-8")
+
+
+def install_completion(shell: str) -> list[str]:
+    """Write the completion script and make the shell source it.
+
+    Idempotent: running twice rewrites the script (so an upgrade takes effect) and leaves the rc
+    file alone if the block is already there.
+
+    Args:
+        shell: One of the supported shells.
+
+    Returns:
+        Human-readable lines describing what changed, for the caller to print.
+
+    """
+    script = completion_script(shell)
+    script_path = installed_script_path(shell)
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script, encoding="utf-8")
+    done = [f"wrote {script_path}"]
+
+    # Written second and separately: this one is picked up by an already-running shell, so a user who
+    # just ran setup does not have to start a new one before TAB does anything.
+    dynamic_path = dynamic_script_path(shell)
+    if dynamic_path is not None:
+        dynamic_path.parent.mkdir(parents=True, exist_ok=True)
+        dynamic_path.write_text(script, encoding="utf-8")
+        done.append(f"wrote {dynamic_path} (picked up by shells already running)")
+
+    rc_file = _RC_FILES[shell]
+    existing = rc_file.read_text(encoding="utf-8") if rc_file.is_file() else ""
+    if _RC_BEGIN in existing:
+        done.append(f"{rc_file} already sources it")
+        return done
+
+    block = f'\n{_RC_BEGIN}\n[ -f "{script_path}" ] && . "{script_path}"\n{_RC_END}\n'
+    rc_file.parent.mkdir(parents=True, exist_ok=True)
+    with rc_file.open("a", encoding="utf-8") as handle:
+        handle.write(block)
+    done.append(f"added a source line to {rc_file}")
+    return done
+
+
 def register_completion_subcommand(subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]") -> None:
     """Register the ``completion`` subcommand on the parent subparsers.
 
@@ -302,6 +425,17 @@ def register_completion_subcommand(subparsers: "argparse._SubParsersAction[argpa
         "--list-keys",
         action="store_true",
         help="Print every settable config key, one per line (used by the completion script)",
+    )
+    parser.add_argument(
+        "--install",
+        action="store_true",
+        help="Install completion for your shell and wire it into your shell's rc file",
+    )
+    parser.add_argument(
+        "--print",
+        dest="print_script",
+        action="store_true",
+        help="Print the script to stdout instead of installing it",
     )
 
 
@@ -323,6 +457,24 @@ def run_completion(args: argparse.Namespace) -> int:
     if args.list_keys:
         for key in config_keys():
             print(key)
+        return 0
+
+    if args.install:
+        shell = args.shell or detect_shell()
+        if shell is None:
+            print(
+                "ERROR: could not tell which shell you use. Pass one: "
+                f"isaac-core completion --install {'|'.join(_SUPPORTED_SHELLS)}",
+                file=sys.stderr,
+            )
+            return 1
+        for line in install_completion(shell):
+            print(f"  {line}")
+        if dynamic_script_path(shell) is not None:
+            print(f"Completion installed for {shell}. It works in this shell too -- press TAB now.")
+        else:
+            print(f"Completion installed for {shell}. Start a new shell, or run:")
+            print(f"  source {installed_script_path(shell)}")
         return 0
 
     shell = args.shell

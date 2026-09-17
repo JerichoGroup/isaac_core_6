@@ -4444,6 +4444,171 @@ commands and reading the diff establishes fact.
   composed, ready in 20.6 s headless and 22.4 s windowed, nothing leaked. What is unreliable is the
   harness, on this machine, and it now leaves a log and a reason behind when it fails.
 
+- **2026-09-16 (iv)** — **V3 phases 4, 6, 5 and 1.1/1.2.** Four of the five implementation tasks, each
+  verified against a running simulator rather than only under pytest.
+
+  **Phase 4, no environment variable names an Isaac install.** `$ISAACSIM_PATH` is gone from
+  resolution, which is now explicit `--isaac-path`, then config, then a probe. That exposed a real gap:
+  **`sim.isaac_sim_path` was named in error messages and the doctor hint but did not exist in the
+  schema**, and `config_path` was never passed at any of the three `locate()` call sites. With the
+  variable removed that was the only non-flag escape hatch, and it was entirely non-functional. Added
+  the field and wired it into the CLI, the doctor and `Sim.launch`. `crash_rate.sh` was worse than a
+  print: it defaulted to `${ISAACSIM_PATH:-$HOME/isaacsim}`, so it could benchmark a different install
+  than the one `isaac-core` runs, silently. Proven by poisoning both variables with bogus paths and
+  watching doctor, `run --dry-run` and the crash-rate resolution all still find the real install.
+
+  **Phase 6, completion is installed rather than offered.** The generator was always fine; nothing
+  installed the script, so TAB completed filenames and the feature was invisible. `setup.sh` now
+  installs it as a sixth step, `doctor` reports whether it is installed, and the script is written to
+  `~/.local/share/isaac-core/` with a marker-wrapped source line appended to the shell's rc file,
+  idempotently. Verified by driving the generated function in a real bash with `COMP_WORDS` set and
+  reading `COMPREPLY` back: `isaac-core r` offers `run`, `--set sim.h` offers `sim.headless`, and
+  `--set vehicles.` offers all twenty-four deep keys.
+
+  **Phase 5, one camera per vehicle and it has no name.** `cameras: dict[str, CameraConfig]` became
+  `camera: CameraConfig`, and the `{camera}` placeholder is gone from the manifest vocabulary, the
+  planner, the configurator and the topic resolver. The name only ever existed to distinguish cameras
+  that could not coexist. The old table is rejected with a message naming the new form, because
+  "Extra inputs are not permitted" tells nobody what to write. The trade is pinned by a test: a
+  **thermal layer still adds a second camera to the same vehicle**, mounted under the vehicle so it
+  moves with the airframe, with its own `[layers.thermal_cam]` value reaching its own prim, composing
+  alongside `camera_udp`. Live proof that the new key path reaches the stage: launching with
+  `camera.fov_deg = 55` recomputed `horizontalAperture` to 23.73, where the default at fov 78.1 is
+  36.97.
+
+  **Phase 1.1, `PoseBot`.** Every motion primitive already existed as a pure function; what was missing
+  was the object that holds a `VehicleState` and a transport so calls compose. Angles are degrees at
+  this layer because every other user-facing surface uses degrees. `MotionLimits` is carried by the bot
+  and **enforced**, closing the roadmap item where limits were coded and tested while nothing applied
+  them. There is no `hold()`: the simulator holds the last good pose by design, so it would be a
+  `sleep` wearing a method's clothes.
+
+  Two pre-existing bugs fell out of building it. **`PathTrajectory` never arrived at its final
+  waypoint** -- the step count truncates, so a path asked to end at 1100 m ended at 1098.7, and "fly to
+  this point" never got there. And **a closed `UdpPoseTransport` silently resurrected**: `close()` only
+  dropped the socket and `send()` lazily recreated it, while `FakePoseTransport`, its drop-in
+  replacement, raised. A use-after-close was therefore caught in tests and not in production.
+
+  **A ROS 2 transport, so the GUI's per-tab source is one line.** `Ros2PoseTransport` publishes the two
+  messages MAVROS publishes, converting NED to ENU once. `rclpy` is imported on first use, not at module
+  import, because this module is imported inside Isaac where `rclpy` cannot be. Both transports satisfy
+  `PoseTransport`, so `PoseBot` drives either without knowing which.
+
+  **The devkit may now use the pure kernels.** The layering contract forbade `devkit -> vehicle` and
+  `devkit -> geo` alongside `devkit -> sim`. Only the `sim` half protects anything: `vehicle` and `geo`
+  are pure Python over dependencies that are already required and import nothing from `sim`. The
+  reasoning is written into `pyproject.toml` beside the contract.
+
+  Live: UDP bot to 1000 m gives stage z 483.30, down 300 gives 183.30, forward 200 travels exactly
+  200.0 m, `fly_path` ends at exactly 1400.0; ROS bot to 1200 m gives 683.30 and down 400 gives 283.30.
+  Nothing leaked in any run.
+
+  **1848 tests, all sixteen hooks green, 23 contracts kept.** The multi-tab GUI is the one task left;
+  its controller already carries the per-tab pose source, target labelling and copy-as-snippet.
+
+- **2026-09-16 (v)** — **Phase 1.3, the pose sender is one window with a tab per vehicle.**
+  `PoseSenderController` was already UI-free and already per-target, so the work was giving it a pose
+  source, a readback and a stream URL, then wrapping N of them in a notebook. The source is the only
+  thing that differs between tabs: both transports satisfy `PoseTransport`, so one window drives a UDP
+  vehicle in one tab and a ROS one in another with nothing else changing.
+
+  `SenderTabs` holds the model rather than the widgets, because the interesting part is not the
+  notebook. A new tab lands on `33333 + tab index`, which is exactly how the simulator allocates a
+  vehicle's port, so a two-vehicle swarm needs no arithmetic from the operator. The last tab refuses to
+  close, since a window with no tabs has nothing to send and no way back.
+
+  Also in: a readback line showing the stage's own transform beside what the tab is sending, arrow keys
+  for yaw and pitch with PageUp/PageDown for altitude, a "Fly there" that ramps over three seconds
+  instead of teleporting, copy-as-`set_pose` and copy-as-`[geo]`, a per-tab stream button, a packet
+  counter, and pause. The ramp animates the controller rather than driving a second transport, so
+  nothing has to arbitrate between two writers on one port.
+
+  **Two bugs found by running it against a real simulator rather than by reading it.**
+
+  The readback passed the *tab's label* as a vehicle id. A tab is called `vehicle` by default while the
+  simulator had `drone_0`, so every readback failed -- and the failure was reported as "no simulator on
+  127.0.0.1:8760", which is the wrong diagnosis entirely. A tab now names a vehicle only when it has
+  adopted a real one, connection failures and error replies are reported differently, and a bad vehicle
+  name produces `unknown vehicle 'nope'; configured vehicles: drone_0`.
+
+  The stream button guessed the single-vehicle mount path. On a swarm the simulator namespaces every
+  mount including the first, so the button aimed at `/stream` while the server offered `/lead/stream`.
+  Measured against the running RTSP server: the corrected URLs return `RTSP/1.0 200 OK` for both
+  vehicles, the old guess returns `404 Not Found`, and Kit logs `no factory for path /stream` behind it.
+
+  A tab now adopts a vehicle from the running simulator when one is reachable, which is what makes the
+  readback correct on a swarm without the operator configuring anything. Verified live on two vehicles:
+  tabs named themselves `lead` and `wing`, took ports 33333 and 33334, and read back 483.30 and 883.30
+  independently -- matching `get_pose(vehicle=...)` exactly.
+
+  Ctrl-C still closes the window and every sender with it, checked after the refactor: one SIGINT,
+  exit 0, two seconds.
+
+  **1871 tests, all sixteen hooks green, 23 contracts kept, 13 system tests passing.**
+
+- **2026-09-17** — **Six real bugs Ofer found in work I had reported as done, and why my testing
+  missed each one.** Recording the pattern rather than only the fixes, because the pattern is the
+  lesson: every one of these was invisible to a test I had written to check the thing it missed.
+
+  **The rotation bug, and it was three bugs.** With `rotation_frame = world`, pitching down 30 and then
+  yawing repeatedly produced roll, and the horizon would not stay put. Three separate defects stacked:
+
+  1. *Expression.* The wire carries Euler angles and the simulator rebuilds them with the vehicle's
+     configured frame, but every conversion in the `vehicle` stack used the library default, which is
+     `BODY`. A world-composed matrix decomposed as body angles: truth roll 0 / pitch -30, reported roll
+     30 / pitch 0. `VehicleState` now carries its frame, and every conversion uses it.
+  2. *Intent.* In the world convention the angles compose as yaw about world up, then pitch, then roll,
+     so "pitch by 30" means moving the pitch term. Rotating about the fixed world Y axis instead is a
+     different operation, and while yawed 90 degrees it rolls the airframe -- geometrically true, never
+     what the caller asked. Measured side by side: world-Y pre-multiply gives roll -30, moving the
+     pitch term gives pitch -30. Yaw is identical either way, which is exactly why yaw looked fine and
+     hid the other two axes.
+  3. *Path.* Endpoints being right is not enough. SLERP takes the shortest great-circle path in
+     rotation space, which swung roll up to 45 degrees mid-turn and back, so the camera visibly rolled
+     while every endpoint assertion passed. World-frame turns and `turn_to_point` now interpolate the
+     angles, holding the axes nobody asked to move.
+
+  **Why I missed it:** every rotation test turned one axis from rest, and single-axis attitudes
+  decompose identically in both frames. A whole green suite could not see it. `test_multi_axis_rotation.py`
+  now covers two- and three-axis attitudes, asserts the three turns commute in any of the six orders,
+  and checks the intermediate poses rather than just the endpoints. Verified against the live stage
+  transform: roll holds at 0.0 and pitch at 30.0 across four 90-degree yaws, where the third angle used
+  to wander between +/-30.
+
+  **`$ISAACSIM_PATH` was not actually gone.** `pyproject.toml` and `requirements.txt` both still told
+  the user to run `$ISAACSIM_PATH/python.sh`, and both shell scripts used a local variable named
+  `ISAAC_PATH`. **Why I missed it:** my guard checked `src/**/*.py`, `docs/` and the shell scripts, with
+  a condition sloppy enough to permit `$ISAAC_PATH` in a script -- and it never looked at packaging
+  files at all. It now walks every tracked file with a named exemption list, and I proved it by
+  injecting the original offences into five different files and watching each one fail.
+
+  **Completion installed but did nothing.** The rc line only takes effect in a new shell, so the shell
+  that had just run setup still completed filenames. Now also written to bash-completion's completions
+  directory, which is loaded on demand at the moment TAB is pressed -- so an already-running shell picks
+  it up. **Why I missed it:** I tested the generated function directly instead of the installed path.
+
+  **`PoseBot(start=...)` sent nothing.** The position only reached the simulator once a command ran, so
+  `with PoseBot(start=...) as bot: pass` left the vehicle where it was. Entering the context now streams
+  the starting pose briefly, streamed rather than sent once because a single datagram is lost if the
+  node has not bound yet.
+
+  **`move_to_point` did not look where it was going.** It now faces the target by default, recomputed
+  per pose because the bearing changes as the vehicle travels, with the aim held through arrival --
+  `atan2(0, 0)` is zero, which snapped the camera due north on the final frame. The look-at maths is
+  extracted so `turn_to_point` and `move_to_point` cannot drift apart.
+
+  **The stream player outlived the window.** `start_new_session=True` put it beyond reach, so closing
+  the sender left an orphaned stream. The tab owns the players it spawns and stops them on close;
+  measured live, one ffplay while open and zero after a single Ctrl-C. The URL is also an editable field
+  now, because guessing cannot cover a second vehicle, a remote host or a hand-authored mount.
+
+  Also: tab labels are positional (`tab_1`, `tab_2`, renameable by double-click) rather than a mix of
+  simulator names and placeholders; the topic namespace has its own labelled row instead of an
+  unexplained box; and Copy TOML carries the angles as a comment rather than dropping half of what was
+  on screen.
+
+  **1907 tests, all sixteen hooks green, 23 contracts kept, 13 system tests passing.**
+
 ### Known remaining issues
 
 - **Sensor layers** are not built: distance sensor, bounding-box publishing, satellite
@@ -4503,3 +4668,82 @@ Continue in dependency order: **`config`** (pydantic schema + layered loader + t
 
 Still outstanding: `README.md` is still the template's and needs replacing; no `config/`,
 `docs/`, `scripts/`, `extensions/` or `assets/` directories exist yet.
+
+## Auditing the feature matrix for the trap that let six bugs ship
+
+The six bugs shared one shape: each test verified the thing as built, in the shape it was built, rather
+than the surface a user meets. Since `docs/dev/feature_matrix.md` is the document that certifies what
+works, it was audited row by row against that pattern.
+
+**One row was simply false.** "Entry-point layers from another package | pass" cited
+`sim/test_discovery.py`, which never mentions entry points, and no `importlib.metadata` lookup exists
+anywhere in `sim/`. `docs/dev/roadmap.md` had listed the same capability as a gap the whole time, so two
+documents disagreed and only the optimistic one was read. Corrected to **not built**.
+
+**Gimbal composition was only ever tested on a level airframe.** The helper in `test_gimbal_axes.py`
+hardcodes the attitude to `(0, 0, 0)`, so the interaction between airframe attitude and gimbal offset --
+the only part that can actually be wrong -- was untested. Measured, it is correct: an airframe pitched
+-30 with a gimbal at -30 looks 60 degrees down, a yawed airframe carries the gimbal's azimuth with it,
+and a 45-degree roll converts pitch into `sin30·cos45` of elevation plus a swing, which is what a gimbal
+bolted to a rolled aircraft must do. Missing coverage rather than a bug, now pinned by
+`geo/test_gimbal_on_attitude.py`, including the case no test had: all three airframe axes and all three
+gimbal axes non-zero at once.
+
+**A count was stale.** The matrix said 13 `Method` enum members; there are 15. A hand-maintained number
+in a certifying document always rots, so `test_feature_matrix_claims.py` now checks every count against
+the code, verifies each cited file exists, and fails if a row claims "pass" for something the roadmap
+calls unbuilt. Each guard was proven by injecting the original offence and watching it fail.
+
+Rows that turned out genuinely strong, worth recording because they are the pattern to copy: the 51-byte
+packet is anchored to a hex literal captured from the 2023 encoder rather than round-tripped through our
+own constants, and the test says why; `isaac-core-inspect` drives a real client against a real server on
+an ephemeral port; freeze-on-bad-data covers seven distinct malformed inputs; `slew_towards` limits each
+axis independently along the shortest angular path, so the gimbal never had the mid-path error that
+SLERP introduced in the vehicle stack.
+
+### The audit found the swarm skip was never a Cesium problem
+
+The system suite had been skipping its three swarm tests for many sessions, blamed on Cesium
+write-ahead-log flakiness. Improving the skip message to print the last observed state exposed the real
+cause immediately:
+
+```
+last state={'running': True, 'ready': True, 'stage_composed': True, ...}, last error=TimeoutError
+```
+
+The stage was ready and composed. What timed out was the `step` call the readiness helper made
+*afterwards*, swallowed by a broad `except` and reported as "never reported a composed, ready stage" --
+a message contradicted by the state printed beside it.
+
+The cause is that main-thread methods wait for the simulator's main thread, and a two-vehicle headless
+stage holds it for longer than the 60-second call timeout while the control plane keeps answering
+`get_state` promptly. That timeout was hardcoded in `ControlClient` and not exposed through `Sim.launch`
+or `Sim.attach`, so no user hitting this could have raised it either. It is now a `call_timeout_s`
+argument on all three, defaulted unchanged at 60 s so a genuine hang still surfaces quickly.
+
+With the harness passing 240 s the three tests run instead of skipping, where the suite had been 10
+passed and 3 skipped. Three real tests had been silently not running, which is the same failure as the
+matrix row: something reported a state that was not true, and nothing checked.
+
+**Getting there took one wrong turn worth recording, because the fix caused it.** Consecutive full runs
+began alternating strictly pass, fail, pass -- every green run 83-120 s, every red run 1041-1064 s, twice
+within 0.2 s of each other, always the same three swarm tests. Background simulators were the obvious
+suspect and were ruled out by measurement, not assumption: `/proc` showed zero Isaac processes before and
+after every run, and the GPU returned to its 650-680 MiB desktop baseline each time.
+
+The destabiliser was the cleanup itself. `_clear_startup_hazards()` runs before **every** launch attempt,
+and killing leaked simulators had been added into it, so a kill matching any simulator command line fired
+repeatedly during a run rather than once before it. Moving it to a session-scoped autouse fixture, which
+runs once before any of the suite's own simulators exist, ended the alternation: **four consecutive full
+runs, 13 passed each, at 122, 120, 117 and 108 s.**
+
+That is also the safer design regardless of the flakiness. The match is on any simulator command line, so
+running it while one of ours is alive would kill a session the suite still needs. Each module happens to
+use exactly one module-scoped session fixture today, so nothing overlapped -- but that is a property of
+the current layout, and a future module needing two sessions would have had its first one killed with no
+obvious cause.
+
+Three fixes came out of this, all kept: the call timeout is configurable and reaches the socket, the
+harness clears the whole Cesium cache glob rather than two of its three files, and leaked simulators are
+killed once at session start. The suite went from 10 passed and 3 skipped, where the skip named the wrong
+cause, to 13 passed repeatedly.

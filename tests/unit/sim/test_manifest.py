@@ -225,8 +225,10 @@ def test_mount_may_use_the_instance_placeholder(tmp_path: Path) -> None:
     assert load_manifest(manifest).mount == "/Environment/{instance}"
 
 
-def test_camera_placeholder_accepted_in_binding_prim(tmp_path: Path) -> None:
-    # {camera} is a known placeholder; a binding may template the camera key.
+def test_camera_placeholder_is_no_longer_known(tmp_path: Path) -> None:
+    # {camera} existed to template a camera's name. A vehicle now has exactly one camera and it has
+    # no name, so the placeholder is gone and using it must fail at load rather than resolve to
+    # nothing at compose time.
     content = """\
 id = "cam"
 usd = "cam.usda"
@@ -234,12 +236,13 @@ mount = "/Environment/{instance}"
 
 [[bindings]]
 prim = "{mount}/{camera}/node"
-attribute = "inputs:width"
-config = "vehicles.{instance}.cameras.{camera}.width"
+attribute = "inputs:x"
+config = "layers.cam.x"
 """
-    manifest = load_manifest(_write_toml(tmp_path, content))
-    assert manifest.bindings[0].prim == "{mount}/{camera}/node"
-    assert manifest.bindings[0].config == "vehicles.{instance}.cameras.{camera}.width"
+    path = tmp_path / "layer.toml"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown placeholder"):
+        load_manifest(path)
 
 
 def test_camera_placeholder_rejected_in_mount(tmp_path: Path) -> None:

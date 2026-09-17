@@ -52,7 +52,7 @@ isaac-core-mavlink = "isaac_core.devkit.mavlink:main"
 
 [project.optional-dependencies]
 # Installed into Isaac Sim's bundled interpreter:
-#   $ISAACSIM_PATH/python.sh -m pip install -e ".[sim]"
+#   <isaac-sim>/python.sh -m pip install -e ".[sim]"     (scripts/setup.sh does this)
 # `omni`, `carb` and `pxr` ship with Isaac Sim and are deliberately never pip
 # dependencies.
 sim = []
@@ -450,14 +450,21 @@ forbidden_modules = [
     "isaac_core.protocol",
 ]
 
+# The devkit is a typed client for the control plane: `Sim.attach` needs only a host and a port, which
+# is what lets it drive a simulator on another machine. Importing `sim` would drag in omni/carb/pxr and
+# destroy that, so it stays forbidden.
+#
+# `vehicle` and `geo` are deliberately NOT forbidden. They are pure Python over numpy, pyproj and
+# transforms3d -- all already hard requirements -- and they import nothing from `sim`, so using them
+# cannot pull Isaac in. `PoseBot` composes those motion kernels with a transport, which is precisely
+# what a scripting layer is for; the alternative was a pure kernel importing a transport, which is the
+# dependency the wrong way round.
 [[tool.importlinter.contracts]]
 name = "Devkit does not import sim"
 type = "forbidden"
 source_modules = ["isaac_core.devkit"]
 forbidden_modules = [
     "isaac_core.sim",
-    "isaac_core.vehicle",
-    "isaac_core.geo",
 ]
 
 [[tool.importlinter.contracts]]

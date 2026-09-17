@@ -158,7 +158,7 @@ def test_frozen_state_rejects_attribute_mutation() -> None:
 
 def test_with_heading_preserves_roll_and_pitch() -> None:
     roll, pitch = 0.3, -0.2
-    state = VehicleState(lat_deg=0.0, lon_deg=0.0, alt_m=0.0, rotation=euler_to_matrix(roll, pitch, 0.5))
+    state = VehicleState.from_angles(0.0, 0.0, 0.0, roll, pitch, 0.5)
     new = state.with_heading_r(1.0)
     pose = new.to_pose()
     assert math.isclose(pose.orientation.roll_r, roll, abs_tol=1e-12)

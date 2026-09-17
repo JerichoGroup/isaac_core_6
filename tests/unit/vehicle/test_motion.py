@@ -33,12 +33,10 @@ def _make_state(
     pitch_r: float = 0.0,
     yaw_r: float = 0.0,
 ) -> VehicleState:
-    return VehicleState(
-        lat_deg=lat,
-        lon_deg=lon,
-        alt_m=alt,
-        rotation=euler_to_matrix(roll_r, pitch_r, yaw_r),
-    )
+    # from_angles, not VehicleState(rotation=euler_to_matrix(...)): the latter builds the matrix in
+    # the library default frame while the state declares its own, which reads back the wrong angles
+    # for any attitude with two non-zero components.
+    return VehicleState.from_angles(lat, lon, alt, roll_r, pitch_r, yaw_r)
 
 
 # --------------------------------------------------------------------------- #

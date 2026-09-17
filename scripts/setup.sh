@@ -15,15 +15,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # --- Resolve Isaac Sim path ---
 # Uses the same logic as install.py: explicit argument, then probe known locations.
-# NEVER trusts $ISAACSIM_PATH blindly -- it is often stale.
+# Reads no environment variable: one naming an install is invisible and usually stale. The
+# variable below is deliberately lowercase, the shell convention for a local, so it cannot be
+# mistaken for the $ISAACSIM_PATH this project no longer honours.
 
-ISAAC_PATH=""
+isaac_dir=""
 
 # Accept --isaac-path argument
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --isaac-path)
-            ISAAC_PATH="$2"
+            isaac_dir="$2"
             shift 2
             ;;
         *)
@@ -42,14 +44,15 @@ validate_isaac_dir() {
     [[ -f "$dir/VERSION" ]]
 }
 
-if [[ -n "$ISAAC_PATH" ]]; then
-    if ! validate_isaac_dir "$ISAAC_PATH"; then
-        echo "ERROR: Specified Isaac path is not a valid install: $ISAAC_PATH" >&2
+if [[ -n "$isaac_dir" ]]; then
+    if ! validate_isaac_dir "$isaac_dir"; then
+        echo "ERROR: Specified Isaac path is not a valid install: $isaac_dir" >&2
         echo "  A valid install contains: python.sh, isaac-sim.sh, VERSION" >&2
         exit 1
     fi
 else
-    # Probe known locations (do NOT trust $ISAACSIM_PATH without validation)
+    # Probe known locations. No environment variable takes part: one naming an install is
+    # invisible to the user and stale more often than not.
     CANDIDATES=(
         "$HOME/isaacsim"
         "/opt/isaacsim"
@@ -57,19 +60,14 @@ else
         "/isaac-sim"
     )
 
-    # Check $ISAACSIM_PATH only if it validates
-    if [[ -n "${ISAACSIM_PATH:-}" ]] && validate_isaac_dir "$ISAACSIM_PATH"; then
-        ISAAC_PATH="$ISAACSIM_PATH"
-    else
-        for candidate in "${CANDIDATES[@]}"; do
-            if validate_isaac_dir "$candidate"; then
-                ISAAC_PATH="$candidate"
-                break
-            fi
-        done
-    fi
+    for candidate in "${CANDIDATES[@]}"; do
+        if validate_isaac_dir "$candidate"; then
+            isaac_dir="$candidate"
+            break
+        fi
+    done
 
-    if [[ -z "$ISAAC_PATH" ]]; then
+    if [[ -z "$isaac_dir" ]]; then
         echo "ERROR: Cannot find a valid Isaac Sim installation." >&2
         echo "  Tried: ${CANDIDATES[*]}" >&2
         echo "  A valid install contains: python.sh, isaac-sim.sh, VERSION" >&2
@@ -80,27 +78,27 @@ fi
 
 echo "=== isaac_core_6 setup ==="
 echo "Repository: $REPO_ROOT"
-echo "Isaac Sim:  $ISAAC_PATH ($(cat "$ISAAC_PATH/VERSION"))"
+echo "Isaac Sim:  $isaac_dir ($(cat "$isaac_dir/VERSION"))"
 echo
 
 # --- 1. Install into user's Python ---
-echo "[1/5] Installing requirements into user site-packages..."
+echo "[1/6] Installing requirements into user site-packages..."
 pip install --user -r "$REPO_ROOT/requirements.txt"
 echo
 
 # --- 2. Install the package in editable mode ---
-echo "[2/5] Installing isaac-core in editable mode..."
+echo "[2/6] Installing isaac-core in editable mode..."
 pip install --user -e "$REPO_ROOT"
 echo
 
 # --- 3. Install into Isaac's bundled Python ---
-echo "[3/5] Installing isaac-core into Isaac's Python..."
-"$ISAAC_PATH/python.sh" -m pip install -e "$REPO_ROOT[sim]"
+echo "[3/6] Installing isaac-core into Isaac's Python..."
+"$isaac_dir/python.sh" -m pip install -e "$REPO_ROOT[sim]"
 echo
 
 # --- 4. Link extensions ---
-echo "[4/5] Linking extensions..."
-"$SCRIPT_DIR/link_extensions.sh" --isaac-path "$ISAAC_PATH"
+echo "[4/6] Linking extensions..."
+"$SCRIPT_DIR/link_extensions.sh" --isaac-path "$isaac_dir"
 echo
 
 # --- 5. Build the custom ROS 2 message package ---
@@ -110,7 +108,7 @@ echo
 #
 # Skipped rather than failed when the workspace or ROS 2 is absent: the messages are only
 # needed for bbox consumers, and everything else in this repo works without them.
-echo "[5/5] Building ROS 2 message package..."
+echo "[5/6] Building ROS 2 message package..."
 ROS_WS="${ROS_WS:-$HOME/IsaacSim-ros_workspaces/humble_ws}"
 MSG_PKG="$REPO_ROOT/ros2/isaac_core_ros2_msgs"
 
@@ -131,6 +129,18 @@ else
     else
         echo "  Build FAILED. The bbox recorder will not work until this succeeds." >&2
     fi
+fi
+echo
+
+# --- Shell completion ---
+# Installed rather than offered. The generator has always worked; nothing installed it, so pressing
+# TAB completed filenames and nobody knew the feature existed.
+echo "[6/6] Installing shell completion..."
+if isaac-core completion --install; then
+    :
+else
+    echo "  Skipped: could not determine your shell. Install it yourself with:" >&2
+    echo "    isaac-core completion --install bash   # or zsh" >&2
 fi
 echo
 

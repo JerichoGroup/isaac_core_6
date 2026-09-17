@@ -6,7 +6,7 @@ variable, so nothing depends on import order.
 
 Run with::
 
-    $ISAAC_PATH/python.sh -m isaac_core.sim --config config/default.toml
+    /path/to/isaacsim/python.sh -m isaac_core.sim --config config/default.toml
 
 """
 
@@ -191,9 +191,6 @@ def _plan_all_vehicles(
             # {instance} templates. Without this the planner's "default" placeholder
             # produced /Environment/default, which no binding refers to.
             instance=vehicle_id,
-            # Resolve {camera} to the vehicle's first camera, so a camera can be renamed
-            # without editing the layer.
-            camera=next(iter(vehicle.cameras)),
             manifests=manifests,
             capabilities=probe(FakeStageInspector(prims=frozenset())),
             strict=config.sim.strict_features,

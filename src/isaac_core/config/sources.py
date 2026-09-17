@@ -150,7 +150,7 @@ def env_source(environ: Mapping[str, str], prefix: str = "ISAAC_CORE") -> dict[s
 def cli_source(overrides: Mapping[str, Any]) -> dict[str, Any]:
     """Expand dotted-key CLI overrides into a nested dict.
 
-    Accepts keys like ``"vehicles.drone_0.cameras.eo.fov_deg"`` and expands them
+    Accepts keys like ``"vehicles.drone_0.camera.fov_deg"`` and expands them
     to nested dicts with the final segment as the leaf key.
 
     String values (as always come from ``--set KEY VALUE``) are coerced with the same

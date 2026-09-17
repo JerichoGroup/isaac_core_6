@@ -42,19 +42,30 @@ def test_supported_probe_beats_a_structurally_valid_stale_env_var(
     assert resolved.is_supported()
 
 
-def test_stale_env_var_is_used_only_when_nothing_supported_exists(
+def test_an_unsupported_probed_install_is_used_only_when_nothing_better_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Falling back is better than refusing to run: doctor can then report the real
     # problem instead of the tooling claiming no Isaac Sim exists at all.
-    stale = _make_install(tmp_path / "isaac_sim-2023.1.1", "2023.1.1")
+    old_install = _make_install(tmp_path / "isaac_sim-2023.1.1", "2023.1.1")
 
-    monkeypatch.setenv("ISAACSIM_PATH", str(stale))
-    monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: ())
+    monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: (str(old_install),))
 
     resolved = IsaacInstall.locate()
-    assert resolved.root == stale
+    assert resolved.root == old_install
     assert not resolved.is_supported()
+
+
+def test_the_environment_cannot_name_an_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Guards the V3 removal: a supported install reachable only through the old variable must not be
+    # found, otherwise the variable is still load-bearing and a stale one can still mislead.
+    only_in_env = _make_install(tmp_path / "isaacsim", "6.0.1")
+
+    monkeypatch.setenv("ISAACSIM_PATH", str(only_in_env))
+    monkeypatch.setattr("isaac_core.install._probe_candidates", lambda: ())
+
+    with pytest.raises(IsaacInstallError):
+        IsaacInstall.locate()
 
 
 def test_explicit_path_wins_even_when_unsupported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

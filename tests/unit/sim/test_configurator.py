@@ -81,7 +81,7 @@ def test_config_binding_resolves_nested_vehicle_key() -> None:
     binding = ResolvedBinding(
         prim="/Env/cam",
         attribute="inputs:fov",
-        config="vehicles.drone_0.cameras.eo.fov_deg",
+        config="vehicles.drone_0.camera.fov_deg",
     )
     plan = _make_plan(bindings=(binding,))
     writes = compute_writes(config, plan, _make_enu_ref())
@@ -449,7 +449,7 @@ def test_override_without_a_colliding_binding_is_silent() -> None:
 
 def _config_with_camera(**camera_overrides: object) -> IsaacCoreConfig:
     """Build a single-vehicle config whose one camera carries the given overrides."""
-    return IsaacCoreConfig(vehicles={"drone_0": VehicleConfig(cameras={"eo": CameraConfig(**camera_overrides)})})
+    return IsaacCoreConfig(vehicles={"drone_0": VehicleConfig(camera=CameraConfig(**camera_overrides))})
 
 
 def test_default_apertures_match_the_historical_derivation() -> None:
@@ -515,7 +515,7 @@ def test_focus_distance_binding_writes_the_configured_value() -> None:
     binding = ResolvedBinding(
         prim="/Env/cam",
         attribute="focusDistance",
-        config="vehicles.drone_0.cameras.eo.focus_distance",
+        config="vehicles.drone_0.camera.focus_distance",
     )
     plan = _make_plan(bindings=(binding,))
     writes = compute_writes(config, plan, _make_enu_ref())
@@ -527,7 +527,7 @@ def test_f_stop_binding_writes_the_configured_value() -> None:
     binding = ResolvedBinding(
         prim="/Env/cam",
         attribute="fStop",
-        config="vehicles.drone_0.cameras.eo.f_stop",
+        config="vehicles.drone_0.camera.f_stop",
     )
     plan = _make_plan(bindings=(binding,))
     writes = compute_writes(config, plan, _make_enu_ref())
@@ -541,17 +541,11 @@ def test_f_stop_binding_writes_the_configured_value() -> None:
 # output (the regression guard) and the multi-vehicle namespacing.
 
 
-def _two_camera_vehicle() -> VehicleConfig:
-    """Build a vehicle carrying two cameras, so camera namespacing engages."""
-    return VehicleConfig(cameras={"eo": CameraConfig(), "ir": CameraConfig()})
-
-
 def _resolve_one(
     resolve: str,
     config: IsaacCoreConfig,
     *,
     vehicle_id: str | None = None,
-    camera_id: str | None = None,
 ) -> object:
     """Resolve a single runtime binding and return the written value."""
     binding = ResolvedBinding(prim="/Env/node", attribute="inputs:x", resolve=resolve)
@@ -562,7 +556,6 @@ def _resolve_one(
         _make_enu_ref(),
         camera_prim="/Root/Camera",
         vehicle_id=vehicle_id,
-        camera_id=camera_id,
     )
     return writes[0].value
 
@@ -613,31 +606,25 @@ def test_two_vehicles_produce_distinct_udp_ports() -> None:
     assert _resolve_one("udp_port", config, vehicle_id="wing") == 33334
 
 
-# -- two cameras on one vehicle: distinct image topics and RTSP mounts -------------
+# -- one camera per vehicle: no camera segment can appear --------------------------
 
 
-def test_two_cameras_produce_distinct_image_topics() -> None:
-    config = _make_config(vehicles={"drone_0": _two_camera_vehicle()})
-    # Single vehicle so no vehicle segment, but two cameras so the camera segment appears.
-    assert _resolve_one("image_topic", config, camera_id="eo") == "/isaac_core/eo/image_rgb"
-    assert _resolve_one("image_topic", config, camera_id="ir") == "/isaac_core/ir/image_rgb"
+def test_a_single_camera_never_adds_a_camera_segment() -> None:
+    # A vehicle has exactly one camera and it has no name, so nothing can be disambiguated by a
+    # camera segment. Topics and RTSP mounts are namespaced by vehicle only.
+    config = _make_config(vehicles={"drone_0": VehicleConfig()})
+    assert _resolve_one("image_topic", config) == "/isaac_core/image_rgb"
+    assert _resolve_one("rtsp_mount_path", config) == "/stream"
 
 
-def test_two_cameras_produce_distinct_rtsp_mount_paths() -> None:
-    # Two streams sharing a port must not collide on the mount path.
-    config = _make_config(vehicles={"drone_0": _two_camera_vehicle()})
-    assert _resolve_one("rtsp_mount_path", config, camera_id="eo") == "/eo/stream"
-    assert _resolve_one("rtsp_mount_path", config, camera_id="ir") == "/ir/stream"
-
-
-def test_multi_vehicle_multi_camera_rtsp_mount_cannot_collide() -> None:
-    # Full namespacing: vehicle AND camera segment both present, so index i of one vehicle's
-    # stream can never alias another vehicle's.
-    config = _make_config(
-        vehicles={"lead": _two_camera_vehicle(), "wing": _two_camera_vehicle()},
-    )
-    assert _resolve_one("rtsp_mount_path", config, vehicle_id="lead", camera_id="eo") == "/lead/eo/stream"
-    assert _resolve_one("rtsp_mount_path", config, vehicle_id="wing", camera_id="ir") == "/wing/ir/stream"
+def test_two_vehicles_namespace_by_vehicle_alone() -> None:
+    # Full namespacing is now one level: index i of one vehicle's stream still cannot alias
+    # another's, because the vehicle segment is present.
+    config = _make_config(vehicles={"lead": VehicleConfig(), "wing": VehicleConfig()})
+    assert _resolve_one("rtsp_mount_path", config, vehicle_id="lead") == "/lead/stream"
+    assert _resolve_one("rtsp_mount_path", config, vehicle_id="wing") == "/wing/stream"
+    assert _resolve_one("image_topic", config, vehicle_id="lead") == "/isaac_core/lead/image_rgb"
+    assert _resolve_one("image_topic", config, vehicle_id="wing") == "/isaac_core/wing/image_rgb"
 
 
 # -- explicit config values still win over derivation -----------------------------
@@ -645,17 +632,17 @@ def test_multi_vehicle_multi_camera_rtsp_mount_cannot_collide() -> None:
 
 def test_explicit_image_topic_wins_over_derivation() -> None:
     config = _make_config(
-        vehicles={"drone_0": VehicleConfig(cameras={"eo": CameraConfig(image_topic="/custom/image")})},
+        vehicles={"drone_0": VehicleConfig(camera=CameraConfig(image_topic="/custom/image"))},
     )
-    assert _resolve_one("image_topic", config, camera_id="eo") == "/custom/image"
+    assert _resolve_one("image_topic", config) == "/custom/image"
 
 
 def test_explicit_rtsp_mount_path_wins_and_is_slash_prefixed() -> None:
     config = _make_config(
-        vehicles={"drone_0": VehicleConfig(cameras={"eo": CameraConfig(rtsp_mount_path="feed")})},
+        vehicles={"drone_0": VehicleConfig(camera=CameraConfig(rtsp_mount_path="feed"))},
     )
     # An explicit value without a leading slash is normalised, not namespaced.
-    assert _resolve_one("rtsp_mount_path", config, camera_id="eo") == "/feed"
+    assert _resolve_one("rtsp_mount_path", config) == "/feed"
 
 
 def test_explicit_udp_port_wins_over_index_allocation() -> None:
@@ -685,29 +672,25 @@ def test_mavros_topics_derive_from_per_vehicle_namespace() -> None:
     assert _resolve_one("orientation_topic", config, vehicle_id="lead") == "/lead/mavros/local_position/pose"
 
 
-# -- aperture resolvers scope to the named camera ---------------------------------
+# -- aperture resolvers scope to the vehicle's own camera --------------------------
 
 
-def test_aperture_resolvers_scope_to_the_named_camera() -> None:
-    # Two cameras with different explicit apertures; each resolves to its own value rather
-    # than always the first camera's.
+def test_aperture_resolvers_scope_to_the_vehicles_own_camera() -> None:
+    # Two vehicles with different explicit apertures; each resolves its own rather than always
+    # the first vehicle's.
     config = _make_config(
         vehicles={
-            "drone_0": VehicleConfig(
-                cameras={
-                    "eo": CameraConfig(horizontal_aperture_mm=12.0),
-                    "ir": CameraConfig(horizontal_aperture_mm=24.0),
-                }
-            )
+            "lead": VehicleConfig(camera=CameraConfig(horizontal_aperture_mm=12.0)),
+            "wing": VehicleConfig(camera=CameraConfig(horizontal_aperture_mm=24.0)),
         },
     )
-    assert _resolve_horizontal_aperture(config, "drone_0", "eo") == pytest.approx(12.0)
-    assert _resolve_horizontal_aperture(config, "drone_0", "ir") == pytest.approx(24.0)
+    assert _resolve_horizontal_aperture(config, "lead") == pytest.approx(12.0)
+    assert _resolve_horizontal_aperture(config, "wing") == pytest.approx(24.0)
 
 
 def test_compute_writes_defaults_to_first_vehicle_when_identity_omitted() -> None:
-    # Backwards compatibility: existing callers pass no vehicle/camera and get the first
-    # vehicle's first camera, exactly as before the plumbing was added.
+    # Backwards compatibility: existing callers pass no vehicle and get the first vehicle's
+    # camera, exactly as before the plumbing was added.
     config = _make_config(vehicles={"lead": VehicleConfig(), "wing": VehicleConfig()})
     assert _resolve_one("udp_port", config) == 33333
     assert _resolve_one("global_pose_topic", config) == "/isaac_core/lead/global_pose"

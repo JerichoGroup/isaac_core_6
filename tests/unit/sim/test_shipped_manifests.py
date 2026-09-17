@@ -289,26 +289,27 @@ def test_camera_ros_mount_is_instance_templated(ros_manifest: LayerManifest) -> 
 # --- Camera key is templated, not hardcoded ----------------------------------
 
 
-def test_camera_udp_templates_the_camera_key(udp_manifest: LayerManifest) -> None:
-    # Hardcoding "eo" meant a config whose camera was named anything else died at compose
-    # time with ConfigKeyError: vehicles.drone_0.cameras.eo.width does not exist. The
-    # camera key is now templated, so renaming a camera needs no manifest edit.
-    camera_config_bindings = [b for b in udp_manifest.bindings if b.config and "cameras" in b.config]
-    assert camera_config_bindings, "expected at least one camera config binding"
-    for binding in camera_config_bindings:
+def test_camera_udp_binds_the_unnamed_camera(udp_manifest: LayerManifest) -> None:
+    # The camera key used to be templated as {camera} because a camera had a name. A vehicle now has
+    # exactly one, unnamed, so the binding reads vehicles.{instance}.camera.<field> and no
+    # substitution beyond {instance} is involved.
+    camera_bindings = [b for b in udp_manifest.bindings if b.config and ".camera." in b.config]
+    assert camera_bindings, "expected at least one camera config binding"
+    for binding in camera_bindings:
         assert binding.config is not None
-        assert "{camera}" in binding.config
-        assert ".cameras.eo." not in binding.config
+        assert "{camera}" not in binding.config
+        assert ".cameras." not in binding.config
+        assert binding.config.startswith("vehicles.{instance}.camera.")
 
 
-def test_camera_ros_templates_the_camera_key(ros_manifest: LayerManifest) -> None:
-    # See test_camera_udp_templates_the_camera_key: same hardcoded-"eo" bug.
-    camera_config_bindings = [b for b in ros_manifest.bindings if b.config and "cameras" in b.config]
-    assert camera_config_bindings, "expected at least one camera config binding"
-    for binding in camera_config_bindings:
+def test_camera_ros_binds_the_unnamed_camera(ros_manifest: LayerManifest) -> None:
+    camera_bindings = [b for b in ros_manifest.bindings if b.config and ".camera." in b.config]
+    assert camera_bindings, "expected at least one camera config binding"
+    for binding in camera_bindings:
         assert binding.config is not None
-        assert "{camera}" in binding.config
-        assert ".cameras.eo." not in binding.config
+        assert "{camera}" not in binding.config
+        assert ".cameras." not in binding.config
+        assert binding.config.startswith("vehicles.{instance}.camera.")
 
 
 # --- Binding count sanity check ----------------------------------------------

@@ -50,7 +50,7 @@ def test_the_udp_node_port_default_matches_the_shared_constant() -> None:
 
 def test_the_distance_sensor_band_defaults_match_the_config_defaults() -> None:
     inputs = _ogn_inputs("DistanceSensor")
-    sensor = IsaacCoreConfig(vehicles={"drone_0": {"cameras": {"eo": {}}}}).vehicles["drone_0"].distance_sensor
+    sensor = IsaacCoreConfig(vehicles={"drone_0": {"camera": {}}}).vehicles["drone_0"].distance_sensor
     assert inputs["min_range_m"]["default"] == sensor.min_range_m
     assert inputs["max_range_m"]["default"] == sensor.max_range_m, (
         "the .ogn fallback disagrees with config; an unbound input would use a range that may never " "reach the ground"

@@ -3,7 +3,7 @@
 #
 # Idempotent: safe to re-run. Replaces existing symlinks but refuses to clobber
 # a real directory. Resolves the Isaac path via the same validation logic as
-# install.py -- never trusts $ISAACSIM_PATH blindly.
+# install.py -- reads no environment variable.
 #
 # Usage:
 #   scripts/link_extensions.sh [--isaac-path /path/to/isaacsim]
@@ -15,12 +15,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 EXTENSIONS_DIR="$REPO_ROOT/extensions"
 
 # --- Resolve Isaac Sim path ---
-ISAAC_PATH=""
+isaac_dir=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --isaac-path)
-            ISAAC_PATH="$2"
+            isaac_dir="$2"
             shift 2
             ;;
         *)
@@ -39,7 +39,7 @@ validate_isaac_dir() {
     [[ -f "$dir/VERSION" ]]
 }
 
-if [[ -z "$ISAAC_PATH" ]]; then
+if [[ -z "$isaac_dir" ]]; then
     # Probe known locations
     CANDIDATES=(
         "$HOME/isaacsim"
@@ -48,33 +48,28 @@ if [[ -z "$ISAAC_PATH" ]]; then
         "/isaac-sim"
     )
 
-    # Check $ISAACSIM_PATH only if it validates
-    if [[ -n "${ISAACSIM_PATH:-}" ]] && validate_isaac_dir "$ISAACSIM_PATH"; then
-        ISAAC_PATH="$ISAACSIM_PATH"
-    else
-        for candidate in "${CANDIDATES[@]}"; do
-            if validate_isaac_dir "$candidate"; then
-                ISAAC_PATH="$candidate"
-                break
-            fi
-        done
-    fi
+    for candidate in "${CANDIDATES[@]}"; do
+        if validate_isaac_dir "$candidate"; then
+            isaac_dir="$candidate"
+            break
+        fi
+    done
 
-    if [[ -z "$ISAAC_PATH" ]]; then
+    if [[ -z "$isaac_dir" ]]; then
         echo "ERROR: Cannot find a valid Isaac Sim installation." >&2
         echo "  Tried: ${CANDIDATES[*]}" >&2
         echo "  Fix: pass --isaac-path /path/to/isaacsim" >&2
         exit 1
     fi
 else
-    if ! validate_isaac_dir "$ISAAC_PATH"; then
-        echo "ERROR: Specified Isaac path is not a valid install: $ISAAC_PATH" >&2
+    if ! validate_isaac_dir "$isaac_dir"; then
+        echo "ERROR: Specified Isaac path is not a valid install: $isaac_dir" >&2
         echo "  A valid install contains: python.sh, isaac-sim.sh, VERSION" >&2
         exit 1
     fi
 fi
 
-EXTS_USER_DIR="$ISAAC_PATH/extsUser"
+EXTS_USER_DIR="$isaac_dir/extsUser"
 
 echo "Linking extensions into: $EXTS_USER_DIR"
 

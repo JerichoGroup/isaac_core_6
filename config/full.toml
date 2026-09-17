@@ -7,6 +7,7 @@
 scene = "earth"                        # logical name on assets.search_paths, or a path to a .usd/.usda
 headless = false                       # no window; capture_frame does not work headless
 strict_features = false                # true: refuse to start if a requested layer cannot compose
+# isaac_sim_path = "/path/to/isaacsim" # unset: probe ~/isaacsim, /opt/isaacsim, /opt/nvidia/isaac-sim, /isaac-sim
 experience = "isaacsim.exp.full.kit"   # Kit experience file, absolute path or a name in Isaac's apps/
 renderer = "RaytracedLighting"         # RaytracedLighting, PathTracing, MinimalRendering (no terrain)
 physics_dt = 0.016666666666666666      # simulation timestep in seconds; > 0
@@ -83,9 +84,9 @@ min_range_m = 0.2                      # readings below this saturate. >= 0
 max_range_m = 5000.0                   # readings beyond this saturate. > 0
 # topic = "/isaac_core/distance_sensor"    # unset: derived, namespaced per vehicle when there are several
 
-# One camera per vehicle. A second camera in this table is accepted but not yet composed, so use a
-# second vehicle instead.
-[vehicles.drone_0.cameras.eo]
+# The vehicle's camera. Exactly one, and it has no name: a second imaging sensor comes from a layer,
+# which mounts under the same vehicle and brings its own prims, topic and RTSP node.
+[vehicles.drone_0.camera]
 resolution = [1280, 720]               # pixels, also the published image size
 fov_deg = 78.1                         # horizontal field of view; 0 < fov <= 180
 focal_length_mm = 22.7885              # with the apertures, this is what sets the projection
@@ -143,5 +144,5 @@ enabled = false                        # true: start the services below alongsid
 # only when more than one vehicle is configured, so a single vehicle keeps the plain names.
 # [vehicles.wing]
 # pose_source = "udp"                  # udp port becomes 33334, RTSP 8555
-# [vehicles.wing.cameras.eo]
+# [vehicles.wing.camera]
 # resolution = [1280, 720]
