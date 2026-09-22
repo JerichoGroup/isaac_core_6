@@ -80,7 +80,10 @@ class LayerManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: str
-    usd: str
+    # Optional because a layer can contribute behaviour rather than prims. The segmentation feature
+    # attaches a Replicator annotator to a render product that already exists and has nothing to
+    # reference into the stage, so requiring a USD file would mean shipping an empty one.
+    usd: str | None = None
     mount: str
     requires: tuple[str, ...] = ()
     provides: tuple[str, ...] = ()

@@ -5,30 +5,31 @@ historical record of how V2 was planned and what each pass fixed, kept because i
 things are shaped the way they are. Where those tables once said "missing" or "dead", they now say
 what closed them.
 
-## Registering a layer by entry point
+## Registering a layer by entry point — **CLOSED**
 
-Discovery only scans directories: `assets.layer_search_paths` plus the layers shipped inside the
-package. There is no `importlib.metadata` lookup, so a layer cannot announce itself by declaring an
-entry point in its own `pyproject.toml` -- an installed layer package still has to hand over a
-directory path. The README used to document the entry-point form, which never worked.
+Discovery reads the `isaac_core.layers` entry-point group and treats each resolved directory as another
+search path, after the config's own paths so a local directory can still shadow an installed one. A
+package declares itself with:
 
-Worth doing because it is the one remaining place where installing a layer is not just installing a
-package, and it is a small change: read the entry-point group during discovery and treat each
-resolved directory as another search path.
+```toml
+[project.entry-points."isaac_core.layers"]
+thermal = "my_package.layers"
+```
 
-## Per-vehicle gimbal and frame capture
+A broken or uninstalled entry point is logged and skipped rather than raised, so one bad third-party
+package cannot stop the simulator composing everything else. Verified against a real distribution on
+`sys.path` rather than a mock, since the claim is about installing a package.
 
-`set_gimbal` and `capture_frame` act on a single vehicle. With more than one configured they now
-**refuse** with a message naming the vehicles, rather than silently acting on the first one and
-reporting success — which is what they used to do.
+## Per-vehicle gimbal, capture and zoom — **CLOSED**
 
-To lift the restriction: give `set_gimbal` and `capture_frame` a `vehicle` argument (and
-`capture_frame` a `camera` argument), key the gimbal target and current angles per vehicle instead of
-one runtime-wide pair, and route both through the same `_vehicle_from` resolution `set_pose` and
-`get_pose` already use. Around ten call sites resolve `next(iter(vehicles))` today.
+`set_gimbal`, `set_zoom`, `get_zoom`, `capture_frame` and segmentation recording all take `vehicle=` and
+default to the first declared one. Gimbal angles, zoom state and resolved camera prims are keyed per
+vehicle, and the render product is looked up under that vehicle's own mount. `_require_single_vehicle` is
+gone rather than left unused.
 
-Everything else is already per-vehicle: ports, topics, mounts, render products and RTSP streams. Only
-these two commands are not.
+Verified live on a two-vehicle stage by reading the two gimbal prims: lead at pitch -40/yaw 0 while wing
+sat at pitch -10/yaw 25, and the two cameras at 20 mm and 200 mm. `capture_frame(vehicle="wing")` wrote
+from wing's own render product, where it used to refuse outright.
 
 ## Version 1 — shipped (2026-09-02)
 

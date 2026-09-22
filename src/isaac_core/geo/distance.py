@@ -63,7 +63,12 @@ def meters_to_latlon_offset(north_m: float, east_m: float, ref_lat_deg: float) -
     return (math.degrees(d_lat_rad), math.degrees(d_lon_rad))
 
 
-def look_at_angles(observer: Lla, target: Lla) -> tuple[float, float]:
+# Ground separation below which there is no bearing to a target, so a yaw computed from it would come
+# from floating-point noise rather than from geometry.
+OVERHEAD_TOLERANCE_M: float = 0.5
+
+
+def look_at_angles(observer: Lla, target: Lla, *, fallback_yaw_r: float | None = None) -> tuple[float, float]:
     """Return the NED yaw and pitch that point an observer at a target.
 
     Flat-earth offsets, which is accurate at the ranges this simulator flies and matches how every
@@ -71,9 +76,16 @@ def look_at_angles(observer: Lla, target: Lla) -> tuple[float, float]:
     and ``move_to_point(face_target=True)`` must agree, or a bot that turns and then flies visibly
     re-aims at the start of the move.
 
+    **Directly above or below a target there is no yaw to compute.** The horizontal offsets are both
+    zero, and ``atan2(0, 0)`` is zero, so an aircraft that flew over its target snapped to due north --
+    a visible jump at the moment of arrival. Pass ``fallback_yaw_r`` to hold a heading instead; pitch is
+    still well defined and comes out as straight up or down.
+
     Args:
         observer: Where the vehicle is.
         target: What to look at.
+        fallback_yaw_r: Yaw to keep when the target is directly above or below. Without it the
+            degenerate case still returns zero, which is the historical behaviour.
 
     Returns:
         ``(yaw_r, pitch_r)`` in radians, NED. Positive pitch looks up.
@@ -84,6 +96,10 @@ def look_at_angles(observer: Lla, target: Lla) -> tuple[float, float]:
     east_m = math.radians(target.lon_deg - observer.lon_deg) * EARTH_RADIUS_M * cos_lat
     up_m = target.alt_m - observer.alt_m
 
-    yaw_r = math.atan2(east_m, north_m)
-    pitch_r = math.atan2(up_m, math.hypot(east_m, north_m))
+    ground_m = math.hypot(east_m, north_m)
+    if ground_m < OVERHEAD_TOLERANCE_M and fallback_yaw_r is not None:
+        yaw_r = fallback_yaw_r
+    else:
+        yaw_r = math.atan2(east_m, north_m)
+    pitch_r = math.atan2(up_m, ground_m)
     return (yaw_r, pitch_r)

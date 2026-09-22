@@ -30,6 +30,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -70,6 +71,24 @@ PATCHABLE_CONFIG_KEYS: frozenset[str] = frozenset({"gimbal.max_rate_deg_s"})
 
 # Bounded so a wedged step loop surfaces as an error rather than a hung client.
 MAIN_THREAD_TASK_TIMEOUT_S: float = 10.0
+
+# Extra budget per requested frame, on top of the base. A wedged loop is still caught, because the
+# detector is about progress rather than duration, but a legitimately large `step(count=...)` no longer
+# fails like a hang: 60 frames on a freshly opened stage exceeded the flat 10 s while rendering normally.
+MAIN_THREAD_FRAME_BUDGET_S: float = 1.0
+
+# Attaching a Replicator annotator builds a capture graph, which takes noticeably longer than reading an
+# attribute; the wait is sized as if it were this many frames of work.
+ANNOTATOR_WARMUP_FRAMES: int = 30
+
+# How many copies of a `set_pose` packet to send, and the gap between them. A single datagram is lost if
+# the receiver has not bound yet, which made a commanded pose silently fail to apply.
+SET_POSE_DATAGRAMS: int = 3
+SET_POSE_GAP_S: float = 0.02
+
+# Degrees of field of view within which a zoom counts as arrived. Without a tolerance a rate-limited zoom
+# can step past the target and oscillate around it forever.
+_ZOOM_ARRIVAL_DEG: float = 1e-6
 
 # Pumped before any stage operation. Opening a stage straight after enabling the ROS 2 bridge
 # segfaulted 4 of 6 launches inside Kit's graph executor; with these frames first, 0 of 6.
@@ -168,6 +187,9 @@ class _CaptureRequest:
     target: Path
     width: int | None
     height: int | None
+    # Which vehicle's camera to capture. A swarm has one render product per aircraft, so a capture that
+    # did not carry this would silently shoot the first one.
+    vehicle_id: str = ""
     stage: str = "start"
     frames: int = 0
     original: tuple[int, int] = (0, 0)
@@ -367,10 +389,17 @@ class SimulationRuntime:
         self._running = False
         # Gimbal aiming state. `_gimbal_target` is set by the control plane and cleared once
         # reached; `_gimbal_current` is where the gimbal actually is, integrated per frame.
-        self._gimbal_target: _GimbalTarget | None = None
-        self._gimbal_current: GimbalAngles | None = None
-        self._gimbal_prim_path: str | None = None
+        self._gimbal_targets: dict[str, _GimbalTarget] = {}
+
+        # Zoom state, in field of view because that is what the rate limit and the level are linear in.
+        self._zoom_targets: dict[str, float] = {}
+        self._zoom_currents: dict[str, float] = {}
+        self._camera_prim_paths: dict[str, str] = {}
+        self._gimbal_currents: dict[str, GimbalAngles] = {}
+        self._gimbal_prim_paths: dict[str, str] = {}
         self._capture_request: _CaptureRequest | None = None
+        # Built on first use: the recorder imports Replicator, which only exists inside Isaac.
+        self._segmentation: Any = None
         # Set by reset(); the loop presses play one frame later, since play() in the same
         # frame as stop() is ignored by Kit's timeline.
         self._pending_play = False
@@ -823,7 +852,9 @@ class SimulationRuntime:
                 app_utils.update_app()
                 self._step_pending_play()
                 self._step_gimbal()
+                self._step_zoom()
                 self._step_capture()
+                self._step_segmentation()
                 self._drain_main_thread_tasks()
         finally:
             self._running = False
@@ -859,11 +890,14 @@ class SimulationRuntime:
             finally:
                 task.done.set()
 
-    def _on_main_thread(self, call: "Callable[[], Any]") -> Any:
+    def _on_main_thread(self, call: "Callable[[], Any]", *, frames: int = 0) -> Any:
         """Run ``call`` on the step-loop thread and return its result.
 
         Args:
             call: Zero-argument callable touching USD, Fabric or the Kit application.
+            frames: How many frames the call will advance, if any. The wait allows
+                :data:`MAIN_THREAD_FRAME_BUDGET_S` for each, because a request for many frames
+                legitimately takes longer than one and should not read as a wedged loop.
 
         Returns:
             Whatever ``call`` returns.
@@ -876,10 +910,11 @@ class SimulationRuntime:
             # Before the loop starts, or already on it: nothing to hand off to.
             return call()
 
+        budget = MAIN_THREAD_TASK_TIMEOUT_S + max(0, frames) * MAIN_THREAD_FRAME_BUDGET_S
         task = _MainThreadTask(call=call)
         self._main_thread_tasks.put(task)
-        if not task.done.wait(timeout=MAIN_THREAD_TASK_TIMEOUT_S):
-            message = f"the simulation step loop did not run the task within {MAIN_THREAD_TASK_TIMEOUT_S}s"
+        if not task.done.wait(timeout=budget):
+            message = f"the simulation step loop did not run the task within {budget}s"
             raise TimeoutError(message)
         if task.error is not None:
             raise task.error
@@ -915,6 +950,8 @@ class SimulationRuntime:
         self._control_server.register("ping", self._handle_ping)
         self._control_server.register("get_pose", self._handle_get_pose)
         self._control_server.register("set_gimbal", self._handle_set_gimbal)
+        self._control_server.register("set_zoom", self._handle_set_zoom)
+        self._control_server.register("get_zoom", self._handle_get_zoom)
         self._control_server.register("set_pose", self._handle_set_pose)
         self._control_server.register("get_state", self._handle_get_state)
         self._control_server.register("get_capabilities", self._handle_get_capabilities)
@@ -923,6 +960,8 @@ class SimulationRuntime:
         self._control_server.register("resume", self._handle_resume)
         self._control_server.register("step", self._handle_step)
         self._control_server.register("capture_frame", self._handle_capture_frame)
+        self._control_server.register("start_segmentation_recording", self._handle_start_segmentation_recording)
+        self._control_server.register("stop_segmentation_recording", self._handle_stop_segmentation_recording)
         self._control_server.register("set_config", self._handle_set_config)
         self._control_server.register("reset", self._handle_reset)
         self._control_server.register("get_runtime_values", self._handle_get_runtime_values)
@@ -952,25 +991,34 @@ class SimulationRuntime:
         """
         return float(self._config.sim.physics_dt)
 
-    def _resolve_gimbal_prim(self) -> None:
-        """Locate the prim carrying the gimbal offset inputs, once.
+    def _resolve_gimbal_prim(self, vehicle_id: str) -> str | None:
+        """Locate the prim carrying one vehicle's gimbal offset inputs, once per vehicle.
 
-        Resolved from the first vehicle's mount rather than hardcoded, so a renamed vehicle still
-        works. Left as ``None`` when the pose graph is absent, which simply makes ``set_gimbal``
-        a no-op instead of an error -- a scene with no camera layer has no gimbal to move.
+        Resolved from that vehicle's own mount rather than hardcoded, so each aircraft in a swarm aims
+        its own camera. ``None`` when the pose graph is absent, which makes ``set_gimbal`` a no-op
+        instead of an error -- a scene with no camera layer has no gimbal to move.
+
+        Args:
+            vehicle_id: Which vehicle's gimbal to locate.
+
+        Returns:
+            The prim path, or ``None``.
+
         """
-        if self._gimbal_prim_path is not None:
-            return
-        vehicle_id = self._config.first_vehicle_id
+        cached = self._gimbal_prim_paths.get(vehicle_id)
+        if cached is not None:
+            return cached
         mount = self._config.resolved_mount(vehicle_id)
         candidate = f"{mount}/PoseSync/global_position_to_local_position"
         stage = self._stage()
         if stage is None:
-            return
+            return None
         sdf = importlib.import_module("pxr.Sdf")
         if stage.GetPrimAtPath(sdf.Path(candidate)).IsValid():
-            self._gimbal_prim_path = candidate
-            logger.debug("gimbal offsets resolved to %s", candidate)
+            self._gimbal_prim_paths[vehicle_id] = candidate
+            logger.debug("gimbal offsets for %s resolved to %s", vehicle_id, candidate)
+            return candidate
+        return None
 
     def _write_float_attribute(self, prim_path: str, attribute: str, value: float) -> None:
         """Write one float attribute on the simulation thread.
@@ -992,36 +1040,7 @@ class SimulationRuntime:
         if attr.IsValid():
             attr.Set(float(value))
 
-    def _require_single_vehicle(self, method: str) -> str:
-        """Return the only vehicle's id, or reject the call when several are configured.
-
-        The gimbal and frame capture act on the first configured vehicle. With a
-        swarm that silently aimed or photographed the *first* vehicle while reporting success, which
-        is worse than refusing: a script asking for ``wing`` got ``lead`` and no warning. Per-vehicle
-        gimbal state and camera selection are roadmapped; until then the call fails and says so.
-
-        Args:
-            method: The wire method name, for the error message.
-
-        Returns:
-            The single configured vehicle's id.
-
-        Raises:
-            InvalidParamsError: If more than one vehicle is configured.
-
-        """
-        vehicles = list(self._config.vehicles)
-        if len(vehicles) > 1:
-            message = (
-                f"{method} supports a single vehicle only, but {len(vehicles)} are configured "
-                f"({', '.join(vehicles)}). It would have acted on {vehicles[0]!r} without saying so. "
-                f"Run one vehicle, or point the viewport with sim.viewport_camera and capture from "
-                f"the image topic instead. Per-vehicle support is tracked in docs/dev/roadmap.md."
-            )
-            raise InvalidParamsError(message)
-        return vehicles[0]
-
-    def _handle_set_gimbal(self, params: dict[str, Any] | list[Any] | None) -> dict[str, float]:
+    def _handle_set_gimbal(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
         """Aim the gimbal at a new attitude, slewing there if a rate limit is configured.
 
         Only records the target. The prim writes happen on the simulation loop, which is the one
@@ -1039,8 +1058,10 @@ class SimulationRuntime:
 
         """
         values = _as_mapping(params)
-        gimbal = self._config.vehicles[self._require_single_vehicle("set_gimbal")].gimbal
-        held = self._gimbal_current.to_degrees() if self._gimbal_current is not None else None
+        vehicle_id = self._vehicle_from(values)
+        gimbal = self._config.vehicles[vehicle_id].gimbal
+        existing = self._gimbal_currents.get(vehicle_id)
+        held = existing.to_degrees() if existing is not None else None
         current = _GimbalTarget(
             roll_deg=held[0] if held else gimbal.start_roll_deg,
             pitch_deg=held[1] if held else gimbal.start_pitch_deg,
@@ -1051,14 +1072,20 @@ class SimulationRuntime:
             pitch_deg=_optional_float(values, "pitch_deg", current.pitch_deg),
             yaw_deg=_optional_float(values, "yaw_deg", current.yaw_deg),
         )
-        self._gimbal_target = target
+        self._gimbal_targets[vehicle_id] = target
         logger.info(
-            "gimbal target set to roll=%.2f pitch=%.2f yaw=%.2f deg",
+            "gimbal target for %s set to roll=%.2f pitch=%.2f yaw=%.2f deg",
+            vehicle_id,
             target.roll_deg,
             target.pitch_deg,
             target.yaw_deg,
         )
-        return {"roll_deg": target.roll_deg, "pitch_deg": target.pitch_deg, "yaw_deg": target.yaw_deg}
+        return {
+            "vehicle": vehicle_id,
+            "roll_deg": target.roll_deg,
+            "pitch_deg": target.pitch_deg,
+            "yaw_deg": target.yaw_deg,
+        }
 
     def _step_pending_play(self) -> None:
         """Press play if a reset asked for it on a previous frame.
@@ -1074,42 +1101,226 @@ class SimulationRuntime:
         logger.info("reset: timeline resumed")
 
     def _step_gimbal(self) -> None:
-        """Move the gimbal one frame's worth toward its target.
+        """Move every commanded gimbal one frame's worth toward its target.
 
-        Called every frame from the simulation loop. Does nothing until a target has been
-        commanded, so a run that never touches the gimbal pays nothing and leaves the config's
-        start angles exactly as composed.
+        Called every frame from the simulation loop. Iterates the vehicles that have a target rather
+        than all of them, so a swarm where only one aircraft is aiming pays for one.
         """
-        target = self._gimbal_target
+        for vehicle_id in list(self._gimbal_targets):
+            self._step_one_gimbal(vehicle_id)
+
+    def _step_one_gimbal(self, vehicle_id: str) -> None:
+        """Move one vehicle's gimbal toward its target.
+
+        Args:
+            vehicle_id: Which vehicle to advance.
+
+        """
+        target = self._gimbal_targets.get(vehicle_id)
         if target is None:
             return
-        self._resolve_gimbal_prim()
-        if self._gimbal_prim_path is None:
+        prim_path = self._resolve_gimbal_prim(vehicle_id)
+        if prim_path is None:
             return
 
-        limit = self._gimbal_max_rate_deg_s()
+        limit = self._gimbal_max_rate_deg_s(vehicle_id)
         target_angles = GimbalAngles.from_degrees(target.roll_deg, target.pitch_deg, target.yaw_deg)
-        if self._gimbal_current is None:
-            gimbal = self._config.vehicles[self._config.first_vehicle_id].gimbal
-            self._gimbal_current = GimbalAngles.from_degrees(
-                gimbal.start_roll_deg, gimbal.start_pitch_deg, gimbal.start_yaw_deg
-            )
+        current = self._gimbal_currents.get(vehicle_id)
+        if current is None:
+            gimbal = self._config.vehicles[vehicle_id].gimbal
+            current = GimbalAngles.from_degrees(gimbal.start_roll_deg, gimbal.start_pitch_deg, gimbal.start_yaw_deg)
         else:
             # A rate of None means unlimited, matching the config default: the gimbal snaps.
             rate_r_s = math.radians(limit) if limit is not None else 0.0
-            self._gimbal_current = slew_towards(self._gimbal_current, target_angles, rate_r_s, self._frame_dt_s)
+            current = slew_towards(current, target_angles, rate_r_s, self._frame_dt_s)
+        self._gimbal_currents[vehicle_id] = current
 
-        roll_deg, pitch_deg, yaw_deg = self._gimbal_current.to_degrees()
+        roll_deg, pitch_deg, yaw_deg = current.to_degrees()
         for attribute, value in (
             ("inputs:offset_roll_deg", roll_deg),
             ("inputs:offset_pitch_deg", pitch_deg),
             ("inputs:offset_yaw_deg", yaw_deg),
         ):
-            self._write_float_attribute(self._gimbal_prim_path, attribute, value)
+            self._write_float_attribute(prim_path, attribute, value)
 
-        if self._gimbal_current.as_tuple() == target_angles.as_tuple():
-            self._gimbal_target = None
-            logger.debug("gimbal reached target")
+        if current.as_tuple() == target_angles.as_tuple():
+            self._gimbal_targets.pop(vehicle_id, None)
+            logger.debug("gimbal for %s reached target", vehicle_id)
+
+    def _zoom_range(self, vehicle_id: str) -> Any:
+        """Return a vehicle camera's zoom range.
+
+        Args:
+            vehicle_id: Which vehicle's camera.
+
+        Returns:
+            A :class:`~isaac_core.contracts.zoom.ZoomRange`.
+
+        Raises:
+            RuntimeError: If the camera has no zoom travel configured.
+
+        """
+        from isaac_core.contracts.zoom import ZoomRange
+        from isaac_core.sim.configurator import resolve_horizontal_aperture
+
+        camera = self._config.vehicles[vehicle_id].camera
+        if camera.focal_length_min_mm is None or camera.focal_length_max_mm is None:
+            raise RuntimeError(
+                "this camera does not zoom; set vehicles."
+                f"{vehicle_id}.camera.focal_length_min_mm and focal_length_max_mm to give it travel"
+            )
+        return ZoomRange(
+            focal_min_mm=camera.focal_length_min_mm,
+            focal_max_mm=camera.focal_length_max_mm,
+            horizontal_aperture_mm=resolve_horizontal_aperture(self._config, vehicle_id),
+        )
+
+    def _handle_set_zoom(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+        """Aim a vehicle's zoom at a level or at an exact focal length.
+
+        Returns as soon as the target is accepted, not when the lens arrives: with
+        ``zoom_max_rate_deg_s`` set the move takes time, exactly as ``set_gimbal`` does.
+
+        Args:
+            params: Either ``level`` in ``[0, 1]`` or ``focal_mm``, not both, plus optional ``vehicle``.
+
+        Returns:
+            The vehicle, and the level, focal length and field of view being aimed at.
+
+        Raises:
+            InvalidParamsError: If neither or both are given, or the vehicle is unknown.
+            RuntimeError: If the camera has no zoom travel configured.
+
+        """
+        values = _as_mapping(params)
+        vehicle_id = self._vehicle_from(values)
+        has_level = "level" in values and values["level"] is not None
+        has_focal = "focal_mm" in values and values["focal_mm"] is not None
+        if has_level == has_focal:
+            raise InvalidParamsError("set_zoom takes exactly one of level or focal_mm")
+
+        zoom = self._zoom_range(vehicle_id)
+        if has_level:
+            focal_mm = zoom.focal_mm_at(_optional_float(values, "level", 0.0))
+        else:
+            focal_mm = zoom.clamp_focal_mm(_optional_float(values, "focal_mm", zoom.focal_min_mm, minimum=0.0))
+        level = zoom.level_for_focal_mm(focal_mm)
+        hfov_deg = zoom.hfov_deg_at(level)
+
+        self._zoom_targets[vehicle_id] = hfov_deg
+        logger.info(
+            "zoom target for %s set to level=%.4f focal=%.3fmm hfov=%.3fdeg", vehicle_id, level, focal_mm, hfov_deg
+        )
+        return {
+            "vehicle": vehicle_id,
+            "level": round(level, 6),
+            "focal_length_mm": round(focal_mm, 6),
+            "hfov_deg": round(hfov_deg, 6),
+        }
+
+    def _handle_get_zoom(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+        """Report where a vehicle's zoom is.
+
+        All three numbers are returned because which one is useful depends on the question: a level for a
+        slider, a focal length for a lens, a field of view for a geometry calculation.
+
+        Args:
+            params: Optional ``vehicle``.
+
+        Returns:
+            The current level, focal length and field of view, whether a move is running, and the travel.
+
+        Raises:
+            RuntimeError: If the camera has no zoom travel configured.
+
+        """
+        from isaac_core.contracts.zoom import focal_for_hfov_deg, hfov_deg_for_focal
+
+        values = _as_mapping(params)
+        vehicle_id = self._vehicle_from(values)
+        zoom = self._zoom_range(vehicle_id)
+        hfov_deg = self._zoom_currents.get(vehicle_id)
+        if hfov_deg is None:
+            # Never commanded: report where the composed camera actually is rather than assuming an end.
+            camera = self._config.vehicles[vehicle_id].camera
+            hfov_deg = hfov_deg_for_focal(camera.focal_length_mm, zoom.horizontal_aperture_mm)
+        focal_mm = focal_for_hfov_deg(hfov_deg, zoom.horizontal_aperture_mm)
+        return {
+            "vehicle": vehicle_id,
+            "level": round(zoom.level_for_focal_mm(focal_mm), 6),
+            "focal_length_mm": round(focal_mm, 6),
+            "hfov_deg": round(hfov_deg, 6),
+            "moving": vehicle_id in self._zoom_targets,
+            "focal_length_min_mm": zoom.focal_min_mm,
+            "focal_length_max_mm": zoom.focal_max_mm,
+        }
+
+    def _step_zoom(self) -> None:
+        """Move every commanded zoom one frame's worth toward its target."""
+        for vehicle_id in list(self._zoom_targets):
+            self._step_one_zoom(vehicle_id)
+
+    def _step_one_zoom(self, vehicle_id: str) -> None:
+        """Move one vehicle's zoom toward its target.
+
+        Args:
+            vehicle_id: Which vehicle to advance.
+
+        """
+        target = self._zoom_targets.get(vehicle_id)
+        if target is None:
+            return
+        from isaac_core.contracts.zoom import focal_for_hfov_deg, hfov_deg_for_focal, slew_hfov_deg
+        from isaac_core.sim.configurator import resolve_horizontal_aperture
+
+        camera = self._config.vehicles[vehicle_id].camera
+        if camera.focal_length_min_mm is None or camera.focal_length_max_mm is None:
+            self._zoom_targets.pop(vehicle_id, None)
+            return
+        aperture = resolve_horizontal_aperture(self._config, vehicle_id)
+        current = self._zoom_currents.get(vehicle_id)
+        if current is None:
+            current = hfov_deg_for_focal(camera.focal_length_mm, aperture)
+        current = slew_hfov_deg(current, target, camera.zoom_max_rate_deg_s, self._frame_dt_s)
+        self._zoom_currents[vehicle_id] = current
+
+        prim_path = self._camera_prim_path(vehicle_id)
+        if prim_path is not None:
+            # focalLength moves and the aperture is held, so the field of view follows. Writing the
+            # aperture instead would move the sensor and invalidate every derived intrinsic.
+            self._write_float_attribute(prim_path, "focalLength", focal_for_hfov_deg(current, aperture))
+
+        if abs(current - target) < _ZOOM_ARRIVAL_DEG:
+            self._zoom_currents[vehicle_id] = target
+            self._zoom_targets.pop(vehicle_id, None)
+            logger.debug("zoom for %s reached target", vehicle_id)
+
+    def _camera_prim_path(self, vehicle_id: str) -> str | None:
+        """Return a vehicle camera's prim path, or ``None`` when it cannot be found.
+
+        Searched under that vehicle's own mount, so a swarm zooms the camera it was asked to.
+
+        Args:
+            vehicle_id: Which vehicle's camera.
+
+        Returns:
+            The camera prim path.
+
+        """
+        cached = self._camera_prim_paths.get(vehicle_id)
+        if cached is not None:
+            return cached
+        stage = self._stage()
+        if stage is None:
+            return None
+        usd_geom = importlib.import_module("pxr.UsdGeom")
+        mount = self._config.resolved_mount(vehicle_id)
+        for prim in stage.Traverse():
+            path = prim.GetPath().pathString
+            if path.startswith(mount) and prim.IsA(usd_geom.Camera):
+                self._camera_prim_paths[vehicle_id] = str(path)
+                return str(path)
+        return None
 
     def _handle_get_pose(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
         """Return the live local transform of a vehicle's moved prim.
@@ -1420,8 +1631,107 @@ class SimulationRuntime:
                     timeline.forward_one_frame()
                 app_utils.update_app()
 
-        self._on_main_thread(_advance_frames)
+        self._on_main_thread(_advance_frames, frames=count)
         return "stepped"
+
+    def _handle_start_segmentation_recording(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+        """Begin recording the stage's instance segmentation.
+
+        Frames accumulate on the simulation loop until
+        :meth:`_handle_stop_segmentation_recording` writes them, because the annotator is only readable
+        from the thread that renders.
+
+        Args:
+            params: Unused; accepted so the call shape matches the other methods.
+
+        Returns:
+            The render product being recorded and the resolution it reports.
+
+        Raises:
+            InvalidParamsError: If more than one vehicle is configured.
+            RuntimeError: If the segmentation feature is not enabled, or no render product exists.
+
+        """
+        values = _as_mapping(params)
+        vehicle_id = self._vehicle_from(values)
+        if not self._segmentation_enabled():
+            raise RuntimeError('segmentation is not enabled; add "segmentation" to [features] enabled and relaunch')
+        recorder = self._segmentation_recorder()
+
+        def _attach() -> tuple[str | None, tuple[int, int] | None]:
+            # Replicator's registry and the OmniGraph both have to be touched from the thread that
+            # renders. Attaching from the control-plane thread hung the call outright rather than
+            # failing, which looked like a wedged simulator.
+            product = self._camera_render_product(vehicle_id)
+            if product is None:
+                return None, None
+            recorder.attach(product)
+            return product, self._render_product_resolution(product)
+
+        render_product, resolution = self._on_main_thread(_attach, frames=ANNOTATOR_WARMUP_FRAMES)
+        if render_product is None:
+            raise RuntimeError("no camera render product to record; is a camera layer composed?")
+        recorder.start()
+        return {
+            "recording": True,
+            "render_product": render_product,
+            "resolution": list(resolution) if resolution else None,
+        }
+
+    def _handle_stop_segmentation_recording(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+        """Stop recording and write the mp4.
+
+        Args:
+            params: ``path`` (required), confined under ``output_root`` exactly as ``capture_frame`` is.
+
+        Returns:
+            The path written, the frame count, the measured frame rate and the resolution.
+
+        Raises:
+            InvalidParamsError: If ``path`` is missing.
+            RuntimeError: If no recording is running or too few frames were captured.
+
+        """
+        from isaac_core.control.server import confine_path
+
+        values = _as_mapping(params)
+        if "path" not in values:
+            raise InvalidParamsError("stop_segmentation_recording requires params.path")
+        target = confine_path(values["path"], self._config.sim.control_plane.output_root)
+        written: dict[str, Any] = self._segmentation_recorder().stop(target)
+        return written
+
+    def _segmentation_recorder(self) -> Any:
+        """Return the lazily built segmentation recorder.
+
+        Returns:
+            The recorder, created on first use so importing the runtime does not need Replicator.
+
+        """
+        if self._segmentation is None:
+            from isaac_core.sim.segmentation import SegmentationRecorder
+
+            self._segmentation = SegmentationRecorder()
+        return self._segmentation
+
+    def _segmentation_enabled(self) -> bool:
+        """Return whether the segmentation feature was requested.
+
+        Returns:
+            Whether ``segmentation`` appears in ``[features] enabled``.
+
+        """
+        return "segmentation" in tuple(self._config.features.enabled)
+
+    def _step_segmentation(self) -> None:
+        """Read one segmentation frame per simulation frame while recording.
+
+        Kept in the loop rather than in a task because the annotator must be read from the rendering
+        thread, and because a recording is defined by the frames the simulation actually produced.
+        """
+        if self._segmentation is None or not self._segmentation.is_recording:
+            return
+        self._segmentation.capture()
 
     def _handle_capture_frame(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
         """Capture the camera's current frame to an image on disk.
@@ -1448,10 +1758,10 @@ class SimulationRuntime:
             RuntimeError: If the capture does not complete, or no viewport exists.
 
         """
-        self._require_single_vehicle("capture_frame")
         from isaac_core.control.server import confine_path
 
         values = _as_mapping(params)
+        vehicle_id = self._vehicle_from(values)
         if "path" not in values:
             raise InvalidParamsError("capture_frame requires params.path")
         target = confine_path(values["path"], self._config.sim.control_plane.output_root)
@@ -1462,7 +1772,7 @@ class SimulationRuntime:
         if (width is None) != (height is None):
             raise InvalidParamsError("capture_frame needs both width and height, or neither")
 
-        request = _CaptureRequest(target=target, width=width, height=height)
+        request = _CaptureRequest(target=target, width=width, height=height, vehicle_id=vehicle_id)
         self._capture_request = request
         if not request.done.wait(timeout=CAPTURE_TIMEOUT_S):
             self._capture_request = None
@@ -1532,7 +1842,7 @@ class SimulationRuntime:
             if viewport is None:
                 message = "no viewport available to capture from"
                 raise RuntimeError(message)
-            request.render_product = self._camera_render_product()
+            request.render_product = self._camera_render_product(request.vehicle_id or None)
             original = self._render_product_resolution(request.render_product) or tuple(
                 int(v) for v in viewport.resolution
             )
@@ -1722,7 +2032,7 @@ class SimulationRuntime:
         if attr.IsValid():
             attr.Set(gf.Vec2i(int(width), int(height)))
 
-    def _camera_render_product(self) -> str | None:
+    def _camera_render_product(self, vehicle_id: str | None = None) -> str | None:
         """Return the camera layer's render product path, or ``None``.
 
         Read off the graph rather than guessed, because it is created at runtime by
@@ -1742,8 +2052,8 @@ class SimulationRuntime:
             og = importlib.import_module("omni.graph.core")
         except ImportError:
             return None
-        vehicle_id = self._config.first_vehicle_id
-        mount = self._config.resolved_mount(vehicle_id)
+        resolved = vehicle_id or self._config.first_vehicle_id
+        mount = self._config.resolved_mount(resolved)
         node_path = f"{mount}/CameraImageExport/{RENDER_PRODUCT_NODE_NAME}"
         try:
             node = og.Controller.node(node_path)
@@ -1854,17 +2164,22 @@ class SimulationRuntime:
         message = f"{key!r} is allowlisted but has no handler; this is a bug"
         raise InvalidParamsError(message)
 
-    def _gimbal_max_rate_deg_s(self) -> float | None:
-        """Return the effective gimbal slew limit, honouring a runtime patch.
+    def _gimbal_max_rate_deg_s(self, vehicle_id: str | None = None) -> float | None:
+        """Return a vehicle's effective gimbal slew limit, honouring a runtime patch.
+
+        Args:
+            vehicle_id: Which vehicle. Defaults to the first configured one.
 
         Returns:
             Degrees per second, or ``None`` for unlimited.
 
         """
         if "gimbal.max_rate_deg_s" in self._config_overrides:
+            # A runtime patch is deliberately fleet-wide: it is one key, not one per vehicle.
             patched: float | None = self._config_overrides["gimbal.max_rate_deg_s"]
             return patched
-        return self._config.vehicles[self._config.first_vehicle_id].gimbal.max_rate_deg_s
+        resolved = vehicle_id or self._config.first_vehicle_id
+        return self._config.vehicles[resolved].gimbal.max_rate_deg_s
 
     def _handle_reset(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
         """Restart the timeline and clear commanded state.
@@ -1898,8 +2213,8 @@ class SimulationRuntime:
             self._pending_play = True
             return {"timeline": "restarted", "simulation_time": 0.0}
 
-        self._gimbal_target = None
-        self._gimbal_current = None
+        self._gimbal_targets.clear()
+        self._gimbal_currents.clear()
         result: dict[str, Any] = self._on_main_thread(_do)
         logger.info("reset: timeline restarted, gimbal target cleared")
         return {**result, "gimbal": "returned to configured start angles"}
@@ -1971,7 +2286,16 @@ class SimulationRuntime:
         port = self._config.resolved_udp_port(vehicle_id)
         packet = _encode_pose_packet(pose)
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.sendto(packet, ("127.0.0.1", port))
+            # Sent more than once, deliberately. A lone datagram is lost if the receiver has not bound
+            # yet, and the pose then silently does not apply: observed on a two-vehicle stage where one
+            # vehicle held its commanded altitude and the other read back zero, intermittently between
+            # runs. The packet is idempotent -- the last one wins either way -- so repeating it costs
+            # nothing and survives a single drop. `PoseBot` already streams its opening pose for the same
+            # reason.
+            for attempt in range(SET_POSE_DATAGRAMS):
+                sock.sendto(packet, ("127.0.0.1", port))
+                if attempt + 1 < SET_POSE_DATAGRAMS:
+                    time.sleep(SET_POSE_GAP_S)
         logger.info("set_pose sent to udp port %d: %s", port, pose)
         return {"sent": pose, "udp_port": port, "vehicle": vehicle_id}
 

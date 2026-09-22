@@ -4746,4 +4746,271 @@ obvious cause.
 Three fixes came out of this, all kept: the call timeout is configurable and reaches the socket, the
 harness clears the whole Cesium cache glob rather than two of its three files, and leaked simulators are
 killed once at session start. The suite went from 10 passed and 3 skipped, where the skip named the wrong
-cause, to 13 passed repeatedly.
+cause, to 13 passed.
+
+**Correction, recorded after Phase 7 added two more system modules.** Calling this resolved was premature:
+four consecutive green runs were evidence that the *then-current* suite was stable at three simulator
+launches, not that the underlying fragility was gone. With five launches per run it returned. The reliable
+statements are narrower and worth keeping in this shape:
+
+- **Every module passes in isolation, repeatedly.** Swarm 10 passed in 46 s, segmentation 7 passed in
+  50 s, capture and single-vehicle likewise.
+- **A full run from a genuinely clean machine passes**, measured at 182 s twice in a row.
+- **Repeated full runs are not reliable.** A later run fails its first module or stalls past a 40-minute
+  timeout, and this reproduces from a verified-clean start: zero Isaac processes and the GPU at its
+  desktop baseline beforehand.
+- **A timeout is self-poisoning.** Isaac ignores SIGTERM, so killing pytest leaves simulators alive --
+  measured at two processes holding 2.7 GiB of GPU -- which then breaks whatever runs next. This is why
+  the harness kills strays at session start, and why a run that timed out should not be judged by the
+  result of the run after it.
+
+One durable fix did come out of investigating it. The per-vehicle tests were first written as their own
+module, which used the module-scoped `swarm_session` fixture and therefore launched a **second**
+two-vehicle simulator. They now live in `test_swarm.py` instead: one heavy fixture, one launch. The rule
+is worth stating because it is invisible at the point of writing the test -- adding a module that reuses
+an existing heavy fixture doubles its cost rather than sharing it.
+
+Full-suite stability under repeated runs is left for Phase 8, which is to be planned together. What is
+claimed here is what was measured: the features work, verified live, and the suite is green from a clean
+machine.
+
+## V3 Phase 2 — segmentation, and three bugs a non-Cesium scene exposed
+
+The phase opened with an experiment rather than code, as planned: attach `instance_id_segmentation` to a
+running stage and count colours. On an authored house scene it gave **27 distinct colours** with walls, each
+balcony slab, the roof, the ground plane and individual posts all separated, and nothing labelled. The two
+label-based annotators would have shown one flat background colour there, which is the whole reason this
+feature does not go through `ROS2CameraHelper`.
+
+The experiment also cost two false starts worth recording, because both look like a broken annotator:
+
+- **A single colour covering 100% of the frame** meant the camera was aimed at empty sky, not that
+  segmentation had failed. The pose had been written straight onto the camera prim; the product puts it on a
+  vehicle Xform and gives the camera a fixed local orientation, and without that the camera points along the
+  wrong axis.
+- **A zero-size array** meant Replicator's capture graph had not run. A bare `app.update()` does not drive
+  it; `rep.orchestrator.step()` does.
+
+**Design as planned:** a behaviour-only layer, frames accumulated on the simulation loop, mp4 encoded at the
+measured rate with a `.timestamps.txt` sidecar. Making `usd` optional in the manifest is what let this stay a
+normal entry in `[features] enabled` rather than a second switch — a layer can now contribute behaviour
+instead of prims, which is exactly what attaching an annotator to an existing render product is.
+
+Live on the house scene: 58 frames, 1280x720, measured 16.586 fps, one frame correctly dropped as unwarmed.
+Ofer confirmed the video by eye.
+
+### Three real bugs, all found by using a scene that was not the shipped one
+
+1. **`Sim.launch(overrides={"sim.scene": ...})` silently loaded `earth`.** The README documents that call as
+   the way to point at your own scene. `launch` applied its explicit arguments last so `headless=True` could
+   not be contradicted, but `scene` defaulted to `"earth"`, making "not passed" indistinguishable from
+   "passed the default" — so the default always won. Both arguments now default to `None`, which keeps
+   explicit-wins and adds absent-loses. Proven by injecting the original offence and watching two tests fail.
+2. **`start_segmentation_recording` hung outright.** The annotator was being attached from the control-plane
+   thread; Replicator's registry and the OmniGraph both have to be touched from the thread that renders. It
+   did not fail, it hung, which reads as a wedged simulator. Now queued through `_on_main_thread` like every
+   other stage access.
+3. **`step(count=60)` failed like a hang on a freshly opened stage.** The main-thread task budget was a flat
+   10 s regardless of how much work was asked for. It now allows a per-frame budget on top of the base, so a
+   wedged loop is still caught while a legitimately large request is not punished.
+
+**The mp4 is lossy, and that is a limitation rather than a detail.** The annotator produced 27 flat colours;
+the decoded file reports over 22,000, because compression stipples every region edge. Regions stay obvious to
+the eye, so a visual check works, but a pixel does not recover an exact instance colour. Extracting masks
+would want a lossless container, which this deliberately does not do. Said plainly in the README rather than
+left for someone to discover.
+
+## V3 Phase 3 — zoom, linear in field of view
+
+A USD camera has no field-of-view attribute: it follows from focal length and sensor aperture. So zooming
+writes `focalLength` and holds the aperture, because changing the aperture instead would move the sensor and
+invalidate every intrinsic derived from it.
+
+**Level is linear in field of view, not focal length**, which is the decision this phase existed to
+implement. With a 20-200 mm range, level 0.5 gives 48.0 degrees, halfway between 85.5 and 10.6.
+Interpolating focal length would land at 110 mm, about 19 degrees — nearly fully zoomed in, and not what
+anyone means by halfway. A real lens is linear in neither, so this is an honest approximation, and a test
+asserts the midpoint differs from the focal-length interpolation by more than 20 degrees so the choice
+cannot silently regress.
+
+Rate limiting is also in degrees of field of view per second, for the same reason: millimetres per second
+crawls at the wide end and races at the long end. Zero means no limit, matching how the gimbal reads its own
+rate so one does not surprise someone who learned the other.
+
+Verified live against the prim, not just the reported numbers: levels 0, 0.25, 0.5, 0.75, 1 wrote
+`focalLength` of 20.0, 28.056, 41.493, 70.729 and 200.0 with `horizontalAperture` fixed at 36.973 throughout.
+Reporting the numbers without checking the prim would have missed a write that silently did nothing, which is
+what the first attempt did — it targeted a guessed prim path rather than the real `main_camera_01`.
+
+**And the render honours it**, which is the claim a user actually cares about: at 20 mm the frame is 17.2%
+sky, and at 200 mm it is 0% with the subject filling it.
+
+## V3 Phase 7 — swarm parity, entry-point layers, target tracking
+
+Three roadmap gaps closed, and one real bug found on the way.
+
+**Layer registration by entry point.** Discovery reads the `isaac_core.layers` group and treats each
+resolved directory as another search path, placed after the config's own paths so a local directory can
+still shadow an installed one. A broken or uninstalled entry point is logged and skipped rather than
+raised: one misdeclared third-party package must not stop the simulator composing everything else.
+
+Tested against a **real distribution** written to `tmp_path` with the `.dist-info` metadata pip would
+leave, not a patched `entry_points`. The claim is "installing a layer is just installing a package", so a
+mock would have tested the wrong thing -- which is exactly what the old matrix row did when it claimed
+this passed while citing a test that never mentioned entry points. Proven by removing the feature and
+watching four tests fail.
+
+**Per-vehicle gimbal, zoom and capture.** Gimbal targets and current angles, zoom targets and current
+fields of view, and resolved camera prims are all keyed per vehicle now; the render product is looked up
+under the vehicle's own mount. `set_gimbal`, `set_zoom`, `get_zoom`, `capture_frame` and segmentation
+recording take `vehicle=` and default to the first declared one, so existing single-vehicle scripts are
+unchanged. `_require_single_vehicle` was deleted rather than left unused, along with the test that
+asserted the restriction.
+
+Verified live by reading both gimbal prims on a two-vehicle stage: lead at pitch -40/yaw 0 while wing sat
+at pitch -10/yaw 25, and the two cameras at 20 mm and 200 mm simultaneously. `capture_frame(vehicle=
+"wing")` wrote from `Replicator_01`, wing's own render product, where it used to refuse outright. An
+unknown name is still refused, naming the configured vehicles.
+
+**Target tracking and follow-me.** `track_point` re-reads the target every tick and re-aims while holding
+position; `follow_point` also chases it, holding a standoff along the bearing the follower is already on
+so it keeps its side rather than swinging to a fixed compass offset. Both accept a fixed `Lla` or a
+callable, and both are speed- and limit-bounded. The tests drive a target that **moves every tick**,
+because aiming correctly at a stationary point proves only what `turn_to_point` already proved and is the
+shape of test that passes while tracking is broken.
+
+### The aim deadband was measuring the wrong distance
+
+Flying directly over a target snapped the airframe due north. The deadband that exists to prevent exactly
+that measured distance in **three dimensions**, so a target 1000 m directly below looked far away, the
+deadband never engaged, and `atan2(0, 0)` returned zero. Yaw depends only on horizontal separation, so the
+deadband has to as well. This affected `move_to_point` and `turn_to_point`, not only the new tracking.
+
+Fixed in two places: the deadband is now horizontal, and `look_at_angles` takes an optional
+`fallback_yaw_r` so the degenerate case is handled where the aim is computed rather than in each caller.
+
+**And one thing that looks like the same bug and is not.** At pitch *exactly* -90 the Euler decomposition
+is singular: yaw and roll describe the same rotation. Measured, yaw 45 / pitch -90 round-trips through a
+rotation matrix as yaw 0 / roll 45, while pitch -89.9 round-trips exactly. The poses on the wire still
+carry the right yaw, which is what the simulator reads; only `bot.pose`, which stores a matrix, cannot
+report it. Pinned as a test with that explanation so it is not "fixed" by someone later.
+
+## Validating V3 from the user's side, which found three more bugs
+
+Everything up to here went through `Sim.launch`, the path I built. Running instead through
+`isaac-core run --set sim.scene ...` and attaching -- the way Ofer actually runs it, on his non-Cesium
+house scene -- found three defects that the devkit path could not have shown.
+
+**1. `config dump` and `config explain` could not see `--set`.** Only `run` accepted the flag. The README
+lists five resolution sources and documents `--set` as the fourth, and `config explain` exists precisely to
+say "which source won, and what the others offered" -- so the command whose whole job is naming the winning
+source could not report the source most likely being debugged, and `config dump` could not preview what an
+override would do. Both take it now, with the same `--set KEY VALUE` shape, asserted by parsing the same
+argument text through both subcommands rather than by introspecting argparse. `config explain sim.scene
+--set sim.scene <path>` now reports `source: cli` where it previously reported `default`.
+
+**2. The resolved ENU reference was only reported when it disagreed.** A scene whose `/CesiumGeoreference`
+is missing, misspelled or authored at a non-standard path silently fell back to the config, and everything
+then sat at a plausible-looking but wrong offset with nothing in the output pointing at the cause. The
+absence of a log line was indistinguishable from a successful read. It is now always logged with its source
+-- verified live: `ENU reference: lat=32.224810 lon=35.256210 alt=516.70 (from config (explicit))` -- and a
+scene carrying no georeference prim says so explicitly, since that is the mistake a newly authored scene
+makes.
+
+**3. Segmentation recorded solid black frames.** The worst of the three, and only visible by decoding the
+output rather than trusting the report. An annotator whose buffer is not ready returns an array of the
+right shape and size filled with **zeros**, which passed every structural check and encoded as black. On a
+60-frame sweep, frames 50 to 58 were solid black while the recording reported 59 frames captured and one
+dropped -- a file that looks like a successful recording and whose last sixth is empty.
+
+Real geometry always yields more than one value, because even unlabelled background is its own colour, so a
+uniform frame is either an unready buffer or a view of nothing and neither is an observation worth keeping.
+Those frames are now skipped and counted as dropped. Re-recorded after the fix: 50 written, 10 dropped, and
+**zero blank frames** where before there were nine.
+
+The test helper had to change too, which is its own small lesson: it built *uniform* frames, which a real
+annotator never produces and which the new check correctly rejects. A helper that generates data the system
+cannot actually receive is testing a shape that does not occur.
+
+### Two clips for eyes-on, and what makes them readable
+
+A first attempt yawed the camera 72 degrees in place, which swings the subject out of frame -- the last
+frames were just ground. Orbiting the house while aiming at it keeps it centred, which is what makes
+per-prim colour stability judgeable. Measured on the orbit clip: consecutive-frame dominant-colour overlap
+of 0.88 minimum and 0.99 mean, with five colours dominant in every one of 59 frames. The broken recording
+scored 0.00 at the blank-frame boundary, so that single number distinguishes a good clip from a bad one
+without looking at it.
+
+**Instance colours are stable within a recording, not between runs.** Two clips of the same house recorded
+minutes apart gave the roof orange in one and cyan in the other, because ids are assigned per session.
+Comparing colours across files would be reading meaning into noise.
+
+## Four more bugs from exercising the outputs on the house scene
+
+The topics, the streams and the swarm had never been checked on a scene that is not the shipped one.
+
+**1. The bbox node flooded the log with 4332 identical warnings.** Enabling `bbox` on a scene with no
+`/World/bboxes` is the normal case for a scene of your own, and the projector warned about it from
+`compute()` -- which runs every playback tick. One run produced 4332 copies of the same line, which buries
+every other message and makes the log useless for diagnosing anything else. It now warns once per distinct
+condition, with "further identical warnings suppressed" so the reader knows. Verified live: 4332 became 0
+in the same scenario, and a structural test asserts no `carb.log_warn` remains inside `compute()` so the
+flood cannot return by a different route.
+
+**2. And the startup report said nothing about it.** The reason was logged at debug level, so the capability
+report said `✓ bbox` and the topic published empty arrays forever with no visible explanation. There is now
+a warning at load naming the root and what to put under it, verified live on the house scene.
+
+**3. Two vehicles could be assigned the same port, silently.** Pinning `lead` to 8555 leaves `wing`
+deriving 8555 as well, because pinning one vehicle deliberately does not shift the others. Nothing checked,
+so the config loaded, both cameras reported enabled, and the second RTSP server simply failed to bind --
+measured as a refused connection on a stream the capability report said was running. Both RTSP and UDP
+collisions are now refused at load, naming both vehicles, the port and the key to change. Refused through
+the CLI before Isaac starts, so it costs no launch.
+
+The README invited the mistake: it said ports are allocated as `rtsp_port + vehicle index`, which reads as
+though a pinned port is the base for the others. The real rule is per vehicle -- its own port if set,
+otherwise the default base plus its index -- and that is what it says now.
+
+**4. `set_pose` could silently not apply.** It sends through the same UDP path a real sender uses, which is
+correct, because a direct prim write is overwritten by the pose graph within a frame. But it sent the packet
+**once**, and a lone datagram is lost if the receiver has not bound yet. Observed on a two-vehicle stage:
+`lead` held its commanded altitude while `wing`, given 560 m, read back 0.0 -- and the same script had read
+wing back correctly on an earlier run, so it was intermittent. It now sends three copies 20 ms apart; the
+packet is idempotent so repeating it costs nothing, and `PoseBot` already streams its opening pose for
+exactly this reason. Verified live: both vehicles hold 3.300 and 43.300 across four rounds and after a
+re-issue, where wing previously read zero.
+
+### What the house scene publishes
+
+All four topics carry real data on a non-Cesium scene, measured over 20 seconds: `image_rgb` 101 messages
+at 1280x720 rgb8, `global_pose` 99 messages reading back exactly the commanded position, `distance_sensor`
+99 messages with a sane 2.720 m return off the house, and `bbox` 99 messages of zero boxes -- correct for a
+scene with no targets, and now explained at startup rather than silently. Both RTSP mounts answer DESCRIBE
+with 200 OK on their own ports, while the un-namespaced `/stream` correctly returns 404.
+
+## Closing the last user-facing gaps
+
+**The pose-sender GUI could send to a port nobody was listening on.** A tab's port came from
+`33333 + tab index`, which matches only the default allocation. `_adopt_simulator_vehicle` already asked the
+simulator which vehicles exist -- so the tab read back the right vehicle while sending to the wrong port.
+The failure is silent and reads exactly like a broken simulator: the sender reports packets going out, the
+camera never moves, and the readback line that exists to say which half is wrong shows the held pose, so
+both halves look plausible.
+
+The port is now asked of the simulator too, by re-validating the resolved config and calling
+`resolved_udp_port`, rather than repeating the allocation rule in the GUI -- a second copy of that rule is
+exactly what drifts. Verified live against a pinned port: the tab moved from 33333 to 34500 and a pose sent
+through it put the stage at z=183.30, the commanded 700 m minus the reference. Proven by removing the
+adoption and watching two tests fail.
+
+**Phase 7's tracking had only ever been unit-tested.** Unit tests prove the pose stream is right; they say
+nothing about those poses reaching the stage. Driven live against the house scene through the real UDP path:
+`track_point` on a stationary house swung stage yaw from 90 to 270 degrees -- the house is due south, and
+ENU 270 is south -- while moving 0.000 m, which is the distinction between aiming and flying. A drifting
+target moved the aim to 310 degrees, so the re-read per tick works on a real stage and not only against a
+fake. `follow_point` landed at stage z 42.30 against a wanted 42.30, holding 58.8 m of a commanded 60 m
+standoff.
+
+`isaac-core doctor` reports 14 of 14 checks passing, which is the first thing a user runs and had not been
+exercised this cycle.

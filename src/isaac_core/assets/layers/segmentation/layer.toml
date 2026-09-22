@@ -1,0 +1,18 @@
+# Segmentation feature layer.
+#
+# Behaviour only: there is no USD file. This layer attaches Replicator's instance_id_segmentation
+# annotator to the camera's existing render product, so it has no prims of its own to contribute and
+# the `usd` key is deliberately absent.
+#
+# instance_id_segmentation keys off prims rather than labels, unlike semantic_segmentation and
+# instance_segmentation, which both ignore any prim without a SemanticsAPI. That is why this feature
+# needs nothing labelled and segments whatever is in view. It is also why it is read in the simulator
+# rather than published by ROS2CameraHelper, whose allowedTokens do not include it.
+id = "segmentation"
+
+# Mounted per vehicle for consistency with every other layer, so a swarm reports one instance each.
+mount = "/World/Environment/{instance}"
+
+# A render product to attach to, which the camera layer creates.
+requires = ["CAMERA"]
+provides = ["SEGMENTATION"]

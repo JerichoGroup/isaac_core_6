@@ -24,6 +24,7 @@ from collections import deque
 from collections.abc import Iterator
 import contextlib
 from dataclasses import dataclass
+import logging
 import shutil
 import signal
 import subprocess
@@ -74,6 +75,9 @@ _DEFAULT_ROS_NAMESPACE: Final = "/mavros"
 _DEFAULT_CONTROL_PORT: Final = 8760
 
 # Short, because a readback runs on the UI's refresh tick and must never make the window hang.
+
+logger = logging.getLogger(__name__)
+
 _READBACK_TIMEOUT_S: Final = 1.0
 
 # A stage transform is (x, y, z).
@@ -522,6 +526,45 @@ class PoseSenderController:
             return ()
         vehicles = config.get("vehicles") if isinstance(config, dict) else None
         return tuple(vehicles) if isinstance(vehicles, dict) else ()
+
+    def readback_vehicle_ports(self) -> dict[str, int]:
+        """Return each configured vehicle's real UDP pose port.
+
+        A tab's port came from `33333 + tab index`, which matches the *default* allocation only. A config
+        that pins `udp_port` left the GUI sending to a port nobody was listening on, while the readback
+        showed the simulator's held pose -- so both halves looked plausible and the readback line, which
+        exists to say which half is wrong, could not.
+
+        The resolved config is asked for rather than the arithmetic being repeated here, because a second
+        copy of the allocation rule is exactly what drifts.
+
+        Returns:
+            Vehicle id to UDP port, or an empty mapping when the simulator cannot be reached or its
+            config cannot be interpreted.
+
+        """
+        try:
+            from isaac_core.control.client import ControlClient
+
+            client = ControlClient(host=self.control_host, port=self.control_port)
+            client.connect(timeout=_READBACK_TIMEOUT_S)
+            try:
+                config = client.call("get_config")
+            finally:
+                client.close()
+        except Exception:
+            return {}
+        if not isinstance(config, dict):
+            return {}
+        try:
+            from isaac_core.config import IsaacCoreConfig
+
+            resolved = IsaacCoreConfig.model_validate(config)
+            return {name: resolved.resolved_udp_port(name) for name in resolved.vehicles}
+        except Exception:
+            # A GUI must not fail to open because a config could not be re-validated.
+            logger.debug("could not resolve vehicle udp ports from the simulator config", exc_info=True)
+            return {}
 
     def close(self) -> None:
         """Release the underlying transport and stop any stream player this tab opened."""
@@ -1126,6 +1169,13 @@ def _adopt_simulator_vehicle(controller: PoseSenderController, taken: set[str]) 
     # Only the vehicle to read back, not the tab's label: the label is positional so the tab strip
     # reads tab_1, tab_2 rather than a mix of simulator names and placeholders.
     controller.vehicle = available[0]
+    # And the port the simulator is really listening on, which is not `33333 + index` once a config pins
+    # one. Sending to the wrong port looks exactly like a working sender with a frozen camera.
+    ports = controller.readback_vehicle_ports()
+    real_port = ports.get(available[0])
+    if real_port is not None and real_port != controller.port:
+        logger.info("tab adopting vehicle %r: port %d -> %d", available[0], controller.port, real_port)
+        controller.port = real_port
     # The simulator namespaces topics and RTSP mounts only when there is more than one vehicle.
     controller.stream_namespaced = len(names) > 1
     taken.add(available[0])

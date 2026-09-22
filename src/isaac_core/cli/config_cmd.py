@@ -25,18 +25,59 @@ def register_config_subcommand(subparsers: "argparse._SubParsersAction[argparse.
     # dump
     dump_parser = config_sub.add_parser("dump", help="Print the resolved config as TOML")
     dump_parser.add_argument("--config", type=str, default=None, help="Path to configuration TOML file")
+    _add_set_argument(dump_parser)
 
     # explain
     explain_parser = config_sub.add_parser("explain", help="Explain a specific config key")
     explain_parser.add_argument("key", type=str, help="Dotted config key (e.g. sim.headless)")
     explain_parser.add_argument("--config", type=str, default=None, help="Path to configuration TOML file")
+    _add_set_argument(explain_parser)
 
 
-def run_config_dump(config_path: str | None = None) -> int:
+def _add_set_argument(parser: argparse.ArgumentParser) -> None:
+    """Give a config subcommand the same ``--set`` flag ``run`` has.
+
+    Without this neither command could see one of the five documented resolution sources, so
+    ``config dump`` could not preview what a ``--set`` would do and ``config explain`` -- whose entire
+    job is saying which source won -- could not report the source most likely to be in play while
+    someone debugs an override.
+
+    Args:
+        parser: The subcommand parser to extend.
+
+    """
+    parser.add_argument(
+        "--set",
+        nargs=2,
+        metavar=("KEY", "VALUE"),
+        action="append",
+        default=[],
+        help="Override a config key, exactly as `run` takes it (e.g. --set sim.headless true)",
+    )
+
+
+def overrides_from_args(pairs: list[list[str]] | None) -> dict[str, str] | None:
+    """Turn repeated ``--set KEY VALUE`` pairs into the mapping ``load`` expects.
+
+    Args:
+        pairs: What argparse collected, or ``None``.
+
+    Returns:
+        The overrides, or ``None`` when there were none, since ``load`` distinguishes the two.
+
+    """
+    if not pairs:
+        return None
+    return {key: value for key, value in pairs}
+
+
+def run_config_dump(config_path: str | None = None, cli_overrides: dict[str, str] | None = None) -> int:
     """Print the fully-resolved configuration as TOML to stdout.
 
     Args:
         config_path: Optional path to a TOML config file.
+        cli_overrides: Optional ``--set`` overrides, applied exactly as ``run`` applies them so the dump
+            shows what would actually launch.
 
     Returns:
         Exit code (0 = success).
@@ -46,7 +87,7 @@ def run_config_dump(config_path: str | None = None) -> int:
 
     path = Path(config_path) if config_path else None
     try:
-        config = load(path=path)
+        config = load(path=path, cli_overrides=cli_overrides)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -56,7 +97,7 @@ def run_config_dump(config_path: str | None = None) -> int:
     return 0
 
 
-def run_config_explain(key: str, config_path: str | None = None) -> int:
+def run_config_explain(key: str, config_path: str | None = None, cli_overrides: dict[str, str] | None = None) -> int:
     """Print the winning value and source for a single dotted config key.
 
     Uses the provenance dict returned by :func:`~isaac_core.config.load_with_provenance`.
@@ -64,6 +105,7 @@ def run_config_explain(key: str, config_path: str | None = None) -> int:
     Args:
         key: Dotted key (e.g. ``sim.headless``).
         config_path: Optional path to a TOML config file.
+        cli_overrides: Optional ``--set`` overrides, so the reported source can be the flag itself.
 
     Returns:
         Exit code (0 = found, 1 = error or not found).
@@ -73,7 +115,7 @@ def run_config_explain(key: str, config_path: str | None = None) -> int:
 
     path = Path(config_path) if config_path else None
     try:
-        config, provenance = load_with_provenance(path=path)
+        config, provenance = load_with_provenance(path=path, cli_overrides=cli_overrides)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

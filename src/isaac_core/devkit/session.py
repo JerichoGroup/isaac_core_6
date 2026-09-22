@@ -11,6 +11,8 @@ uses the client's ``wait_until_ready``, NOT log scraping.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import logging
 import os
 from pathlib import Path
@@ -142,6 +144,7 @@ class SimSession:
     def set_gimbal(
         self,
         *,
+        vehicle: str | None = None,
         roll_deg: float | None = None,
         pitch_deg: float | None = None,
         yaw_deg: float | None = None,
@@ -156,6 +159,7 @@ class SimSession:
         restating the other two.
 
         Args:
+            vehicle: Which vehicle's gimbal to aim. Defaults to the first configured one.
             roll_deg: Target roll in degrees, or ``None`` to hold.
             pitch_deg: Target pitch in degrees, or ``None`` to hold.
             yaw_deg: Target yaw in degrees, or ``None`` to hold.
@@ -164,8 +168,11 @@ class SimSession:
             The accepted target angles in degrees.
 
         """
-        params = {"roll_deg": roll_deg, "pitch_deg": pitch_deg, "yaw_deg": yaw_deg}
-        return self._client.call(Method.SET_GIMBAL.value, {k: v for k, v in params.items() if v is not None})
+        params: dict[str, Any] = {"roll_deg": roll_deg, "pitch_deg": pitch_deg, "yaw_deg": yaw_deg}
+        sent = {key: value for key, value in params.items() if value is not None}
+        if vehicle is not None:
+            sent["vehicle"] = vehicle
+        return self._client.call(Method.SET_GIMBAL.value, sent)
 
     def set_pose(
         self,
@@ -232,6 +239,7 @@ class SimSession:
         self,
         path: str | Path,
         *,
+        vehicle: str | None = None,
         width: int | None = None,
         height: int | None = None,
     ) -> Any:
@@ -243,6 +251,7 @@ class SimSession:
 
         Args:
             path: Output path, resolved relative to the server's ``output_root``.
+            vehicle: Which vehicle's camera to capture. Defaults to the first configured one.
             width: Optional capture width in pixels.
             height: Optional capture height in pixels.
 
@@ -251,11 +260,122 @@ class SimSession:
 
         """
         params: dict[str, Any] = {"path": str(path)}
+        if vehicle is not None:
+            params["vehicle"] = vehicle
         if width is not None:
             params["width"] = width
         if height is not None:
             params["height"] = height
         return self._client.call(Method.CAPTURE_FRAME.value, params)
+
+    def set_zoom(self, *, vehicle: str | None = None, level: float | None = None, focal_mm: float | None = None) -> Any:
+        """Aim the zoom, by level or by exact focal length.
+
+        Level runs 0 (widest) to 1 (narrowest) and is linear in **field of view**, so halfway looks
+        halfway zoomed. Pass ``focal_mm`` instead when you want a specific lens.
+
+        Returns when the target is accepted, not when the lens arrives: with
+        ``camera.zoom_max_rate_deg_s`` set the move takes time, exactly like ``set_gimbal``. Poll
+        :meth:`get_zoom` to watch it get there.
+
+        Needs ``camera.focal_length_min_mm`` and ``focal_length_max_mm`` configured. Single vehicle only.
+
+        Args:
+            vehicle: Which vehicle's camera to zoom. Defaults to the first configured one.
+            level: Zoom level in ``[0, 1]``, clamped.
+            focal_mm: Focal length in millimetres, clamped into the configured range.
+
+        Returns:
+            The level, focal length and field of view being aimed at.
+
+        """
+        params: dict[str, Any] = {}
+        if vehicle is not None:
+            params["vehicle"] = vehicle
+        if level is not None:
+            params["level"] = float(level)
+        if focal_mm is not None:
+            params["focal_mm"] = float(focal_mm)
+        return self._client.call(Method.SET_ZOOM.value, params)
+
+    def get_zoom(self, *, vehicle: str | None = None) -> Any:
+        """Report where the zoom is.
+
+        Args:
+            vehicle: Which vehicle's camera to report. Defaults to the first configured one.
+
+        Returns:
+            The current ``level``, ``focal_length_mm`` and ``hfov_deg``, whether it is still ``moving``,
+            and the configured travel. All three are given because which one is useful depends on the
+            question.
+
+        """
+        params: dict[str, Any] = {} if vehicle is None else {"vehicle": vehicle}
+        return self._client.call(Method.GET_ZOOM.value, params)
+
+    def start_segmentation_recording(self, *, vehicle: str | None = None) -> Any:
+        """Begin recording the stage's instance segmentation.
+
+        Every distinct prim in view gets its own colour, with nothing to label: the annotator keys off
+        prims rather than semantic tags. Recording accumulates frames in the simulator until
+        :meth:`stop_segmentation_recording` writes them, so nothing crosses the wire per frame.
+
+        Needs ``segmentation`` in ``[features] enabled``.
+
+        Args:
+            vehicle: Which vehicle's camera to record. Defaults to the first configured one.
+
+        Returns:
+            The render product being recorded and its resolution.
+
+        """
+        params: dict[str, Any] = {} if vehicle is None else {"vehicle": vehicle}
+        return self._client.call(Method.START_SEGMENTATION_RECORDING.value, params)
+
+    def stop_segmentation_recording(self, path: str | Path) -> Any:
+        """Stop recording and write the mp4.
+
+        Written at the rate the frames were actually produced, not a nominal one, with a
+        ``<name>.mp4.timestamps.txt`` sidecar giving per-frame presentation times -- the simulator's frame
+        rate is not constant and a constant-rate container cannot express that.
+
+        Args:
+            path: Where to write, resolved under ``sim.control_plane.output_root`` and confined to it.
+
+        Returns:
+            The path written, the frame count, the measured fps and the resolution.
+
+        """
+        return self._client.call(Method.STOP_SEGMENTATION_RECORDING.value, {"path": str(path)})
+
+    @contextmanager
+    def segmentation_recorder(self, path: str | Path) -> Iterator[dict[str, Any]]:
+        """Record segmentation for the duration of a block, writing on exit.
+
+        Reads like the topic recorders do, and cannot leave a recording running even if the block
+        raises. The dict it yields is empty until the block ends, then holds what was written:
+
+        ```python
+        with session.segmentation_recorder("seg.mp4") as written:
+            bot.orbit(32.22481, 35.25621, radius_m=200.0, speed_mps=20.0, duration_s=20.0)
+        print(written["frames"], written["fps"])
+        ```
+
+        Args:
+            path: Where to write the mp4.
+
+        Yields:
+            A dict filled in on exit with the path, frame count, measured fps and resolution.
+
+        """
+        result: dict[str, Any] = {}
+        self.start_segmentation_recording()
+        try:
+            yield result
+        finally:
+            written = self.stop_segmentation_recording(path)
+            if isinstance(written, dict):
+                result.update(written)
 
     def pause(self) -> Any:
         """Pause the simulation.
@@ -451,8 +571,8 @@ class Sim:
         *,
         host: str = "127.0.0.1",
         port: int = DEFAULT_CONTROL_PLANE_PORT,
-        scene: str = "earth",
-        headless: bool = False,
+        scene: str | None = None,
+        headless: bool | None = None,
         timeout_s: float = 120.0,
         call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S,
         overrides: dict[str, Any] | None = None,
@@ -471,8 +591,10 @@ class Sim:
         Args:
             host: Control plane host for the new instance.
             port: Control plane port for the new instance.
-            scene: Scene to load by logical name.
-            headless: Whether to launch headless.
+            scene: Scene to load, by logical name or path. Omit it to let ``overrides`` or the config
+                decide; passing it wins over both.
+            headless: Whether to launch headless. Omit it to let ``overrides`` or the config decide;
+                passing it wins over both.
             timeout_s: Maximum time to wait for readiness after spawning.
             call_timeout_s: How long any single call waits for a reply, once running. Raise it for a
                 heavy stage: main-thread methods wait for that thread, and a two-vehicle stage was
@@ -498,16 +620,18 @@ class Sim:
 
         # The simulator reads one fully resolved TOML rather than a pile of flags, so
         # precedence is decided in exactly one place. Same mechanism the CLI uses.
-        # Explicit arguments are applied last so they cannot be silently contradicted by an
-        # override, which would make `headless=True` mean nothing.
+        # Explicit arguments are applied last so they cannot be silently contradicted by an override,
+        # which would make `headless=True` mean nothing. They default to None rather than to the
+        # schema's value so that "not passed" is distinguishable from "passed the default": with
+        # `scene="earth"` as the default, `overrides={"sim.scene": "/path/my.usda"}` was overwritten by
+        # the default and silently loaded the shipped scene instead. The README documents that override
+        # as the way to point at your own scene, so it has to win when the argument is absent.
         cli_overrides: dict[str, Any] = dict(overrides or {})
-        cli_overrides.update(
-            {
-                "sim.scene": scene,
-                "sim.headless": str(headless).lower(),
-                "sim.control_plane.port": str(port),
-            }
-        )
+        if scene is not None:
+            cli_overrides["sim.scene"] = scene
+        if headless is not None:
+            cli_overrides["sim.headless"] = str(headless).lower()
+        cli_overrides["sim.control_plane.port"] = str(port)
         config = load(cli_overrides=cli_overrides)
 
         # Resolved after the config, so sim.isaac_sim_path can name an install outside the probed

@@ -43,33 +43,57 @@ def test_set_gimbal_is_a_registered_control_method() -> None:
 
 def test_set_gimbal_refuses_a_swarm_instead_of_silently_aiming_the_first_vehicle() -> None:
     # Guards a real bug: set_gimbal resolved its vehicle as next(iter(vehicles)), so in a swarm a
-    # script asking for wing's gimbal moved lead's and got a success response. Refusing is honest;
-    # per-vehicle gimbal state is roadmapped.
+    # script asking for wing's gimbal used to move lead's and get a success response. Both are now
+    # addressable, so the test is that naming one aims that one and leaves the other alone.
     config = IsaacCoreConfig(
         vehicles={"lead": {"camera": {}}, "wing": {"camera": {}}},
     )
-    runtime = SimulationRuntime.__new__(SimulationRuntime)
-    runtime._config = config
+    runtime = _bare_runtime(config)
+    result = runtime._handle_set_gimbal({"vehicle": "wing", "pitch_deg": -40.0})
+    assert result["vehicle"] == "wing"
+    assert result["pitch_deg"] == pytest.approx(-40.0)
+    assert "wing" in runtime._gimbal_targets
+    assert "lead" not in runtime._gimbal_targets, "aiming wing also aimed lead"
+
+
+def test_an_unknown_vehicle_is_refused_with_the_real_names() -> None:
+    runtime = _bare_runtime(IsaacCoreConfig(vehicles={"lead": {"camera": {}}, "wing": {"camera": {}}}))
     with pytest.raises(InvalidParamsError) as excinfo:
-        runtime._require_single_vehicle("set_gimbal")
+        runtime._handle_set_gimbal({"vehicle": "typo", "pitch_deg": -10.0})
     message = str(excinfo.value)
-    assert "set_gimbal" in message
+    assert "typo" in message
     assert "lead" in message and "wing" in message
 
 
-def test_require_single_vehicle_returns_the_only_vehicle() -> None:
-    config = IsaacCoreConfig(vehicles={"drone_0": {"camera": {}}})
-    runtime = SimulationRuntime.__new__(SimulationRuntime)
-    runtime._config = config
-    assert runtime._require_single_vehicle("capture_frame") == "drone_0"
+def test_omitting_the_vehicle_aims_the_first_one() -> None:
+    # Single-vehicle callers must not have to name one, which is what keeps existing scripts working.
+    runtime = _bare_runtime(IsaacCoreConfig(vehicles={"lead": {"camera": {}}, "wing": {"camera": {}}}))
+    result = runtime._handle_set_gimbal({"pitch_deg": -15.0})
+    assert result["vehicle"] == "lead"
+
+
+def test_each_vehicle_keeps_its_own_gimbal_angles() -> None:
+    # The bug this guards: one runtime-wide pair of angles meant aiming the second vehicle inherited the
+    # first one's current position as the hold value for omitted axes.
+    runtime = _bare_runtime(IsaacCoreConfig(vehicles={"lead": {"camera": {}}, "wing": {"camera": {}}}))
+    runtime._handle_set_gimbal({"vehicle": "lead", "roll_deg": 10.0, "pitch_deg": -20.0, "yaw_deg": 30.0})
+    runtime._gimbal_currents["lead"] = GimbalAngles.from_degrees(10.0, -20.0, 30.0)
+
+    wing = runtime._handle_set_gimbal({"vehicle": "wing", "pitch_deg": -5.0})
+    assert wing["roll_deg"] == pytest.approx(0.0), "wing inherited lead's roll"
+    assert wing["yaw_deg"] == pytest.approx(0.0), "wing inherited lead's yaw"
+
+    lead = runtime._handle_set_gimbal({"vehicle": "lead", "pitch_deg": -21.0})
+    assert lead["roll_deg"] == pytest.approx(10.0), "lead lost its own roll"
+    assert lead["yaw_deg"] == pytest.approx(30.0), "lead lost its own yaw"
 
 
 def _bare_runtime(config: IsaacCoreConfig) -> SimulationRuntime:
     """Return a runtime with only the state the gimbal handler touches."""
     runtime = SimulationRuntime.__new__(SimulationRuntime)
     runtime._config = config
-    runtime._gimbal_target = None
-    runtime._gimbal_current = None
+    runtime._gimbal_targets = {}
+    runtime._gimbal_currents = {}
     return runtime
 
 
@@ -91,7 +115,7 @@ def test_an_omitted_axis_holds_where_the_gimbal_actually_is() -> None:
     # Once the gimbal has moved, an omitted axis must hold its CURRENT angle rather than snapping
     # back to the config start -- otherwise commanding pitch would silently undo a previous yaw.
     runtime = _bare_runtime(_single_vehicle(start_roll_deg=0.0, start_pitch_deg=0.0, start_yaw_deg=0.0))
-    runtime._gimbal_current = GimbalAngles.from_degrees(3.0, -25.0, 90.0)
+    runtime._gimbal_currents["drone_0"] = GimbalAngles.from_degrees(3.0, -25.0, 90.0)
     result = runtime._handle_set_gimbal({"pitch_deg": -10.0})
     assert result["pitch_deg"] == pytest.approx(-10.0)
     assert result["roll_deg"] == pytest.approx(3.0)
@@ -100,7 +124,7 @@ def test_an_omitted_axis_holds_where_the_gimbal_actually_is() -> None:
 
 def test_commanding_every_axis_ignores_both_start_and_current() -> None:
     runtime = _bare_runtime(_single_vehicle(start_roll_deg=5.0, start_pitch_deg=5.0, start_yaw_deg=5.0))
-    runtime._gimbal_current = GimbalAngles.from_degrees(1.0, 2.0, 3.0)
+    runtime._gimbal_currents["drone_0"] = GimbalAngles.from_degrees(1.0, 2.0, 3.0)
     result = runtime._handle_set_gimbal({"roll_deg": -1.0, "pitch_deg": -2.0, "yaw_deg": -3.0})
     assert (result["roll_deg"], result["pitch_deg"], result["yaw_deg"]) == pytest.approx((-1.0, -2.0, -3.0))
 
@@ -108,10 +132,10 @@ def test_commanding_every_axis_ignores_both_start_and_current() -> None:
 def test_the_target_is_recorded_for_the_loop_to_act_on() -> None:
     # The handler must not touch USD: it records intent and the simulation loop moves the gimbal.
     runtime = _bare_runtime(_single_vehicle())
-    assert runtime._gimbal_target is None
+    assert runtime._gimbal_targets == {}
     runtime._handle_set_gimbal({"yaw_deg": 45.0})
-    assert runtime._gimbal_target is not None
-    assert runtime._gimbal_target.yaw_deg == pytest.approx(45.0)
+    assert runtime._gimbal_targets.get("drone_0") is not None
+    assert runtime._gimbal_targets["drone_0"].yaw_deg == pytest.approx(45.0)
 
 
 def test_a_non_numeric_angle_is_rejected() -> None:

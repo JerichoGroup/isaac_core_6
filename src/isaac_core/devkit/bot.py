@@ -31,7 +31,11 @@ from typing import TYPE_CHECKING, Final
 from isaac_core.contracts.frames import RotationFrame
 from isaac_core.contracts.pose import GeodeticPose, Lla, Rpy
 from isaac_core.devkit.transport import PoseTransport, UdpPoseTransport
-from isaac_core.geo.distance import EARTH_RADIUS_M as _EARTH_RADIUS_M, look_at_angles
+from isaac_core.geo.distance import (
+    EARTH_RADIUS_M as _EARTH_RADIUS_M,
+    look_at_angles,
+    meters_to_latlon_offset,
+)
 from isaac_core.vehicle import (
     MotionLimits,
     OrbitTrajectory,
@@ -69,26 +73,35 @@ _MIN_WAYPOINTS: Final = 2
 # bearing is held rather than collapsing to zero.
 _AIM_DEADBAND_M: Final = 1.0
 
+# Below this ground separation there is no bearing from a target to preserve, so a standoff direction
+# would be picked from floating-point noise and the follower would jitter around the target.
+_STANDOFF_DEGENERATE_M = 0.5
+
 # How long the starting pose is streamed on entering the context. A single datagram is lost if the
 # simulator's node has not bound its port yet, which is why real senders stream.
 _START_SETTLE_S: Final = 0.5
 
 
-def _distance_m(a: Lla, b: Lla) -> float:
-    """Return the straight-line distance between two positions, in metres.
+def _horizontal_distance_m(a: Lla, b: Lla) -> float:
+    """Return the ground distance between two positions, in metres.
+
+    Deliberately ignores altitude, because this feeds the aim deadband and yaw depends only on
+    horizontal separation. Measuring in three dimensions made a target directly below look far away --
+    1000 m of altitude difference with no ground separation -- so the deadband did not engage,
+    ``atan2(0, 0)`` returned zero and the airframe snapped due north the moment it flew over its target.
 
     Args:
         a: One position.
         b: The other.
 
     Returns:
-        Distance in metres, using the same flat-earth approximation as the aiming maths.
+        Ground distance in metres, using the same flat-earth approximation as the aiming maths.
 
     """
     cos_lat = math.cos(math.radians(a.lat_deg))
     north_m = math.radians(b.lat_deg - a.lat_deg) * _EARTH_RADIUS_M
     east_m = math.radians(b.lon_deg - a.lon_deg) * _EARTH_RADIUS_M * cos_lat
-    return math.sqrt(north_m * north_m + east_m * east_m + (b.alt_m - a.alt_m) ** 2)
+    return math.hypot(north_m, east_m)
 
 
 class PoseBot:
@@ -216,7 +229,7 @@ class PoseBot:
             # On arrival there is no direction left to look in and atan2(0, 0) is zero, which snapped
             # the camera to due north on the final frame of every move. Holding the last real bearing
             # is what an operator sees when a vehicle settles over its target.
-            if _distance_m(pose.position, target) > _AIM_DEADBAND_M:
+            if _horizontal_distance_m(pose.position, target) > _AIM_DEADBAND_M:
                 last_aim = look_at_angles(pose.position, target)
             aim = last_aim
             if aim is None:
@@ -364,6 +377,149 @@ class PoseBot:
         )
 
     # -- combined ------------------------------------------------------------- #
+
+    def track_point(
+        self,
+        target: Lla | Callable[[], Lla],
+        *,
+        duration_s: float = DEFAULT_DURATION_S,
+    ) -> int:
+        """Keep the vehicle aimed at a target while holding position.
+
+        `turn_to_point` aims once at a fixed point and finishes. This re-reads the target every tick, so
+        a moving one stays in frame -- which is the difference between aiming and tracking.
+
+        Pass a callable for a target that moves. It is called once per tick, so it can read a live feed,
+        another simulated vehicle, or a scripted path.
+
+        Args:
+            target: A fixed point, or a callable returning the current one.
+            duration_s: How long to track for.
+
+        Returns:
+            The number of poses sent.
+
+        Raises:
+            ValueError: If ``duration_s`` is not positive.
+
+        """
+        if duration_s <= 0.0:
+            raise ValueError(f"duration_s must be positive, got {duration_s}")
+        return self._stream(self._tracking_poses(_as_target(target), duration_s))
+
+    def _tracking_poses(self, target: Callable[[], Lla], duration_s: float) -> Iterator[GeodeticPose]:
+        """Yield held-position poses re-aimed at a moving target each tick.
+
+        Args:
+            target: Called once per tick for the current target position.
+            duration_s: How long to track for.
+
+        Yields:
+            Poses at the current position, aimed at the target.
+
+        """
+        start = self._state.to_pose()
+        position = start.position
+        last_aim: tuple[float, float] | None = None
+        for _ in range(max(1, int(round(duration_s * self._rate_hz)))):
+            current = target()
+            # Same deadband as `_aimed_at`: directly over the target there is no bearing, and
+            # atan2(0, 0) would snap the camera due north.
+            if _horizontal_distance_m(position, current) > _AIM_DEADBAND_M:
+                last_aim = look_at_angles(position, current)
+            if last_aim is None:
+                yield GeodeticPose(position=position, orientation=start.orientation)
+                continue
+            yield GeodeticPose(
+                position=position,
+                orientation=Rpy(
+                    roll_r=start.orientation.roll_r,
+                    pitch_r=last_aim[1],
+                    yaw_r=last_aim[0],
+                    frame=start.orientation.frame,
+                ),
+            )
+
+    def follow_point(
+        self,
+        target: Lla | Callable[[], Lla],
+        *,
+        distance_m: float,
+        height_m: float = 0.0,
+        speed_mps: float,
+        duration_s: float = DEFAULT_DURATION_S,
+    ) -> int:
+        """Chase a target, holding a standoff distance and staying aimed at it.
+
+        Follow-me: each tick reads the target, works out where the vehicle should be to sit
+        ``distance_m`` away from it at ``height_m`` above it, and moves toward that at up to
+        ``speed_mps``. Speed-limited rather than teleporting, so the vehicle lags a fast target the way a
+        real one would instead of pretending to be attached to it.
+
+        Args:
+            target: A fixed point, or a callable returning the current one.
+            distance_m: Standoff distance to hold, in metres. Zero means fly to the target itself.
+            height_m: How far above the target to sit, in metres.
+            speed_mps: Maximum ground speed while chasing.
+            duration_s: How long to follow for.
+
+        Returns:
+            The number of poses sent.
+
+        Raises:
+            ValueError: If ``speed_mps`` or ``duration_s`` is not positive, or ``distance_m`` is negative.
+
+        """
+        if speed_mps <= 0.0:
+            raise ValueError(f"speed_mps must be positive, got {speed_mps}")
+        if duration_s <= 0.0:
+            raise ValueError(f"duration_s must be positive, got {duration_s}")
+        if distance_m < 0.0:
+            raise ValueError(f"distance_m must not be negative, got {distance_m}")
+        # A limits object may leave any single bound unset, so the speed cap has to be checked rather
+        # than assumed present.
+        ceiling = None if self._limits is None else self._limits.max_speed_mps
+        capped = speed_mps if ceiling is None else min(speed_mps, ceiling)
+        return self._stream(self._following_poses(_as_target(target), distance_m, height_m, capped, duration_s))
+
+    def _following_poses(
+        self,
+        target: Callable[[], Lla],
+        distance_m: float,
+        height_m: float,
+        speed_mps: float,
+        duration_s: float,
+    ) -> Iterator[GeodeticPose]:
+        """Yield poses chasing a moving target at a standoff, aimed at it.
+
+        Args:
+            target: Called once per tick for the current target position.
+            distance_m: Standoff distance in metres.
+            height_m: Height above the target in metres.
+            speed_mps: Maximum ground speed.
+            duration_s: How long to follow for.
+
+        Yields:
+            Poses moving toward the standoff point and aimed at the target.
+
+        """
+        start = self._state.to_pose()
+        position = start.position
+        roll_r = start.orientation.roll_r
+        step_m = speed_mps / self._rate_hz
+        last_aim: tuple[float, float] | None = None
+        for _ in range(max(1, int(round(duration_s * self._rate_hz)))):
+            current = target()
+            goal = _standoff_point(position, current, distance_m, height_m)
+            position = _advance_toward(position, goal, step_m)
+            if _horizontal_distance_m(position, current) > _AIM_DEADBAND_M:
+                last_aim = look_at_angles(position, current)
+            orientation = (
+                Rpy(roll_r=roll_r, pitch_r=last_aim[1], yaw_r=last_aim[0], frame=start.orientation.frame)
+                if last_aim is not None
+                else start.orientation
+            )
+            yield GeodeticPose(position=position, orientation=orientation)
 
     def steer(self, *, turn_radius_m: float, speed_mps: float, duration_s: float = DEFAULT_DURATION_S) -> int:
         """Fly a constant-radius arc, turning while moving.
@@ -523,3 +679,95 @@ class PoseBot:
 
 
 __all__ = ["DEFAULT_DURATION_S", "DEFAULT_RATE_HZ", "DEFAULT_START", "PoseBot"]
+
+
+def _as_target(target: Lla | Callable[[], Lla]) -> Callable[[], Lla]:
+    """Return a callable giving the target's current position.
+
+    Accepting both a point and a callable keeps a stationary target from needing a lambda, while a
+    moving one needs no separate method.
+
+    Args:
+        target: A fixed point, or a callable returning the current one.
+
+    Returns:
+        A zero-argument callable.
+
+    """
+    if callable(target):
+        return target
+    return lambda: target
+
+
+def _standoff_point(observer: Lla, target: Lla, distance_m: float, height_m: float) -> Lla:
+    """Return where to sit to hold a standoff from a target.
+
+    The standoff is taken along the observer's current bearing from the target, so a follower keeps the
+    side it is already on rather than swinging around to a fixed compass offset.
+
+    Args:
+        observer: Where the vehicle is now.
+        target: Where the target is now.
+        distance_m: Standoff distance in metres. Zero means the target's own position.
+        height_m: Height above the target in metres.
+
+    Returns:
+        The position to aim for.
+
+    """
+    goal_alt = target.alt_m + height_m
+    if distance_m <= 0.0:
+        return Lla(lat_deg=target.lat_deg, lon_deg=target.lon_deg, alt_m=goal_alt)
+    north_m, east_m = _north_east_offset_m(target, observer)
+    span = math.hypot(north_m, east_m)
+    if span < _STANDOFF_DEGENERATE_M:
+        # Directly overhead: no bearing to preserve, so hold due north of the target rather than
+        # picking a direction from noise.
+        north_m, east_m, span = 1.0, 0.0, 1.0
+    scale = distance_m / span
+    lat_off, lon_off = meters_to_latlon_offset(north_m * scale, east_m * scale, target.lat_deg)
+    return Lla(lat_deg=target.lat_deg + lat_off, lon_deg=target.lon_deg + lon_off, alt_m=goal_alt)
+
+
+def _advance_toward(position: Lla, goal: Lla, step_m: float) -> Lla:
+    """Move a position toward a goal by at most one step.
+
+    Args:
+        position: Where the vehicle is.
+        goal: Where it is heading.
+        step_m: Maximum ground distance to cover, in metres.
+
+    Returns:
+        The new position, which is ``goal`` once within a step of it.
+
+    """
+    north_m, east_m = _north_east_offset_m(position, goal)
+    span = math.hypot(north_m, east_m)
+    climb_m = goal.alt_m - position.alt_m
+    if span <= step_m:
+        return Lla(lat_deg=goal.lat_deg, lon_deg=goal.lon_deg, alt_m=goal.alt_m)
+    scale = step_m / span
+    lat_off, lon_off = meters_to_latlon_offset(north_m * scale, east_m * scale, position.lat_deg)
+    # Altitude is closed at the same fraction as the ground track, so the vehicle arrives level rather
+    # than climbing to the final height on the last tick.
+    return Lla(
+        lat_deg=position.lat_deg + lat_off,
+        lon_deg=position.lon_deg + lon_off,
+        alt_m=position.alt_m + climb_m * scale,
+    )
+
+
+def _north_east_offset_m(origin: Lla, point: Lla) -> tuple[float, float]:
+    """Return the north and east offset in metres from one position to another.
+
+    Args:
+        origin: The reference position.
+        point: The position to measure to.
+
+    Returns:
+        ``(north_m, east_m)``.
+
+    """
+    north_m = math.radians(point.lat_deg - origin.lat_deg) * _EARTH_RADIUS_M
+    east_m = math.radians(point.lon_deg - origin.lon_deg) * _EARTH_RADIUS_M * math.cos(math.radians(origin.lat_deg))
+    return north_m, east_m

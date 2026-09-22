@@ -20,11 +20,11 @@ from isaac_core.sim.configurator import (
     AttributeWrite,
     ConfigKeyError,
     RecordingWriter,
-    _resolve_horizontal_aperture,
     _resolve_vertical_aperture,
     apply_writes,
     compute_horizontal_aperture,
     compute_writes,
+    resolve_horizontal_aperture,
 )
 from isaac_core.sim.georeference import ResolvedEnuReference
 from isaac_core.sim.manifest import LayerManifest
@@ -458,14 +458,14 @@ def test_default_apertures_match_the_historical_derivation() -> None:
     config = _make_config()
     camera = CameraConfig()
     expected_h = compute_horizontal_aperture(camera.fov_deg, camera.focal_length_mm)
-    assert _resolve_horizontal_aperture(config) == pytest.approx(expected_h, rel=1e-12)
+    assert resolve_horizontal_aperture(config) == pytest.approx(expected_h, rel=1e-12)
     assert _resolve_vertical_aperture(config) == pytest.approx(expected_h * (camera.height / camera.width), rel=1e-12)
 
 
 def test_explicit_horizontal_aperture_wins_over_fov() -> None:
     # An explicit aperture is written verbatim; fov_deg is not consulted for this axis.
     config = _config_with_camera(horizontal_aperture_mm=12.5)
-    assert _resolve_horizontal_aperture(config) == pytest.approx(12.5)
+    assert resolve_horizontal_aperture(config) == pytest.approx(12.5)
 
 
 def test_explicit_vertical_aperture_is_independent_of_horizontal() -> None:
@@ -475,7 +475,7 @@ def test_explicit_vertical_aperture_is_independent_of_horizontal() -> None:
     camera = CameraConfig()
     expected_h = compute_horizontal_aperture(camera.fov_deg, camera.focal_length_mm)
     assert _resolve_vertical_aperture(config) == pytest.approx(7.0)
-    assert _resolve_horizontal_aperture(config) == pytest.approx(expected_h, rel=1e-12)
+    assert resolve_horizontal_aperture(config) == pytest.approx(expected_h, rel=1e-12)
 
 
 def test_explicit_aperture_with_non_default_fov_warns_and_names_the_winner() -> None:
@@ -484,7 +484,7 @@ def test_explicit_aperture_with_non_default_fov_warns_and_names_the_winner() -> 
     config = _config_with_camera(horizontal_aperture_mm=20.0, fov_deg=45.0)
     handler, records = _capture_configurator_warnings()
     try:
-        result = _resolve_horizontal_aperture(config)
+        result = resolve_horizontal_aperture(config)
     finally:
         logging.getLogger("isaac_core.sim.configurator").removeHandler(handler)
     assert result == pytest.approx(20.0)  # aperture wins
@@ -498,7 +498,7 @@ def test_explicit_aperture_with_default_fov_does_not_warn() -> None:
     config = _config_with_camera(horizontal_aperture_mm=20.0)
     handler, records = _capture_configurator_warnings()
     try:
-        _resolve_horizontal_aperture(config)
+        resolve_horizontal_aperture(config)
     finally:
         logging.getLogger("isaac_core.sim.configurator").removeHandler(handler)
     assert not [r for r in records if "explicit aperture wins" in r.getMessage()]
@@ -684,8 +684,8 @@ def test_aperture_resolvers_scope_to_the_vehicles_own_camera() -> None:
             "wing": VehicleConfig(camera=CameraConfig(horizontal_aperture_mm=24.0)),
         },
     )
-    assert _resolve_horizontal_aperture(config, "lead") == pytest.approx(12.0)
-    assert _resolve_horizontal_aperture(config, "wing") == pytest.approx(24.0)
+    assert resolve_horizontal_aperture(config, "lead") == pytest.approx(12.0)
+    assert resolve_horizontal_aperture(config, "wing") == pytest.approx(24.0)
 
 
 def test_compute_writes_defaults_to_first_vehicle_when_identity_omitted() -> None:

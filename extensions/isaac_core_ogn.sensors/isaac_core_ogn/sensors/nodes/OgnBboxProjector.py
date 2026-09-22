@@ -272,6 +272,25 @@ def _append_target(
     )
 
 
+# Conditions already reported, so an unchanging problem is stated once instead of on every tick. These
+# nodes compute per playback frame: a scene with no bbox targets produced 4332 identical warnings in one
+# run, which buried every other message in the log.
+_WARNED_ONCE: set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    """Log a warning the first time a given condition is seen.
+
+    Args:
+        message: The full warning text, which also identifies the condition.
+
+    """
+    if message in _WARNED_ONCE:
+        return
+    _WARNED_ONCE.add(message)
+    carb.log_warn(f"{message} (further identical warnings suppressed)")
+
+
 class OgnBboxProjector:
     """OmniGraph node: 2D bounding boxes from Isaac's synthetic-data annotators."""
 
@@ -292,7 +311,7 @@ class OgnBboxProjector:
         targets_path = _prim_path(db.inputs.targetsRootPath)
         if camera_path is None or targets_path is None:
             missing = "cameraPath" if camera_path is None else "targetsRootPath"
-            carb.log_warn(f"{_LOG_PREFIX} {missing} is unset or not absolute; emitting empty arrays")
+            _warn_once(f"{_LOG_PREFIX} {missing} is unset or not absolute; emitting empty arrays")
             _write_empty(db)
             return True
 
@@ -305,13 +324,17 @@ class OgnBboxProjector:
         targets_prim = stage.GetPrimAtPath(targets_path) if stage is not None else None
         if camera_prim is None or not camera_prim.IsValid() or targets_prim is None or not targets_prim.IsValid():
             bad = camera_path if camera_prim is None or not camera_prim.IsValid() else targets_path
-            carb.log_warn(f"{_LOG_PREFIX} prim {bad} is not valid; emitting empty arrays")
+            _warn_once(
+                f"{_LOG_PREFIX} prim {bad} is not valid; emitting empty arrays. If this is your own "
+                f"scene, bbox reports only prims under {targets_path}, so create that prim and put the "
+                f"objects you want boxed under it."
+            )
             _write_empty(db)
             return True
 
         viewport = _viewport_for(camera_path)
         if viewport is None:
-            carb.log_warn(f"{_LOG_PREFIX} no viewport for {camera_path}; emitting empty arrays")
+            _warn_once(f"{_LOG_PREFIX} no viewport for {camera_path}; emitting empty arrays")
             _write_empty(db)
             return True
 

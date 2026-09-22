@@ -20,7 +20,7 @@ cycle), or `finding` (see the findings section).
 
 ## 1. Control plane
 
-15 `Method` enum members, 15 registered handlers. Every handler is reachable from a shipped caller
+19 `Method` enum members, 19 registered handlers. Every handler is reachable from a shipped caller
 and every enum member has a handler — enforced by `control/test_method_coverage.py`.
 
 | Capability | Bucket | Evidence | Status |
@@ -34,6 +34,18 @@ and every enum member has a handler — enforced by `control/test_method_coverag
 | `set_gimbal` — slew-limited offsets | A + B | `sim/test_gimbal_control.py`, `geo/test_gimbal_axes.py` | pass |
 | `capture_frame` at the camera's resolution | A + B | `tests/system/test_capture.py` | pass |
 | `capture_frame` at a requested resolution | A + B | `tests/system/test_capture.py` asserts PNG pixels | pass |
+| Segmentation recording to mp4, no labels needed | A + B | `sim/test_segmentation.py` decodes the written file and checks channel order | pass |
+| Segmentation skips unready frames instead of writing black | A + B | `sim/test_segmentation.py`; live: nine solid-black frames became zero | pass |
+| `--set` works on `config dump` and `config explain`, not only `run` | A | `cli/test_config_set_flag.py` | pass |
+| The resolved ENU reference is always reported, with its source | A | `sim/test_georeference_report.py` | pass |
+| Two vehicles on one RTSP or UDP port refused at load | A | `config/test_port_collisions.py`; live: the CLI refuses before launching | pass |
+| `set_pose` survives a dropped datagram | A + B | `sim/test_set_pose_delivery.py`; live: both vehicles hold 3.300 and 43.300 where one read zero | pass |
+| A GUI tab finds a vehicle on a pinned, non-default pose port | A + B | `debug/test_gui_adopts_real_ports.py`; live: a tab moved 33333 -> 34500 and the pose reached the stage | pass |
+| `PoseBot` tracking and following against a live stage | A + B | `devkit/test_bot_tracking.py`; live: yaw 90 -> 270 onto the house without moving, follow held 58.8 m of a 60 m standoff | pass |
+| bbox with no targets warns once, not 4332 times | A | `sim/test_bbox_targets_warning.py`; live: 4332 identical lines became 0 | pass |
+| Zoom: level linear in field of view, clamped, rate-limited | A + B | `contracts/test_zoom.py`, `sim/test_zoom_handlers.py`; live: prim `focalLength` 20->200 mm with the aperture held, rendered sky 17.2% -> 0% | pass |
+| Per-vehicle gimbal, zoom and capture in a swarm | A + B | `sim/test_gimbal_control.py`, `tests/system/test_swarm.py` reads both gimbal prims; live: lead pitch -40/yaw 0 while wing pitch -10/yaw 25 | pass |
+| Tracking and following a **moving** target | A | `devkit/test_bot_tracking.py` drives a target that moves every tick | pass |
 | `pause` / `resume` — main-thread dispatch | A | `sim/test_main_thread_dispatch.py` | pass |
 | `step(count)` — advance N frames while paused | A | `sim/test_runtime_handlers.py` | pass |
 | `reset` — stop, restore, deferred replay | A | `sim/test_runtime_handlers.py` | pass |
@@ -42,7 +54,7 @@ and every enum member has a handler — enforced by `control/test_method_coverag
 
 ## 2. Devkit
 
-14 public members on `SimSession`. `devkit/test_control_method_coverage.py` asserts the devkit and
+19 public members on `SimSession`. `devkit/test_control_method_coverage.py` asserts the devkit and
 the control plane agree.
 
 | Capability | Bucket | Evidence | Status |
@@ -93,7 +105,9 @@ the control plane agree.
 
 ## 6. Layers and composition
 
-Four shipped layers: `camera_udp`, `camera_ros`, `distance_sensor`, `bbox`.
+Five shipped layers: `camera_udp`, `camera_ros`, `distance_sensor`, `bbox`, `segmentation`.
+`segmentation` is behaviour only and ships no USD, because it attaches an annotator to a render
+product the camera layer already created.
 
 | Capability | Bucket | Evidence | Status |
 |---|---|---|---|
@@ -102,7 +116,7 @@ Four shipped layers: `camera_udp`, `camera_ros`, `distance_sensor`, `bbox`.
 | Binding prims exist in the USD | A | `test_usd_layers.py`, `test_usd_graph_wiring.py` | pass |
 | Dependency-ordered planning (fixed point, D25) | A | `sim/test_planner.py` | pass |
 | Third-party layers via `layer_search_paths` | A | `sim/test_discovery.py` | pass |
-| Entry-point layers from another package | — | not implemented; see `docs/dev/roadmap.md` | **not built** |
+| Entry-point layers from another package | A | `sim/test_entry_point_layers.py` builds a real distribution on `sys.path` and discovers a layer from it | pass |
 | Multi-vehicle: per-vehicle mount, port, topics | A | `sim/test_configurator.py` | pass |
 | Single-vehicle output unchanged by swarm support | A | `sim/test_configurator.py` | pass |
 | Offscreen render products per camera | B | live: both image topics publish | pass |

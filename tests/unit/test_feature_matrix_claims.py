@@ -36,6 +36,21 @@ REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 MATRIX: Final = REPO_ROOT / "docs" / "dev" / "feature_matrix.md"
 ROADMAP: Final = REPO_ROOT / "docs" / "dev" / "roadmap.md"
 
+# The matrix writes small counts as words, so the guard reads the word rather than needing an edit
+# whenever a layer or a command is added.
+_NUMBER_WORDS: Final = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+
 
 def _matrix_text() -> str:
     """Return the matrix's contents."""
@@ -84,18 +99,24 @@ def test_the_config_section_count_matches_the_schema() -> None:
 
 def test_the_shipped_layer_count_matches_the_package() -> None:
     text = _matrix_text()
-    assert "Four shipped layers" in text, "the matrix no longer states a layer count"
+    match = re.search(r"(\w+) shipped layers", text)
+    assert match, "the matrix no longer states a layer count"
     layers = sorted(p.parent.name for p in (REPO_ROOT / "src/isaac_core/assets/layers").glob("*/layer.toml"))
-    assert len(layers) == 4, f"the matrix says four shipped layers, the package has {layers}"
+    assert _NUMBER_WORDS[match.group(1).lower()] == len(
+        layers
+    ), f"the matrix says {match.group(1)} shipped layers, the package has {layers}"
     for layer in layers:
         assert f"`{layer}`" in text, f"the shipped layer {layer} is not named in the matrix"
 
 
 def test_the_console_script_count_matches_pyproject() -> None:
     text = _matrix_text()
-    assert "Four console scripts" in text, "the matrix no longer states a script count"
+    match = re.search(r"(\w+) console scripts", text)
+    assert match, "the matrix no longer states a script count"
     scripts = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
-    assert len(scripts) == 4, f"the matrix says four console scripts, pyproject declares {sorted(scripts)}"
+    assert _NUMBER_WORDS[match.group(1).lower()] == len(
+        scripts
+    ), f"the matrix says {match.group(1)} console scripts, pyproject declares {sorted(scripts)}"
 
 
 def test_every_cited_evidence_file_exists() -> None:

@@ -210,10 +210,18 @@ def _resolve_layer_search_paths(config: IsaacCoreConfig) -> tuple[Path, ...]:
         Tuple of directories to scan for layer.toml files.
 
     """
+    from isaac_core.sim.discovery import entry_point_search_paths
+
     paths: list[Path] = []
     for p in config.assets.layer_search_paths:
         resolved = Path(p).expanduser().resolve()
         if resolved.is_dir():
+            paths.append(resolved)
+
+    # Layers announced by installed packages, so installing a layer is just installing a package.
+    # After the config's own paths, so a local directory can still shadow an installed one.
+    for resolved in entry_point_search_paths():
+        if resolved not in paths:
             paths.append(resolved)
 
     # Layers shipped inside the package: manifest and USD side by side, which is the same shape a

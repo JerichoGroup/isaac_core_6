@@ -58,6 +58,7 @@ READINESS_ATTEMPTS = 10
 MODULE_ORDER: tuple[str, ...] = (
     "test_swarm",
     "test_capture",
+    "test_segmentation",
     "test_single_vehicle",
 )
 
@@ -78,6 +79,11 @@ GUI_RTSP_PORT = 8620
 SINGLE_UDP_PORT = 34100
 SWARM_UDP_PORT = 34110
 GUI_UDP_PORT = 34120
+
+# The segmentation session gets its own ports so it can run alongside nothing else and still not collide
+# with a leftover from another module.
+SEG_RTSP_PORT = 8630
+SEG_UDP_PORT = 34130
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -433,6 +439,36 @@ def swarm_session(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
         "vehicles.wing.udp_port": SWARM_UDP_PORT + 1,
     }
     with _launch_with_retry(SYSTEM_TEST_PORT + 1, overrides, headless=True) as session:
+        _await_responsive(session)
+        yield session
+    _await_gpu_release()
+    shutil.rmtree(output, ignore_errors=True)
+
+
+@pytest.fixture(scope="module")
+def segmentation_session(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
+    """Launch a simulator with the segmentation feature enabled.
+
+    Headless is fine here, unlike frame capture: segmentation is read from a render product through
+    Replicator rather than from a viewport's colour resource.
+
+    Yields:
+        A connected ``SimSession`` whose output root is a temporary directory.
+
+    """
+    reason = _isaac_available()
+    if reason is not None:
+        pytest.skip(reason)
+
+    output = tmp_path_factory.mktemp("isaac_core_segmentation")
+    overrides: dict[str, Any] = {
+        "sim.control_plane.output_root": str(output),
+        "features.enabled": ["camera_udp", "segmentation"],
+        "vehicles.drone_0.pose_source": "udp",
+        "vehicles.drone_0.camera.rtsp_port": SEG_RTSP_PORT,
+        "vehicles.drone_0.udp_port": SEG_UDP_PORT,
+    }
+    with _launch_with_retry(SYSTEM_TEST_PORT + 3, overrides, headless=True) as session:
         _await_responsive(session)
         yield session
     _await_gpu_release()

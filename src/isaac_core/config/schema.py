@@ -338,6 +338,19 @@ class CameraConfig(_Strict):
     horizontal_aperture_mm: float | None = Field(None, gt=0.0)
     vertical_aperture_mm: float | None = Field(None, gt=0.0)
 
+    # Zoom travel, in millimetres of focal length. `None` on either means the camera does not zoom and
+    # `set_zoom` refuses rather than inventing a range. Level 0 is the widest view (the shorter focal
+    # length) and level 1 the narrowest, and level is linear in field of view rather than in focal
+    # length, because halfway between a wide and a long lens should look halfway zoomed.
+    focal_length_min_mm: float | None = Field(None, gt=0.0)
+    focal_length_max_mm: float | None = Field(None, gt=0.0)
+
+    # Degrees of field of view per second while zooming. Zero means no limit, so a zoom snaps -- the same
+    # reading the gimbal's `max_rate_deg_s` has, kept identical so one does not surprise someone who
+    # learned the other. Limited in field of view rather than focal length because millimetres per second
+    # crawls at the wide end and races at the long end.
+    zoom_max_rate_deg_s: float = Field(0.0, ge=0.0)
+
     # RTSP stream settings for this camera (D21: always streaming, no enable flag).
     #
     # `rtsp_mount_path` of ``None`` means derive: ``/stream`` for a single camera, and a
@@ -513,7 +526,38 @@ class IsaacCoreConfig(_Strict):
         for feature_id in self.features.enabled:
             topics.validate_segment(feature_id)
 
+        self._reject_port_collisions()
         return self
+
+    def _reject_port_collisions(self) -> None:
+        """Refuse a config where two vehicles end up on the same port.
+
+        A pinned port and a derived one can land on the same number: pinning `lead` to 8555 leaves `wing`
+        deriving 8555 as well, because pinning one vehicle deliberately does not shift the others. Nothing
+        checked, so the config loaded, the stage composed, both features reported enabled, and the second
+        server simply failed to bind -- measured as a refused connection on a stream that the capability
+        report said was running.
+
+        Raises:
+            ValueError: If two vehicles resolve to the same RTSP or UDP port.
+
+        """
+        for label, resolve, key in (
+            ("RTSP", self.resolved_rtsp_port, "camera.rtsp_port"),
+            ("UDP pose", self.resolved_udp_port, "udp_port"),
+        ):
+            seen: dict[int, str] = {}
+            for vehicle_id in self.vehicles:
+                port = resolve(vehicle_id)
+                if port in seen:
+                    msg = (
+                        f"{label} port {port} is used by both {seen[port]!r} and {vehicle_id!r}; only one "
+                        f"process can bind a port, so one of them would have no stream. Set "
+                        f"vehicles.{vehicle_id}.{key} to a free port, or leave both unset and they are "
+                        f"allocated from the default base by vehicle index."
+                    )
+                    raise ValueError(msg)
+                seen[port] = vehicle_id
 
     # -- derived values -------------------------------------------------- #
 

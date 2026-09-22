@@ -28,7 +28,12 @@ from isaac_core.sim.configurator import (
     AttributeWrite,
     compute_writes,
 )
-from isaac_core.sim.georeference import describe_mismatch, resolve_enu_reference
+from isaac_core.sim.georeference import (
+    CESIUM_GEOREFERENCE_PRIM,
+    ResolvedEnuReference,
+    describe_mismatch,
+    resolve_enu_reference,
+)
 from isaac_core.sim.planner import FeaturePlan, PlannedLayer
 from isaac_core.sim.stage import UsdStageInspector
 
@@ -97,6 +102,8 @@ def layer_usd_path(planned: PlannedLayer, search_paths: tuple[Path, ...]) -> Pat
 
     """
     usd_relative = planned.manifest.usd
+    if usd_relative is None:
+        return None
     for search_dir in search_paths:
         candidate = search_dir / planned.manifest.id / usd_relative
         if candidate.is_file():
@@ -181,6 +188,7 @@ def compose_stage(
     mismatch = describe_mismatch(resolved_enu, inspector)
     if mismatch:
         logger.warning(mismatch)
+    _report_enu_reference(resolved_enu, inspector)
 
     report = plan.render_report()
     if report:
@@ -194,7 +202,8 @@ def compose_stage(
 
     apply_tile_tuning(stage, config.cesium, config.cesium.tilesets_root)
 
-    apply_target_semantics(stage, BBOXES_ROOT)
+    labelled = apply_target_semantics(stage, BBOXES_ROOT)
+    _warn_if_bbox_has_no_targets(plan, labelled)
 
     apply_hdri(stage, config.assets.hdri, config.assets.search_paths)
 
@@ -507,6 +516,10 @@ def _mount_layers(
         # planning working unchanged.
         layer_instance = planned.instance if planned.instance != "default" else instance
         mount = mount_path_for_layer(planned, layer_instance)
+        if planned.manifest.usd is None:
+            # A behaviour-only layer, such as segmentation: nothing to reference, and nothing wrong.
+            logger.info("layer %r contributes behaviour only; no USD to mount", planned.manifest.id)
+            continue
         usd_path = layer_usd_path(planned, layer_search_paths)
         if usd_path is None:
             logger.warning(
@@ -516,6 +529,59 @@ def _mount_layers(
             )
             continue
         _define_and_reference(stage, mount, usd_path)
+
+
+def _warn_if_bbox_has_no_targets(plan: FeaturePlan, labelled: int) -> None:
+    """Say so at startup when the bbox feature composed but has nothing to box.
+
+    The capability report says `bbox` is enabled, the topic appears, and every message on it is empty
+    forever. On a scene of your own that is the likely case rather than the exception, since the targets
+    root is a convention rather than something every scene has. It was reported only at debug level, so
+    the one place a user looks said the feature was fine.
+
+    Args:
+        plan: The composed feature plan, used to tell whether bbox is actually enabled.
+        labelled: How many target prims were labelled.
+
+    """
+    if labelled:
+        return
+    if not any(planned.manifest.id == "bbox" for planned in plan.enabled):
+        return
+    logger.warning(
+        "bbox is enabled but no target prims were labelled: it reports only prims under %s, so every "
+        "message will be empty until that prim exists with the objects you want boxed under it",
+        BBOXES_ROOT,
+    )
+
+
+def _report_enu_reference(resolved: ResolvedEnuReference, inspector: Any) -> None:
+    """Log which ENU reference won and where it came from.
+
+    Only a *mismatch* used to be reported, so a scene whose georeference was missing, misspelled or
+    authored at a non-standard path fell back to the config with no log line at all. Everything then sat
+    at a plausible-looking but wrong offset, and nothing in the output pointed at the cause -- which is
+    exactly how a newly authored scene goes wrong.
+
+    Args:
+        resolved: The reference that won, and its source.
+        inspector: Stage inspector, used to say whether the scene carried one at all.
+
+    """
+    reference = resolved.reference
+    logger.info(
+        "ENU reference: lat=%.6f lon=%.6f alt=%.2f (from %s)",
+        reference.lat_deg,
+        reference.lon_deg,
+        reference.alt_m,
+        resolved.source,
+    )
+    if not inspector.prim_exists(CESIUM_GEOREFERENCE_PRIM):
+        logger.info(
+            "the scene has no %s prim, so the config's reference is authoritative; if your scene does "
+            "carry a georeference, check it is at that path",
+            CESIUM_GEOREFERENCE_PRIM,
+        )
 
 
 def _define_and_reference(stage: Any, mount_path: str, usd_path: Path) -> None:
@@ -657,7 +723,7 @@ def apply_target_semantics(stage: Any, targets_root: str) -> int:
     sdf = _sdf()
     root = stage.GetPrimAtPath(sdf.Path(targets_root))
     if not root.IsValid():
-        logger.debug("targets root %s absent; no semantics to apply", targets_root)
+        logger.info("targets root %s is absent, so there is nothing to label", targets_root)
         return 0
 
     try:

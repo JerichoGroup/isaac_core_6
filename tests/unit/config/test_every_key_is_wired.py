@@ -68,6 +68,11 @@ RUNTIME_ONLY: Final[dict[str, str]] = {
     "sim.strict_features": "raise instead of skip when a layer cannot compose; test_planner.py",
     "sim.viewport_camera": "which camera the viewport looks through; test_gui_setup.py",
     "vehicles.drone_0.gimbal.max_rate_deg_s": "slew rate applied per frame; test_gimbal.py",
+    # Zoom reads its travel and its rate when set_zoom is called, not when the stage composes: an
+    # uncommanded camera must keep exactly the focal length it was configured with.
+    "vehicles.drone_0.camera.focal_length_min_mm": "zoom travel read by set_zoom; contracts/test_zoom.py",
+    "vehicles.drone_0.camera.focal_length_max_mm": "zoom travel read by set_zoom; contracts/test_zoom.py",
+    "vehicles.drone_0.camera.zoom_max_rate_deg_s": "slew rate applied per frame; contracts/test_zoom.py",
 }
 
 # Free-form mappings with no default entries, so there is nothing to vary without inventing a

@@ -172,7 +172,7 @@ def _resolve_runtime_value(
         "bbox_topic": lambda: _resolve_vehicle_topic(config, BBOX, vehicle_id),
         "rtsp_mount_path": lambda: _resolve_rtsp_mount_path(config, vehicle_id),
         "rtsp_port": lambda: config.resolved_rtsp_port(vehicle_id),
-        "camera_horizontal_aperture": lambda: _resolve_horizontal_aperture(config, vehicle_id),
+        "camera_horizontal_aperture": lambda: resolve_horizontal_aperture(config, vehicle_id),
         "camera_vertical_aperture": lambda: _resolve_vertical_aperture(config, vehicle_id),
         "lla_topic": lambda: _resolve_mavros_topic(config, MAVROS_LLA_LEAF, vehicle_id),
         "orientation_topic": lambda: _resolve_mavros_topic(config, MAVROS_ORIENTATION_LEAF, vehicle_id),
@@ -260,7 +260,7 @@ def _camera_for(config: IsaacCoreConfig, vehicle_id: str) -> CameraConfig:
 _DEFAULT_FOV_DEG: float = CameraConfig.model_fields["fov_deg"].default
 
 
-def _resolve_horizontal_aperture(
+def resolve_horizontal_aperture(
     config: IsaacCoreConfig,
     vehicle_id: str | None = None,
 ) -> float:
@@ -323,7 +323,7 @@ def _resolve_vertical_aperture(
     camera = _camera_for(config, resolved_vehicle_id)
     if camera.vertical_aperture_mm is not None:
         return camera.vertical_aperture_mm
-    return _resolve_horizontal_aperture(config, resolved_vehicle_id) * (camera.height / camera.width)
+    return resolve_horizontal_aperture(config, resolved_vehicle_id) * (camera.height / camera.width)
 
 
 def _resolve_rtsp_mount_path(config: IsaacCoreConfig, vehicle_id: str) -> str:

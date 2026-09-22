@@ -339,8 +339,45 @@ limit the move takes time. Poll `get_pose()` to watch it get there.
 
 ![Gimbal angle reference](docs/images/gimbal_reference.png)
 
-**Single vehicle only.** With more than one vehicle configured it refuses and tells you so, rather
-than aiming the wrong one.
+Pass `vehicle=` to aim a particular one; omit it and the first declared vehicle is used. Each vehicle
+keeps its own gimbal angles, so aiming one does not move another.
+
+</details>
+
+<details>
+<summary><b>Zoom</b></summary>
+
+Give the camera some travel and it zooms:
+
+```toml
+[vehicles.drone_0.camera]
+focal_length_min_mm = 20.0     # level 0: the widest view
+focal_length_max_mm = 200.0    # level 1: the narrowest
+zoom_max_rate_deg_s = 30.0     # omit or 0 to snap instantly
+```
+
+```python
+with Sim.attach() as session:
+    session.set_zoom(level=0.5)        # halfway
+    session.set_zoom(focal_mm=50.0)    # or an exact lens
+    print(session.get_zoom())
+```
+
+**Level is linear in field of view, not in focal length.** With the range above, level 0.5 gives 48.0°,
+which is halfway between 85.5° and 10.6°. Interpolating focal length instead would land at 110 mm, about
+19° - almost fully zoomed in, which is not what "halfway" means. A real lens is linear in neither, so this
+is an honest approximation rather than a lens model.
+
+`get_zoom()` reports the level, the focal length and the field of view together, because which one you want
+depends on the question, plus whether the lens is still `moving`.
+
+Zooming writes `focalLength` and holds the sensor aperture fixed, so the field of view follows. Values
+outside the range are clamped rather than refused. Without `focal_length_min_mm` and `focal_length_max_mm`
+the camera does not zoom and `set_zoom` says so instead of inventing a range.
+
+`set_zoom` returns when the target is accepted, not when the lens arrives - with a rate limit the move
+takes time, so poll `get_zoom()` to watch it. Takes `vehicle=` like the gimbal, and each camera keeps
+its own zoom.
 
 </details>
 
@@ -361,7 +398,7 @@ resolution used, and which render product it came from.
 **Capture needs a window.** Headless has no colour resource to read, so `capture_frame` only works
 with a GUI.
 
-**Single vehicle only**, same as the gimbal.
+Takes `vehicle=` like the gimbal, and shoots that vehicle's own camera.
 
 </details>
 
@@ -413,6 +450,59 @@ source ~/IsaacSim-ros_workspaces/humble_ws/install/setup.bash
 </details>
 
 <details>
+<summary><b>Segmentation video</b></summary>
+
+Record the whole stage segmented by instance, with nothing to label:
+
+```toml
+[features]
+enabled = ["camera_udp", "segmentation"]
+```
+
+```python
+with Sim.attach() as session:
+    with session.segmentation_recorder("segmentation_check.mp4") as written:
+        bot.orbit(32.22481, 35.25621, radius_m=200.0, speed_mps=20.0, duration_s=20.0)
+    print(written["frames"], written["fps"])
+```
+
+Or drive it by hand, when the recording is not a neat block:
+
+```python
+session.start_segmentation_recording()
+...
+session.stop_segmentation_recording("segmentation_check.mp4")
+```
+
+Every distinct prim in view gets its own colour. This uses Replicator's `instance_id_segmentation`, which
+keys off **prims rather than semantic labels** - so unlike `semantic_segmentation` and
+`instance_segmentation`, nothing needs a `SemanticsAPI` and nothing is invisible for want of a label. It is
+read inside the simulator rather than published on a topic, because `ROS2CameraHelper` does not expose it.
+
+The mp4 is written at the frame rate actually measured, not a nominal one, with a
+`<name>.mp4.timestamps.txt` sidecar giving per-frame presentation times - the simulator's frame rate is not
+constant and a constant-rate container cannot express that.
+
+Frames the annotator was not ready to give are skipped rather than written, and reported as `dropped`, so a
+recording contains only real observations instead of black frames that look like a successful capture.
+
+**Colours are stable within a recording, not between runs.** Instance ids are assigned per session, so the
+same roof can be orange in one clip and cyan in the next. Compare regions inside one file, not across two.
+
+Paths resolve under `sim.control_plane.output_root` and are confined to it, exactly as `capture_frame` is.
+Takes `vehicle=` like the gimbal.
+
+**Look at it, do not sample it.** mp4 is lossy: a recording whose annotator produced 27 flat colours
+decodes to over 22,000, because compression stipples every region edge. Regions stay obvious to the eye,
+but reading a pixel does not recover an exact instance colour, so this is a visual check rather than a mask
+source.
+
+**Cesium terrain is streamed generated geometry**, so it does not segment into per-building instances the
+way authored geometry does. Anything authored in your scene segments cleanly.
+
+</details>
+
+<details>
 <summary><b>RTSP video</b></summary>
 
 Every camera streams H.264 over RTSP the whole time the simulator is up. No flag needed.
@@ -428,7 +518,10 @@ rtsp_port = 8554
 rtsp_mount_path = "/stream"    # unset = derived, namespaced when there is more than one vehicle
 ```
 
-Each simultaneous stream needs its own port, so ports are allocated as `rtsp_port + vehicle index`.
+Each simultaneous stream needs its own port. A vehicle uses its own `rtsp_port` when you set one, and
+otherwise the default base plus its index - so pinning one vehicle does **not** shift the others. Two
+vehicles ending up on the same port is refused at load, naming both and the key to change, because only one
+process can bind a port and the other would silently have no stream.
 
 </details>
 
@@ -463,8 +556,9 @@ session.set_pose(vehicle="wing", lat_deg=32.2, lon_deg=35.3, alt_m=900.0)
 print(session.get_pose(vehicle="wing"))
 ```
 
-An unknown name is rejected with the list of configured vehicles. `set_gimbal` and `capture_frame`
-are single-vehicle only and refuse rather than guess.
+An unknown name is rejected with the list of configured vehicles. Every command that acts on a
+vehicle - including `set_gimbal`, `set_zoom`, `capture_frame` and segmentation recording - takes
+`vehicle=` and defaults to the first declared one, so a swarm is not a second-class citizen.
 
 Each vehicle gets its own viewport window, named after it. That is not only for looking at: Cesium
 decides which terrain tiles to stream from the viewports that exist, so a camera without one would
@@ -555,7 +649,9 @@ Angles are radians on the wire. The GUI tools show degrees and convert for you.
 bad checksum, or an impossible value. A frozen camera means nothing is arriving, not necessarily that something
 crashed.
 
-Default port 33333, allocated as `base + vehicle index`.
+Default port 33333. A vehicle uses its own `udp_port` when you set one, and otherwise the default base
+plus its index. A collision between two vehicles is refused at load rather than leaving one of them taking
+the other's poses.
 
 ---
 
@@ -632,6 +728,13 @@ isaac-core config dump            # the fully resolved config
 isaac-core config explain <key>   # which source won, and what the others offered
 ```
 
+Both take `--set` exactly as `run` does, so you can see what an override will do before launching:
+
+```bash
+isaac-core config dump --set sim.scene /path/to/my.usda
+isaac-core config explain sim.scene --set sim.scene /path/to/my.usda   # -> source: cli
+```
+
 Invalid values are rejected at load with the key, the value and what to do instead.
 
 ---
@@ -700,8 +803,10 @@ process**: leaving the block stops it, including on an exception or Ctrl-C.
 |---|---|
 | `get_pose(*, vehicle=None)` | the live prim transform, read off the running stage |
 | `set_pose(*, vehicle=None, lat_deg, lon_deg, alt_m, roll_deg=0, pitch_deg=0, yaw_deg=0)` | put a vehicle somewhere |
-| `set_gimbal(*, roll_deg=None, pitch_deg=None, yaw_deg=None)` | aim the camera; omitted axes hold. Single vehicle only |
-| `capture_frame(path, *, width=None, height=None)` | write a still. `width`/`height` together, or neither. Single vehicle only |
+| `set_gimbal(*, vehicle=None, roll_deg=None, pitch_deg=None, yaw_deg=None)` | aim the camera; omitted axes hold |
+| `set_zoom(*, vehicle=None, level=None, focal_mm=None)` | zoom by level (0-1, linear in field of view) or by focal length |
+| `get_zoom(*, vehicle=None)` | the current level, focal length, field of view, and whether it is still moving |
+| `capture_frame(path, *, vehicle=None, width=None, height=None)` | write a still. `width`/`height` together, or neither |
 | `get_capabilities()` | which layers composed, and which were skipped |
 | `state()` | lifecycle state, including whether the stage is `ready` |
 | `pause()` / `resume()` | stop and start the timeline; the control plane stays responsive |
@@ -740,6 +845,8 @@ with PoseBot(port=33333) as bot:                       # closes the socket on ex
     bot.move_up_down(-200.0)
     bot.turn_yaw(90.0)                                 # degrees, like everything user-facing
     bot.turn_to_point(32.22481, 35.25621, 1000.0)      # aims without moving; roll is preserved
+    bot.track_point(moving_target, duration_s=10.0)     # keeps aiming as the target moves
+    bot.follow_point(moving_target, distance_m=200.0, speed_mps=40.0, duration_s=30.0)
     bot.steer(turn_radius_m=100.0, speed_mps=50.0, duration_s=5.0)
     bot.orbit(32.22481, 35.25621, radius_m=800.0, speed_mps=30.0, duration_s=60.0)
     bot.fly_path([Lla(32.22, 35.25, 900.0), Lla(32.24, 35.27, 1200.0)], speed_mps=50.0)
@@ -761,6 +868,23 @@ from isaac_core.devkit import PoseBot, Ros2PoseTransport
 with PoseBot(transport=Ros2PoseTransport(namespace="/mavros")) as bot:
     bot.move_to_point(32.22481, 35.25621, 1200.0, duration_s=5.0)
 ```
+
+**Tracking a moving target.** `turn_to_point` aims once and finishes. `track_point` re-reads the target
+every tick, so a moving one stays in frame, and `follow_point` also chases it while holding a standoff
+distance. Both take either a fixed `Lla` or a callable returning the current one, called once per tick:
+
+```python
+def where_is_it() -> Lla:
+    return Lla(32.2255, 35.2565, 900.0)      # read a live feed, another vehicle, anything
+
+bot.track_point(where_is_it, duration_s=30.0)                                   # aim only
+bot.follow_point(where_is_it, distance_m=300.0, height_m=200.0,
+                 speed_mps=45.0, duration_s=60.0)                               # aim and chase
+```
+
+`follow_point` is speed-limited rather than teleporting, so it lags a fast target the way a real aircraft
+would, and `limits=MotionLimits(...)` caps it too. The standoff is held along the bearing the follower is
+already on, so it keeps its side instead of swinging round to a fixed compass offset.
 
 There is no `hold()`: the simulator holds the last good pose by design, so staying put needs no
 packets at all.
@@ -996,9 +1120,10 @@ confirm from outside that your pose input source is reaching the camera.
 One window, one tab per vehicle. `+ Add target` adds a tab, and each tab picks its own wire, so a
 single window can drive one vehicle over UDP and another over ROS 2 at the same time.
 
-A new tab lands on the port the simulator will actually be listening on: vehicle ports are allocated
-as `33333 + vehicle index`, and tabs follow the same arithmetic, so a two-vehicle swarm needs no
-mental arithmetic.
+A new tab lands on the port the simulator is actually listening on. With a simulator running it asks,
+so a pinned `udp_port` is picked up rather than guessed; with nothing running it falls back to
+`33333 + tab index`, which is the default allocation. Either way a two-vehicle swarm needs no mental
+arithmetic.
 
 | | What it does |
 |---|---|

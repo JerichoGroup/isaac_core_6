@@ -90,6 +90,12 @@ max_range_m = 5000.0                   # readings beyond this saturate. > 0
 resolution = [1280, 720]               # pixels, also the published image size
 fov_deg = 78.1                         # horizontal field of view; 0 < fov <= 180
 focal_length_mm = 22.7885              # with the apertures, this is what sets the projection
+# Zoom travel. Unset means the camera does not zoom and set_zoom refuses rather than inventing a
+# range. Level 0 is the widest view, 1 the narrowest, linear in field of view.
+# focal_length_min_mm = 20.0
+# focal_length_max_mm = 200.0
+# Degrees of field of view per second while zooming. 0 = no limit, so a zoom snaps.
+zoom_max_rate_deg_s = 0.0
 focus_distance = 400.0                 # metres; only visible with f_stop > 0. > 0
 f_stop = 0.0                           # 0 disables depth of field. >= 0
 # horizontal_aperture_mm = 20.955      # unset: derived from fov_deg and focal_length_mm. > 0

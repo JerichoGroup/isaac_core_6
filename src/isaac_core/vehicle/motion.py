@@ -535,13 +535,14 @@ def turn_to_point(
         :class:`~isaac_core.contracts.pose.GeodeticPose` instances.
 
     """
+    # Roll is preserved, and the current yaw is the fallback for a target directly below: aiming at one
+    # has no bearing to compute, and returning zero snapped the airframe north on arrival.
+    roll_r, _pitch_r, current_heading_r = matrix_to_euler(state.rotation, state.frame)
     yaw_r, pitch_r = look_at_angles(
         Lla(lat_deg=state.lat_deg, lon_deg=state.lon_deg, alt_m=state.alt_m),
         Lla(lat_deg=target_lat_deg, lon_deg=target_lon_deg, alt_m=target_alt_m),
+        fallback_yaw_r=current_heading_r,
     )
-
-    # Preserve current roll
-    roll_r, _pitch_r, _yaw_r = matrix_to_euler(state.rotation, state.frame)
 
     if limits is not None:
         # Accepted and ignored before: a turn-rate limit had no effect on turn_to_point, while

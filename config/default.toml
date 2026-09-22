@@ -259,6 +259,12 @@ fov_deg = 78.1
 # rtsp_mount_path = "/stream"
 
 focal_length_mm = 22.7885
+# Zoom travel. Unset means the camera does not zoom and set_zoom refuses rather than inventing a
+# range. Level 0 is the widest view, 1 the narrowest, linear in field of view.
+# focal_length_min_mm = 20.0
+# focal_length_max_mm = 200.0
+# Degrees of field of view per second while zooming. 0 = no limit, so a zoom snaps.
+zoom_max_rate_deg_s = 0.0
 
 # Lens focus distance in scene units, which are metres. Only has a visible effect once f_stop
 # is non-zero; with depth of field off, everything is in focus.

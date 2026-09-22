@@ -31,7 +31,12 @@ import tempfile
 from typing import Sequence
 
 from isaac_core.cli.completion import register_completion_subcommand, run_completion
-from isaac_core.cli.config_cmd import register_config_subcommand, run_config_dump, run_config_explain
+from isaac_core.cli.config_cmd import (
+    overrides_from_args,
+    register_config_subcommand,
+    run_config_dump,
+    run_config_explain,
+)
 from isaac_core.cli.doctor import run_doctor
 
 
@@ -281,9 +286,9 @@ def _dispatch_config(args: argparse.Namespace) -> int:
     """
     config_subcmd = getattr(args, "config_command", None)
     if config_subcmd == "dump":
-        return run_config_dump(config_path=args.config)
+        return run_config_dump(config_path=args.config, cli_overrides=overrides_from_args(args.set))
     if config_subcmd == "explain":
-        return run_config_explain(key=args.key, config_path=args.config)
+        return run_config_explain(key=args.key, config_path=args.config, cli_overrides=overrides_from_args(args.set))
     # No sub-subcommand: print config help
     print("usage: isaac-core config {dump,explain} ...", file=sys.stderr)
     return 1
