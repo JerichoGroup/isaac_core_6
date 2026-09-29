@@ -34,7 +34,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
 
 from isaac_core.config import IsaacCoreConfig
 from isaac_core.contracts import packet as packet_spec
@@ -67,7 +67,18 @@ RENDER_PRODUCT_NODE_NAME = "isaac_create_render_product"
 
 # Patchable at runtime because something re-reads them. Anything applied once at composition time
 # is deliberately absent: patching it would change config while the stage kept the old value.
-PATCHABLE_CONFIG_KEYS: frozenset[str] = frozenset({"gimbal.max_rate_deg_s"})
+# Runtime-patchable keys, named by their real config path. The old spelling was "gimbal.max_rate_deg_s",
+# which is not a path that exists anywhere in the schema: the setting lives per vehicle. Accepting a key the
+# schema does not have meant `config.patch` succeeded on something a user could never find in their TOML,
+# and silently applied it to the first vehicle only.
+# Leaf settings that may be patched at runtime, matched against the real per-vehicle path. The old
+# spelling was the bare "gimbal.max_rate_deg_s", which is not a path that exists anywhere in the schema --
+# the setting lives under each vehicle. Accepting it meant `config.patch` succeeded on a key a user could
+# never find in their own TOML, and silently applied it to the first vehicle only.
+PATCHABLE_LEAVES: frozenset[str] = frozenset({"gimbal.max_rate_deg_s"})
+
+# vehicles.<id>.<section>.<field> is the shortest patchable path.
+_PATCH_KEY_PARTS: int = 4
 
 # Bounded so a wedged step loop surfaces as an error rather than a hung client.
 MAIN_THREAD_TASK_TIMEOUT_S: float = 10.0
@@ -81,10 +92,16 @@ MAIN_THREAD_FRAME_BUDGET_S: float = 1.0
 # attribute; the wait is sized as if it were this many frames of work.
 ANNOTATOR_WARMUP_FRAMES: int = 30
 
-# How many copies of a `set_pose` packet to send, and the gap between them. A single datagram is lost if
-# the receiver has not bound yet, which made a commanded pose silently fail to apply.
-SET_POSE_DATAGRAMS: int = 3
-SET_POSE_GAP_S: float = 0.02
+# Copies of the OPENING `set_pose` packet for a vehicle, and the gap between them. A single datagram is
+# lost if the receiver has not bound its socket yet, which made a commanded pose silently fail to apply.
+#
+# This burst is paid ONCE PER VEHICLE, on the first call, and never again. Doing it on every call cost
+# 40 ms per `set_pose`, which turned a caller's 20 Hz pose loop into 11 Hz delivered as bursts of three
+# identical packets separated by silence -- the camera then jumped once every few rendered frames and sat
+# frozen in between. Repeating a packet is the right answer to a socket that is not listening yet; it is
+# the wrong answer on a call that is part of a stream.
+SET_POSE_OPENING_DATAGRAMS: int = 3
+SET_POSE_OPENING_GAP_S: float = 0.02
 
 # Degrees of field of view within which a zoom counts as arrived. Without a tolerance a rate-limited zoom
 # can step past the target and oscillate around it forever.
@@ -118,19 +135,6 @@ class _MainThreadTask:
     done: threading.Event = field(default_factory=threading.Event)
     result: Any = None
     error: BaseException | None = None
-
-
-# Without these, OmniGraph reports "Could not find node type interface" for every node and the
-# graphs quietly do nothing. isaacsim.ros2.bridge is C++, which is why ROS works at all inside
-# Isaac's interpreter -- see docs/ros2_and_python.md.
-REQUIRED_EXTENSIONS: tuple[str, ...] = (
-    "omni.graph.action",
-    "omni.graph.nodes",
-    "isaacsim.ros2.bridge",
-    "isaacsim.core.nodes",
-    "isaac_core_ogn.math",
-    "isaac_core_ogn.position",
-)
 
 
 def _json_safe_usd(value: Any) -> Any:
@@ -209,6 +213,27 @@ class _GimbalTarget:
     roll_deg: float
     pitch_deg: float
     yaw_deg: float
+
+
+def _split_patchable_key(key: str, vehicles: Iterable[str]) -> tuple[str, str] | None:
+    """Split a runtime patch key into the vehicle it names and the leaf it patches.
+
+    Args:
+        key: A dotted config path, for example ``vehicles.drone_0.gimbal.max_rate_deg_s``.
+        vehicles: The configured vehicle ids.
+
+    Returns:
+        ``(vehicle_id, leaf)`` when the key is a patchable per-vehicle path, else ``None``.
+
+    """
+    parts = key.split(".")
+    if len(parts) < _PATCH_KEY_PARTS or parts[0] != "vehicles":
+        return None
+    vehicle_id = parts[1]
+    if vehicle_id not in set(vehicles):
+        return None
+    leaf = ".".join(parts[2:])
+    return (vehicle_id, leaf) if leaf in PATCHABLE_LEAVES else None
 
 
 def _as_mapping(params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
@@ -399,7 +424,12 @@ class SimulationRuntime:
         self._gimbal_prim_paths: dict[str, str] = {}
         self._capture_request: _CaptureRequest | None = None
         # Built on first use: the recorder imports Replicator, which only exists inside Isaac.
-        self._segmentation: Any = None
+        # One recorder per vehicle. A single shared recorder made the `vehicle=` argument a facade: two
+        # vehicles could not record at once, and `stop` had no way to know which one it was ending.
+        self._segmentation: dict[str, Any] = {}
+        # Vehicles that have already received an opening `set_pose`, so the bind-window burst is paid
+        # once each rather than on every call.
+        self._posed_vehicles: set[str] = set()
         # Set by reset(); the loop presses play one frame later, since play() in the same
         # frame as stop() is ignored by Kit's timeline.
         self._pending_play = False
@@ -1539,8 +1569,12 @@ class SimulationRuntime:
         """
         dumped: dict[str, Any] = self._config.model_dump(mode="json")
         for key, value in self._config_overrides.items():
-            if key == "gimbal.max_rate_deg_s":
-                dumped["vehicles"][self._config.first_vehicle_id]["gimbal"]["max_rate_deg_s"] = value
+            target = _split_patchable_key(key, self._config.vehicles)
+            if target is None:
+                continue
+            vehicle_id, leaf = target
+            section, field = leaf.split(".", maxsplit=1)
+            dumped["vehicles"][vehicle_id][section][field] = value
         return dumped
 
     def _handle_pause(self, params: dict[str, Any] | list[Any] | None) -> str:
@@ -1656,7 +1690,7 @@ class SimulationRuntime:
         vehicle_id = self._vehicle_from(values)
         if not self._segmentation_enabled():
             raise RuntimeError('segmentation is not enabled; add "segmentation" to [features] enabled and relaunch')
-        recorder = self._segmentation_recorder()
+        recorder = self._segmentation_recorder(vehicle_id)
 
         def _attach() -> tuple[str | None, tuple[int, int] | None]:
             # Replicator's registry and the OmniGraph both have to be touched from the thread that
@@ -1695,24 +1729,33 @@ class SimulationRuntime:
         from isaac_core.control.server import confine_path
 
         values = _as_mapping(params)
+        vehicle_id = self._vehicle_from(values)
         if "path" not in values:
             raise InvalidParamsError("stop_segmentation_recording requires params.path")
         target = confine_path(values["path"], self._config.sim.control_plane.output_root)
-        written: dict[str, Any] = self._segmentation_recorder().stop(target)
+        written: dict[str, Any] = self._segmentation_recorder(vehicle_id).stop(target)
+        written["vehicle"] = vehicle_id
         return written
 
-    def _segmentation_recorder(self) -> Any:
-        """Return the lazily built segmentation recorder.
+    def _segmentation_recorder(self, vehicle_id: str) -> Any:
+        """Return a vehicle's segmentation recorder, building it on first use.
+
+        Built lazily so importing the runtime does not require Replicator, which exists only inside Isaac.
+
+        Args:
+            vehicle_id: Which vehicle's recorder.
 
         Returns:
-            The recorder, created on first use so importing the runtime does not need Replicator.
+            That vehicle's recorder.
 
         """
-        if self._segmentation is None:
+        recorder = self._segmentation.get(vehicle_id)
+        if recorder is None:
             from isaac_core.sim.segmentation import SegmentationRecorder
 
-            self._segmentation = SegmentationRecorder()
-        return self._segmentation
+            recorder = SegmentationRecorder()
+            self._segmentation[vehicle_id] = recorder
+        return recorder
 
     def _segmentation_enabled(self) -> bool:
         """Return whether the segmentation feature was requested.
@@ -1729,9 +1772,9 @@ class SimulationRuntime:
         Kept in the loop rather than in a task because the annotator must be read from the rendering
         thread, and because a recording is defined by the frames the simulation actually produced.
         """
-        if self._segmentation is None or not self._segmentation.is_recording:
-            return
-        self._segmentation.capture()
+        for recorder in self._segmentation.values():
+            if recorder.is_recording:
+                recorder.capture()
 
     def _handle_capture_frame(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
         """Capture the camera's current frame to an image on disk.
@@ -1973,6 +2016,9 @@ class SimulationRuntime:
         try:
             size = tuple(int(v) for v in viewport.resolution)
         except Exception:
+            # Logged, because a silent (0, 0) flows into the capture and restore logic as though it were a
+            # real size: a downstream 0x0 capture then has no traceable origin.
+            logger.warning("could not read the viewport resolution", exc_info=True)
             return (0, 0)
         return (size[0], size[1])
 
@@ -2107,30 +2153,33 @@ class SimulationRuntime:
 
         """
         values = _as_mapping(params)
+        example = f"vehicles.{self._config.first_vehicle_id}.gimbal.max_rate_deg_s"
         if "key" not in values or "value" not in values:
-            allowed = ", ".join(sorted(PATCHABLE_CONFIG_KEYS))
             message = (
-                "set_config takes params.key and params.value, for example "
-                f'{{"key": "gimbal.max_rate_deg_s", "value": 10.0}}. Patchable keys: {allowed}'
+                "set_config takes params.key and params.value, for example " f'{{"key": "{example}", "value": 10.0}}'
             )
             raise InvalidParamsError(message)
         key = str(values["key"])
-        if key not in PATCHABLE_CONFIG_KEYS:
-            allowed = ", ".join(sorted(PATCHABLE_CONFIG_KEYS))
+        target = _split_patchable_key(key, self._config.vehicles)
+        if target is None:
+            patchable = ", ".join(f"vehicles.<id>.{leaf}" for leaf in sorted(PATCHABLE_LEAVES))
             message = (
                 f"{key!r} is not patchable at runtime. Most config is applied once when the stage "
                 f"is composed, so changing it later would update the config object while the stage "
-                f"kept the old value. Restart the simulator to change it. Patchable now: {allowed}"
+                f"kept the old value. Restart the simulator to change it. Patchable now: {patchable} "
+                f"(for example {example})"
             )
             raise InvalidParamsError(message)
 
-        return self._patch_config_key(key, values["value"])
+        return self._patch_config_key(key, target[0], target[1], values["value"])
 
-    def _patch_config_key(self, key: str, raw: Any) -> dict[str, Any]:
-        """Apply one allowlisted config patch.
+    def _patch_config_key(self, key: str, vehicle_id: str, leaf: str, raw: Any) -> dict[str, Any]:
+        """Apply one allowlisted config patch to one vehicle.
 
         Args:
-            key: The dotted config path, already checked against the allowlist.
+            key: The full dotted path, for the reply and the log.
+            vehicle_id: Which vehicle the patch applies to.
+            leaf: The patchable leaf, already validated.
             raw: The requested value.
 
         Returns:
@@ -2140,10 +2189,9 @@ class SimulationRuntime:
             InvalidParamsError: If the value cannot be coerced to the field's type.
 
         """
-        vehicle_id = self._config.first_vehicle_id
         gimbal = self._config.vehicles[vehicle_id].gimbal
 
-        if key == "gimbal.max_rate_deg_s":
+        if leaf == "gimbal.max_rate_deg_s":
             previous = gimbal.max_rate_deg_s
             new: float | None
             if raw is None:
@@ -2174,11 +2222,13 @@ class SimulationRuntime:
             Degrees per second, or ``None`` for unlimited.
 
         """
-        if "gimbal.max_rate_deg_s" in self._config_overrides:
-            # A runtime patch is deliberately fleet-wide: it is one key, not one per vehicle.
-            patched: float | None = self._config_overrides["gimbal.max_rate_deg_s"]
-            return patched
         resolved = vehicle_id or self._config.first_vehicle_id
+        # Patches are keyed by their full path, so a patch to one aircraft leaves the others alone. The
+        # previous fleet-wide behaviour was not a decision: the key had no vehicle in it to key on.
+        override_key = f"vehicles.{resolved}.gimbal.max_rate_deg_s"
+        if override_key in self._config_overrides:
+            patched: float | None = self._config_overrides[override_key]
+            return patched
         return self._config.vehicles[resolved].gimbal.max_rate_deg_s
 
     def _handle_reset(self, params: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
@@ -2285,17 +2335,17 @@ class SimulationRuntime:
         vehicle_id = self._vehicle_from(values)
         port = self._config.resolved_udp_port(vehicle_id)
         packet = _encode_pose_packet(pose)
+        # The opening pose for a vehicle is repeated, because the receiving node may not have bound its
+        # socket yet and a lone datagram would be lost. Every later call sends exactly one packet: a
+        # caller streaming poses must not be slowed by a retry it does not need.
+        opening = vehicle_id not in self._posed_vehicles
+        self._posed_vehicles.add(vehicle_id)
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            # Sent more than once, deliberately. A lone datagram is lost if the receiver has not bound
-            # yet, and the pose then silently does not apply: observed on a two-vehicle stage where one
-            # vehicle held its commanded altitude and the other read back zero, intermittently between
-            # runs. The packet is idempotent -- the last one wins either way -- so repeating it costs
-            # nothing and survives a single drop. `PoseBot` already streams its opening pose for the same
-            # reason.
-            for attempt in range(SET_POSE_DATAGRAMS):
+            copies = SET_POSE_OPENING_DATAGRAMS if opening else 1
+            for attempt in range(copies):
                 sock.sendto(packet, ("127.0.0.1", port))
-                if attempt + 1 < SET_POSE_DATAGRAMS:
-                    time.sleep(SET_POSE_GAP_S)
+                if attempt + 1 < copies:
+                    time.sleep(SET_POSE_OPENING_GAP_S)
         logger.info("set_pose sent to udp port %d: %s", port, pose)
         return {"sent": pose, "udp_port": port, "vehicle": vehicle_id}
 

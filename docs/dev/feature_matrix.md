@@ -35,6 +35,9 @@ and every enum member has a handler — enforced by `control/test_method_coverag
 | `capture_frame` at the camera's resolution | A + B | `tests/system/test_capture.py` | pass |
 | `capture_frame` at a requested resolution | A + B | `tests/system/test_capture.py` asserts PNG pixels | pass |
 | Segmentation recording to mp4, no labels needed | A + B | `sim/test_segmentation.py` decodes the written file and checks channel order | pass |
+| `pose_source = "ros"` driven by MAVROS-shaped topics | A + C | live: rclpy published `NavSatFix` + `PoseStamped`, stage z reached 883.300 against a wanted 883.30 and yaw 40 deg exactly | pass |
+| `isaac-core-mavlink` bridging a real pymavlink source | A + C | live: `GLOBAL_POSITION_INT` + `ATTITUDE` from pymavlink put the stage at z 733.300 against a wanted 733.30 | pass |
+| `TopicRecorder` factories recording live topics to disk | A + C | live: 329 video frames to a 557 KB mp4, 394 poses and 394 ranges to pickles | pass |
 | Segmentation skips unready frames instead of writing black | A + B | `sim/test_segmentation.py`; live: nine solid-black frames became zero | pass |
 | `--set` works on `config dump` and `config explain`, not only `run` | A | `cli/test_config_set_flag.py` | pass |
 | The resolved ENU reference is always reported, with its source | A | `sim/test_georeference_report.py` | pass |
@@ -139,8 +142,8 @@ Four console scripts.
 
 ## 8. Configuration
 
-11 top-level sections: `sim`, `assets`, `geo`, `cesium`, `features`, `vehicles`, `layers`, `ros2`,
-`sidecar`, `logging`, `prim_overrides`.
+10 top-level sections: `sim`, `assets`, `geo`, `cesium`, `features`, `vehicles`, `layers`, `ros2`,
+`logging`, `prim_overrides`.
 
 | Capability | Bucket | Evidence | Status |
 |---|---|---|---|

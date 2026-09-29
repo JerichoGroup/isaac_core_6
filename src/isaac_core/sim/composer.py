@@ -173,7 +173,7 @@ def compose_stage(
         settle()
 
     # Each planned layer carries the vehicle it was planned for; this is only the fallback for a
-    # plan that predates per-vehicle planning.
+    # plan carrying no per-vehicle instance.
     instance = config.first_vehicle_id
     _mount_layers(stage, plan, layer_search_paths, instance)
 
@@ -558,7 +558,7 @@ def _warn_if_bbox_has_no_targets(plan: FeaturePlan, labelled: int) -> None:
 def _report_enu_reference(resolved: ResolvedEnuReference, inspector: Any) -> None:
     """Log which ENU reference won and where it came from.
 
-    Only a *mismatch* used to be reported, so a scene whose georeference was missing, misspelled or
+    Reporting only a *mismatch* is not enough: a scene whose georeference is missing, misspelled or
     authored at a non-standard path fell back to the config with no log line at all. Everything then sat
     at a plausible-looking but wrong offset, and nothing in the output pointed at the cause -- which is
     exactly how a newly authored scene goes wrong.
@@ -632,7 +632,13 @@ def _resolve_camera_prim(config: IsaacCoreConfig, stage: Any) -> str | None:
         candidate = render(configured, instance=first_vehicle_id, mount=mount)
         if stage.GetPrimAtPath(sdf.Path(candidate)).IsValid():
             return candidate
-        logger.debug("sim.viewport_camera %r is not on the stage; searching the mount", candidate)
+        # A warning, not debug: the default level hides debug, so a mistyped viewport_camera silently
+        # fell back to a type search and the user saw a working-but-wrong camera with no reason given.
+        logger.warning(
+            "sim.viewport_camera %r is not on the stage, so the viewport falls back to searching the "
+            "vehicle mount; check that path if the window looks through the wrong camera",
+            candidate,
+        )
 
     mount_prim = stage.GetPrimAtPath(sdf.Path(mount))
     if not mount_prim.IsValid():

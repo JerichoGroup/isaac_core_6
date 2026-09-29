@@ -107,10 +107,45 @@ def _print_live_values(client: ControlClient) -> None:
     """
     print()
     print("=== Live values (read from the running stage) ===")
+    # Every vehicle, not just the first. `get_runtime_values` has always taken a `vehicle`, but this was
+    # calling it without one, so a swarm reported only its first aircraft and the others looked absent.
+    for vehicle_id in _configured_vehicles(client):
+        _print_one_vehicle(client, vehicle_id)
+
+
+def _configured_vehicles(client: ControlClient) -> tuple[str | None, ...]:
+    """Return the configured vehicle ids, or a single ``None`` to mean "whatever the default is".
+
+    Args:
+        client: A connected ControlClient.
+
+    Returns:
+        Vehicle ids in declaration order, or ``(None,)`` when the config cannot be read.
+
+    """
     try:
-        rv = client.call(Method.GET_RUNTIME_VALUES.value)
+        config = client.call(Method.GET_CONFIG.value)
+    except Exception:
+        return (None,)
+    vehicles = config.get("vehicles") if isinstance(config, dict) else None
+    if isinstance(vehicles, dict) and vehicles:
+        return tuple(vehicles)
+    return (None,)
+
+
+def _print_one_vehicle(client: ControlClient, vehicle_id: str | None) -> None:
+    """Print the live values for one vehicle.
+
+    Args:
+        client: A connected ControlClient.
+        vehicle_id: Which vehicle, or ``None`` for the simulator's default.
+
+    """
+    params = {"vehicle": vehicle_id} if vehicle_id is not None else None
+    try:
+        rv = client.call(Method.GET_RUNTIME_VALUES.value, params)
     except Exception as exc:
-        print(f"  get_runtime_values failed: {exc}")
+        print(f"  get_runtime_values failed for {vehicle_id}: {exc}")
         return
     if not isinstance(rv, dict):
         print(f"  {rv}")
@@ -135,6 +170,7 @@ def _print_live_values(client: ControlClient) -> None:
             print(f"  tileset {path}: {url}")
     else:
         print("  tilesets          : (none found under tilesets_root)")
+    print()
 
 
 def poll_pose(client: ControlClient, interval: float, count: int | None = None) -> None:

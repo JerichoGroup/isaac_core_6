@@ -394,10 +394,8 @@ class TopicRecorder(Generic[MsgT]):
         self.shutdown()
 
 
-# --------------------------------------------------------------------------- #
 # Factory functions -- preconfigured recorders for common topics.             #
 # These preserve the ergonomic call sites while eliminating duplication.       #
-# --------------------------------------------------------------------------- #
 
 
 def video_recorder(
@@ -583,9 +581,7 @@ def bbox_recorder(
     )
 
 
-# --------------------------------------------------------------------------- #
 # Lazy ROS message type loaders -- import only at usage time.                 #
-# --------------------------------------------------------------------------- #
 
 
 def _lazy_image_type() -> Any:

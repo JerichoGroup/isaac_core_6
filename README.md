@@ -230,7 +230,7 @@ Add `--set sim.headless true` for no window.
 Now send it a pose. In a second terminal:
 
 ```bash
-python3 ./scripts/send_test_pose.py hold
+PYTHONPATH=src python3 ./scripts/send_test_pose.py hold
 ```
 
 The camera holds at the scene's reference point (32.22481 N, 35.25621 E, 1000 m) at 30 Hz until you
@@ -241,8 +241,8 @@ press Ctrl+C.
 <summary><b>To fly instead:</b></summary>
 
 ```bash
-python3 ./scripts/send_test_pose.py orbit --radius-m 800 --duration-s 60
-python3 ./scripts/send_test_pose.py path --speed-mps 50
+PYTHONPATH=src python3 ./scripts/send_test_pose.py orbit --radius-m 800 --duration-s 60
+PYTHONPATH=src python3 ./scripts/send_test_pose.py path --speed-mps 50
 ```
 
 </details>
@@ -717,7 +717,7 @@ Values are resolved from five places. Later beats earlier:
 | 2 | Your config file | `isaac-core run --config my.toml` |
 | 3 | Environment variables | `ISAAC_CORE__VEHICLES__DRONE_0__CAMERA__FOV_DEG=90` |
 | 4 | `--set` flags | `isaac-core run --set sim.headless true` |
-| 5 | Runtime patch | `session.config.patch("gimbal.max_rate_deg_s", 10.0)` |
+| 5 | Runtime patch | `session.config.patch("vehicles.drone_0.gimbal.max_rate_deg_s", 10.0)` |
 
 **Two ways to name the file, one slot.** `--config my.toml` and `ISAAC_CORE_CONFIG=my.toml` do the
 same job at step 2; the flag wins if you use both. That is different from step 3, which is not a file
@@ -1063,7 +1063,7 @@ def main() -> None:
 
         # Change the simulation two ways: a control call, and a runtime config patch.
         session.set_gimbal(pitch_deg=-40.0)                     # aim the camera down at the ground
-        session.config.patch("gimbal.max_rate_deg_s", 10.0)     # slow later gimbal moves down
+        session.config.patch("vehicles.drone_0.gimbal.max_rate_deg_s", 10.0)     # slow later gimbal moves down
 
         # Poses arrive over UDP, independently of the control plane.
         transport = UdpPoseTransport(port=33333)
@@ -1128,13 +1128,16 @@ arithmetic.
 | | What it does |
 |---|---|
 | Pose source | UDP or ROS 2, per tab. A ROS tab publishes `NavSatFix` + `PoseStamped` under its own namespace |
-| Readback line | what the **simulator** reports, beside what you are sending, so a frozen camera tells you which half is wrong |
+| `SIMULATOR SAYS` line | what the **simulator** reports, beside what you are sending, so a frozen camera tells you which half is wrong |
 | Arrow keys | nudge yaw and pitch; `PageUp`/`PageDown` nudge altitude |
-| Fly there | ramps to the typed values over three seconds instead of teleporting |
 | Copy call / Copy TOML | the current pose as a `set_pose(...)` line, or a `[geo]` fragment |
 | View stream | opens this vehicle's RTSP stream in `ffplay` or `vlc` |
 | Pause | stops sending; the last good pose is held by the simulator |
 | lock | pins a field so a nudge or a ramp leaves it alone |
+
+There is deliberately no "fly a mission" control here. This window is for finding a viewpoint and for
+telling a frozen camera from a silent sender; scripted flight belongs in the devkit, where `PoseBot` does it
+properly.
 
 Ctrl-C in the terminal closes the window and every sender with it.
 
@@ -1312,13 +1315,23 @@ environment unless you pin `ros2.domain_id`.
 </details>
 
 <details>
-<summary><b>`Address already in use` on the RTSP port</b></summary>
+<summary><b>`Address already in use`, or a stage that never moves</b></summary>
 
-Isaac ignores `SIGTERM`, so a simulator from an earlier session can still hold the port:
+A simulator from an earlier session is still running and still holding its ports. Isaac ignores `SIGTERM`,
+so plain `kill` and plain `timeout` do not stop it:
 
 ```bash
 pgrep -af 'isaac_core.sim' && kill -9 <pid>
 ```
+
+Every normal exit cleans up after itself — closing the session, an exception, and Ctrl-C were all measured
+leaving no process, no held port and no retained GPU memory. The one case that orphans a simulator is
+`kill -9` of whatever started it: no cleanup code can run after that, and the leak then holds the control
+port, UDP 33333 and RTSP 8554, plus a couple of gigabytes of GPU.
+
+That matters because of how it presents. The next run launches perfectly happily, composes a stage, and then
+sits at a pose of zero — while the real reason is a single `Address already in use` line buried in the
+simulator's own log. If a run does nothing and you cannot see why, check for a stray first.
 
 </details>
 

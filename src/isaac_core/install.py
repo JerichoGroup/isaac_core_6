@@ -1,7 +1,7 @@
 """Locate and validate an Isaac Sim installation.
 
 The resolution order deliberately ignores every environment variable -- such a variable
-is stale on many team machines, pointing at the old 2023.1.1 install while the
+can be stale, naming an install that is present but unsupported while the
 real Isaac Sim 6.x lives elsewhere.
 
 Order: explicit path -> config -> probe a list of known candidate locations.
@@ -38,7 +38,7 @@ _ABSOLUTE_CANDIDATES: tuple[str, ...] = (
 # Major version required for the new extension namespace (isaacsim.* vs omni.isaac.*).
 _MINIMUM_SUPPORTED_MAJOR = 6
 
-# Year-based versions (2022, 2023, etc.) predate the 6.x numbering scheme.
+# Only 6.x and newer are supported. A year-based version string is not.
 _YEAR_VERSION_THRESHOLD = 100
 
 
@@ -127,7 +127,7 @@ class IsaacInstall:
 
         Versions older than 6.0 used the ``omni.isaac.*`` extension namespace, which
         was renamed to ``isaacsim.*`` in 4.5. Older installs will not work with our
-        extensions. Year-based versions (e.g. 2023.1.1) predate the 6.x numbering
+        extensions. A year-based version string is outside the supported 6.x numbering
         and are not supported.
 
         Returns:
@@ -135,7 +135,7 @@ class IsaacInstall:
 
         """
         major = self.major_version
-        # Year-based versions (2022, 2023, ...) used the old namespace
+        # A year-based version uses a different extension namespace and is unsupported
         if major >= _YEAR_VERSION_THRESHOLD:
             return False
         return major >= _MINIMUM_SUPPORTED_MAJOR
@@ -170,7 +170,7 @@ class IsaacInstall:
 
         Resolution walks the sources below in order, but a candidate only wins
         outright if it is both structurally valid **and** a supported version. A
-        structurally valid but unsupported install (say a leftover 2023.1.1) is
+        structurally valid but unsupported install, such as a year-based version, is
         remembered as a fallback and used only when nothing better is found.
 
         That distinction is the whole point of this function. On a machine that has been

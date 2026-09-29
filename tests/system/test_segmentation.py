@@ -24,6 +24,9 @@ REFERENCE_LAT = 32.22481
 REFERENCE_LON = 35.25621
 RECORDING_ALTITUDE_M = 1200.0
 
+# Frames to burn after attaching, before any are expected. Replicator returns nothing usable at first.
+WARMUP_FRAMES = 40
+
 # Enough frames to encode, with room for the annotator's warm-up.
 RECORDING_STEPS = 8
 FRAMES_PER_STEP = 10
@@ -51,6 +54,11 @@ def _record(session: Any, name: str) -> dict[str, Any]:
     )
     settle(session)
     session.start_segmentation_recording()
+    # Replicator hands over nothing for the first frames after attaching, and under load that window is
+    # longer than the clip itself -- which showed up as "captured 0 segmentation frame(s)" in a full suite
+    # run while the same module passed alone. The recorder correctly refuses to write a black file, so the
+    # fix belongs here: give the annotator frames before counting on it.
+    settle(session, WARMUP_FRAMES)
     for index in range(RECORDING_STEPS):
         # Move between frames so the clip is not the same picture repeated, which would still encode.
         session.set_pose(

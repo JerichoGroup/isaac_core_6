@@ -226,10 +226,10 @@ def test_session_config_patch(fake_server: ControlServer) -> None:
     port = fake_server.port
     assert port is not None
     with Sim.attach(host="127.0.0.1", port=port, timeout_s=5.0) as session:
-        result = session.config.patch("gimbal.max_rate_deg_s", 10.0)
+        result = session.config.patch("vehicles.drone_0.gimbal.max_rate_deg_s", 10.0)
         # The wire form is params.key/params.value, which is why patch takes them positionally:
         # a **kwargs signature invited patch(gimbal_max_rate_deg_s=...), which the server rejects.
-        assert result == {"patched": {"key": "gimbal.max_rate_deg_s", "value": 10.0}}
+        assert result == {"patched": {"key": "vehicles.drone_0.gimbal.max_rate_deg_s", "value": 10.0}}
 
 
 def test_session_capture_frame(fake_server: ControlServer) -> None:

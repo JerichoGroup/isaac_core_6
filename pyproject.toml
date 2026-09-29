@@ -1,6 +1,6 @@
 [project]
 name = "isaac-core"
-version = "0.2.0"
+version = "1.0.0"
 description = "Team infrastructure for building, running and scripting Isaac Sim 6 simulations"
 requires-python = ">=3.10"
 
@@ -73,8 +73,6 @@ devkit = [
 #               gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-base \
 #               gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
 #               gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools
-sidecar = []
-
 # GUIs use stdlib tkinter, which needs `apt install python3-tk`.
 debug = []
 
@@ -96,11 +94,10 @@ where = ["src"]
 
 # Data files inside the package are NOT shipped unless listed here.
 #   py.typed         -- without it a consumer's type checker silently ignores every annotation.
-#   assets/**        -- the shipped feature layers (manifest + USD) and the `earth` scene. These
-#                       used to live in a repo-level `usd/` directory outside the package, so a
-#                       non-editable install had no layers and no scene and could not compose
-#                       anything. The resolvers already looked in these packaged locations; only
-#                       the files were in the wrong place.
+#   assets/**        -- the shipped feature layers (manifest + USD) and the `earth` scene. They must sit
+#                       inside the package, not beside it: anything outside is absent from a
+#                       non-editable install, which then composes nothing and reports no error. The
+#                       resolvers look for them at these packaged paths.
 [tool.setuptools.package-data]
 isaac_core = [
     "py.typed",
@@ -155,7 +152,6 @@ quote-style = "double"
 
 indent-style = "space"
 
-
 [tool.ruff.lint]
 select = [
     "E",        # Errors
@@ -193,8 +189,6 @@ ignore = [
 
 fixable = ["ALL"]
 unfixable = []
-
-
 
 [tool.ruff.lint.pydocstyle]
 ignore-decorators = []
@@ -276,7 +270,7 @@ ignore_missing_imports = true
 # NOTE: import-linter errors on a module that does not exist, so these contracts
 # list only the packages built so far. EXTEND THEM as each new package lands:
 #   vehicle                 -> add to the layers list above config
-#   sim, devkit, sidecar, debug -> add to forbidden_modules, and re-enable the
+#   sim, devkit, debug          -> add to forbidden_modules, and re-enable the
 #                                  "simulator does not depend on the devkit" contract
 # ---------------------------------------------------------------------------
 [tool.importlinter]
@@ -491,7 +485,6 @@ type = "forbidden"
 source_modules = ["isaac_core.debug"]
 forbidden_modules = [
     "isaac_core.sim",
-    "isaac_core.sidecar",
 ]
 
 [[tool.importlinter.contracts]]
@@ -509,40 +502,5 @@ source_modules = [
     "isaac_core.devkit",
     "isaac_core.sim",
     "isaac_core.cli",
-    "isaac_core.sidecar",
 ]
 forbidden_modules = ["isaac_core.debug"]
-
-# --- Sidecar contracts ---
-
-[[tool.importlinter.contracts]]
-name = "Sidecar depends only on config and contracts"
-type = "layers"
-layers = [
-    "isaac_core.sidecar",
-    "isaac_core.config",
-    "isaac_core.contracts",
-]
-
-[[tool.importlinter.contracts]]
-name = "Sidecar does not import sim, vehicle, geo or protocol"
-type = "forbidden"
-source_modules = ["isaac_core.sidecar"]
-forbidden_modules = [
-    "isaac_core.sim",
-    "isaac_core.vehicle",
-    "isaac_core.geo",
-    "isaac_core.protocol",
-]
-
-[[tool.importlinter.contracts]]
-# The sidecar runs on system python3, NOT inside Isaac. It must never import
-# omni/carb/pxr, which only exist in Isaac's bundled interpreter.
-name = "Sidecar does not import omni/carb/pxr"
-type = "forbidden"
-source_modules = ["isaac_core.sidecar"]
-forbidden_modules = [
-    "omni",
-    "carb",
-    "pxr",
-]

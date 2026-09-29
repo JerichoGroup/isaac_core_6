@@ -266,23 +266,30 @@ class FeaturesConfig(_Strict):
 class GimbalConfig(_Strict):
     """Camera gimbal starting attitude and slew behaviour.
 
-    Defaults to ``RotationFrame.BODY`` because a gimbal is physically mounted on
-    the airframe and moves with it. ``max_rate_deg_s`` of ``None`` reproduces the
-    snaps instantly.
+    Defaults to ``RotationFrame.BODY`` because a gimbal is physically mounted on the airframe and moves
+    with it. A ``max_rate_deg_s`` of ``None`` or ``0`` means unlimited, so the gimbal snaps instantly --
+    both spellings are accepted so this reads the same way as ``camera.zoom_max_rate_deg_s``.
     """
 
     start_roll_deg: float = 0.0
     start_pitch_deg: float = 0.0
     start_yaw_deg: float = 0.0
-    max_rate_deg_s: float | None = Field(None, gt=0.0)
+    # Zero and None both mean UNLIMITED, so the gimbal snaps. Both spellings are accepted because the
+    # comparable `camera.zoom_max_rate_deg_s` uses zero for the same meaning, and `slew_towards` has
+    # always treated a non-positive rate as unlimited. Rejecting zero here made a config that reads
+    # naturally next to the zoom setting fail to load, for a value the runtime already handled.
+    max_rate_deg_s: float | None = Field(None, ge=0.0)
 
 
 class DistanceSensorConfig(_Strict):
     """Rangefinder settings for a vehicle's distance sensor.
 
-    The rated band is a sensor property, not a preference: readings outside it are reported
-    as the `sensor_msgs/Range` out-of-band values rather than clamped, so a consumer can tell
-    "nothing detected" from "something at exactly max range".
+    The rated band is a sensor property rather than a preference: a reading beyond it saturates at
+    ``min_range_m`` or ``max_range_m``, exactly as the datasheet of a real rangefinder describes.
+
+    A consequence worth knowing before consuming the topic: because nothing detected also reports
+    ``max_range_m``, "nothing there" and "something at exactly max range" are indistinguishable on the
+    wire. Set ``max_range_m`` beyond anything you expect to hit if that difference matters to you.
     """
 
     min_range_m: float = Field(0.2, ge=0.0)
@@ -387,7 +394,7 @@ class VehicleConfig(_Strict):
     rotation_frame: RotationFrame = RotationFrame.WORLD
     gimbal: GimbalConfig = GimbalConfig()
     distance_sensor: DistanceSensorConfig = DistanceSensorConfig()
-    # One camera, unnamed. It used to be a dict keyed by a name -- defaulting to "eo" -- while the
+    # One camera, unnamed. A mapping keyed by a camera name would imply several per vehicle, while the
     # planner composed only the first entry, so the name existed to distinguish cameras that could
     # not coexist. A second imaging sensor comes from a layer instead: layers mount under the same
     # vehicle, so they move with the airframe and bring their own prims, topic and RTSP node.
@@ -431,25 +438,6 @@ class Ros2Config(_Strict):
     # value is exported before the bridge starts. A hardcoded default looked authoritative here but
     # never reached the bridge.
     domain_id: int | None = Field(None, ge=0, le=232)
-
-
-class SidecarServiceConfig(BaseModel):
-    """One supervised sidecar service.
-
-    Extra keys are permitted, unlike everywhere else, because each service kind
-    defines its own parameters and those are validated by the service itself.
-    """
-
-    model_config = ConfigDict(extra="allow", frozen=True)
-
-    kind: str
-
-
-class SidecarConfig(_Strict):
-    """Out-of-interpreter services, run as peers of the simulator."""
-
-    enabled: bool = False
-    services: dict[str, SidecarServiceConfig] = Field(default_factory=dict)
 
 
 class LoggingConfig(_Strict):
@@ -509,7 +497,6 @@ class IsaacCoreConfig(_Strict):
     vehicles: dict[str, VehicleConfig] = Field(default_factory=lambda: {"drone_0": VehicleConfig()})
     layers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     ros2: Ros2Config = Ros2Config()
-    sidecar: SidecarConfig = SidecarConfig()
     logging: LoggingConfig = LoggingConfig()
     prim_overrides: tuple[PrimOverride, ...] = ()
 
@@ -729,8 +716,6 @@ __all__ = [
     "LoggingConfig",
     "PrimOverride",
     "Ros2Config",
-    "SidecarConfig",
-    "SidecarServiceConfig",
     "SimConfig",
     "VehicleConfig",
 ]

@@ -8,7 +8,6 @@ subpackages are never imported here:
     Requires Isaac Sim's bundled interpreter (``omni``, ``carb``, ``pxr``).
 ``isaac_core.devkit``
     Requires a sourced ROS 2 environment (``rclpy``).
-``isaac_core.sidecar``
     Requires system PyGObject/GStreamer (``gi``).
 
 Import those explicitly, from a process where their environment is available.

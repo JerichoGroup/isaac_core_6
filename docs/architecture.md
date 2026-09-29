@@ -17,7 +17,6 @@ src/isaac_core/
 ├── install.py   locating and validating an Isaac Sim install
 ├── devkit/      Sim.launch / Sim.attach, transports, recording, MAVLink bridge
 ├── sim/         everything that imports Isaac: composer, configurator, runtime, planner
-├── sidecar/     supervisor for out-of-process services
 └── debug/       inspector and pose-sender GUI
 ```
 
@@ -90,7 +89,7 @@ This is the extension seam: a layer on `assets.layer_search_paths` composes with
 
 ## Control plane
 
-JSON-RPC 2.0 over TCP, newline-delimited, on `127.0.0.1:8760` by default. Fifteen methods, all listed
+JSON-RPC 2.0 over TCP, newline-delimited, on `127.0.0.1:8760` by default. Nineteen methods, all listed
 in the `Method` enum in `control/messages.py` — that enum is the complete surface, and a test asserts
 every member has a handler and every handler has a caller.
 
@@ -109,11 +108,3 @@ imported inside Isaac, and all ROS I/O is done by Isaac's own C++ bridge nodes. 
 The boundary is *construction*, not publication: generated message modules are pure Python and import
 fine inside Isaac, but the C typesupport needed to put one on the wire is built for 3.10. See
 [ros2_and_python.md](ros2_and_python.md).
-
-## Why the sidecar exists with nothing in it
-
-`sidecar/` is a service supervisor — registry, restart policy, health polling — with no registered
-services. RTSP moved into Isaac natively, which is what it used to supervise.
-
-It is kept for v2 deliberately rather than deleted: the supervisor is the part that was hard to get
-right, and an out-of-process service is expected again in v3. If v3 closes without one, it goes.

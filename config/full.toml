@@ -125,15 +125,6 @@ quiet_loggers = [                      # loggers silenced unless isaac_logs is t
 ]
 
 
-[sidecar]
-enabled = false                        # true: start the services below alongside the simulator
-
-# One table per service, started and restarted by the sidecar.
-[sidecar.services]
-# recorder = { kind = "command", command = ["python3", "record.py"] }
-
-
-# Settings for your own feature layers, read by a layer.toml binding as layers.<layer id>.<key>.
 [layers]
 # thermal_cam = { gain = 1.5 }
 

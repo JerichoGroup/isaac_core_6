@@ -86,10 +86,6 @@ _TRANSLATE_COMPONENTS: Final = 3
 # How long a closing tab waits for its sender thread, so a leaked sender cannot hold the UDP port.
 _THREAD_JOIN_S: Final = 2.0
 
-# "Fly there" duration, and how finely the ramp is stepped.
-_RAMP_SECONDS: Final = 3.0
-_RAMP_STEPS_PER_S: Final = 20
-
 # How long a stream player gets to exit politely before it is killed.
 _PLAYER_STOP_S: Final = 3.0
 
@@ -523,6 +519,10 @@ class PoseSenderController:
             finally:
                 client.close()
         except Exception:
+            # Logged rather than swallowed: returning an empty tuple silently makes a failed read look
+            # exactly like a simulator that genuinely has no vehicles, and the tab then reads back nothing
+            # with no clue why.
+            logger.warning("could not read the vehicle list from the simulator", exc_info=True)
             return ()
         vehicles = config.get("vehicles") if isinstance(config, dict) else None
         return tuple(vehicles) if isinstance(vehicles, dict) else ()
@@ -898,27 +898,6 @@ class _Tab:
         self.controller.close()
 
 
-def _ramp_controller(controller: PoseSenderController, target: dict[str, float], duration_s: float) -> None:
-    """Walk a controller's fields to a target over *duration_s*, so a move is flown not teleported.
-
-    Deliberately animates the controller rather than driving a second transport: the tab's own sender
-    loop keeps sending at its own rate, so nothing has to arbitrate between two writers on one port.
-
-    Args:
-        controller: The tab's controller.
-        target: Field names mapped to their final values.
-        duration_s: How long the move takes.
-
-    """
-    start = {field: float(getattr(controller, field)) for field in target}
-    steps = max(1, int(duration_s * _RAMP_STEPS_PER_S))
-    for step in range(1, steps + 1):
-        fraction = step / steps
-        for field, final in target.items():
-            setattr(controller, field, start[field] + fraction * (final - start[field]))
-        time.sleep(duration_s / steps)
-
-
 def _build_tab_buttons(
     frame: Any,
     controller: PoseSenderController,
@@ -932,7 +911,7 @@ def _build_tab_buttons(
     Args:
         frame: The tab's frame.
         controller: The tab's controller.
-        value_vars: The tab's field variables, so Reset and Fly there can read and write them.
+        value_vars: The tab's field variables, so Reset can read and write them.
         host_var: The tab's host variable.
         port_var: The tab's port variable.
         row: Grid row to place the buttons on.
@@ -960,14 +939,6 @@ def _build_tab_buttons(
         port_var.set(controller.port)
 
     tk.Button(buttons, text="Reset", command=reset).pack(side="left", padx=2)
-
-    def ramp() -> None:
-        # Fly to whatever is typed in the boxes rather than jumping there, on a thread so the window
-        # stays responsive while it happens. A jump is not a flight and looks wrong in a recording.
-        target = {field: var.get() for field, var in value_vars.items() if field != "rate_hz"}
-        threading.Thread(target=_ramp_controller, args=(controller, target, _RAMP_SECONDS), daemon=True).start()
-
-    tk.Button(buttons, text=f"Fly there ({_RAMP_SECONDS:.0f}s)", command=ramp).pack(side="left", padx=2)
 
     def copy_python() -> None:
         frame.clipboard_clear()
@@ -1028,7 +999,7 @@ def _build_tab(notebook: Any, controller: PoseSenderController) -> _Tab:
     row += 1
 
     # -- what the simulator itself reports ---------------------------------------- #
-    status_var = tk.StringVar(value="readback: not polled yet")
+    status_var = tk.StringVar(value="SIMULATOR SAYS: not polled yet")
     tk.Label(frame, textvariable=status_var, anchor="w", fg="#0a3").grid(
         row=row, column=0, columnspan=5, sticky="w", padx=4
     )
@@ -1310,8 +1281,11 @@ def launch_gui(controller: "PoseSenderController | None" = None) -> None:
         # On its own slower tick: a readback crosses the wire, so doing it at the UI refresh rate
         # would make the window stutter whenever no simulator is listening.
         for tab in tabs:
+            # Prefixed, because an unlabelled status line is indistinguishable from the feature being
+            # absent: it was reported as "there is no readback line" while sitting in plain sight.
             tab.status_var.set(
-                f"{tab.controller.target_label} | sent {tab.controller.sent} | {tab.controller.readback()}"
+                f"SIMULATOR SAYS: {tab.controller.readback()}"
+                f"   [sending to {tab.controller.target_label}, {tab.controller.sent} sent]"
             )
         root.after(_READBACK_REFRESH_MS, poll_readback)
 

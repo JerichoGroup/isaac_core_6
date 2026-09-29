@@ -49,7 +49,6 @@ RUNTIME_ONLY: Final[dict[str, str]] = {
     "logging.level": "logging setup; test_logging_config.py",
     "logging.quiet_loggers": "logger silencing; test_logging_config.py",
     "ros2.domain_id": "exported as ROS_DOMAIN_ID before the bridge starts; test_gui_setup.py",
-    "sidecar.enabled": "whether sidecar services start; test_service.py",
     "sim.boot_extensions": "extensions enabled before the app starts; test_gui_setup.py",
     "sim.control_plane.enabled": "whether the control server binds; test_runtime_handlers.py",
     "sim.control_plane.host": "control server bind address; test_server.py",
@@ -67,17 +66,17 @@ RUNTIME_ONLY: Final[dict[str, str]] = {
     "sim.stage_units_in_meters": "stage metadata; test_stage_units.py",
     "sim.strict_features": "raise instead of skip when a layer cannot compose; test_planner.py",
     "sim.viewport_camera": "which camera the viewport looks through; test_gui_setup.py",
-    "vehicles.drone_0.gimbal.max_rate_deg_s": "slew rate applied per frame; test_gimbal.py",
+    "vehicles.drone_0.gimbal.max_rate_deg_s": "slew rate applied per frame; tests/system/test_swarm.py reads the offsets off the prim",
     # Zoom reads its travel and its rate when set_zoom is called, not when the stage composes: an
     # uncommanded camera must keep exactly the focal length it was configured with.
-    "vehicles.drone_0.camera.focal_length_min_mm": "zoom travel read by set_zoom; contracts/test_zoom.py",
-    "vehicles.drone_0.camera.focal_length_max_mm": "zoom travel read by set_zoom; contracts/test_zoom.py",
-    "vehicles.drone_0.camera.zoom_max_rate_deg_s": "slew rate applied per frame; contracts/test_zoom.py",
+    "vehicles.drone_0.camera.focal_length_min_mm": "zoom travel read by set_zoom; sim/test_zoom_step_loop.py",
+    "vehicles.drone_0.camera.focal_length_max_mm": "zoom travel read by set_zoom; sim/test_zoom_step_loop.py",
+    "vehicles.drone_0.camera.zoom_max_rate_deg_s": "slew rate applied per frame; sim/test_zoom_step_loop.py",
 }
 
 # Free-form mappings with no default entries, so there is nothing to vary without inventing a
 # definition. Both are exercised end to end by their own tests instead.
-_NOT_VARIABLE: Final = frozenset({"layers", "sidecar.services"})
+_NOT_VARIABLE: Final = frozenset({"layers"})
 
 
 def _unwrap(annotation: Any) -> Any:

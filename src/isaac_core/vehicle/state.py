@@ -221,31 +221,3 @@ class VehicleState:
         roll_r, pitch_r, _yaw_r = matrix_to_euler(self.rotation, self.frame)
         new_mat = euler_to_matrix(roll_r, pitch_r, yaw_r, self.frame)
         return self.with_rotation(new_mat)
-
-    def distance_to(self, other_lat_deg: float, other_lon_deg: float, other_alt_m: float) -> float:
-        """Compute the Euclidean 3D distance to another LLA point using flat-earth approximation.
-
-        This uses a spherical offset approach for
-        consistency in motion computations (haversine for horizontal, direct
-        subtraction for vertical).
-
-        Args:
-            other_lat_deg: Target latitude.
-            other_lon_deg: Target longitude.
-            other_alt_m: Target altitude.
-
-        Returns:
-            Approximate distance in metres.
-
-        """
-        from isaac_core.geo.distance import EARTH_RADIUS_M
-
-        dlat = math.radians(other_lat_deg - self.lat_deg)
-        dlon = math.radians(other_lon_deg - self.lon_deg)
-        cos_lat = math.cos(math.radians(self.lat_deg))
-
-        north_m = dlat * EARTH_RADIUS_M
-        east_m = dlon * EARTH_RADIUS_M * cos_lat
-        up_m = other_alt_m - self.alt_m
-
-        return math.sqrt(north_m**2 + east_m**2 + up_m**2)

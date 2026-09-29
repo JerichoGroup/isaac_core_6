@@ -254,9 +254,7 @@ def load(
     return config
 
 
-# ---------------------------------------------------------------------------
 # TOML rendering
-# ---------------------------------------------------------------------------
 
 # Mapping from Python types to TOML formatters.
 _TOML_BOOL_TRUE = "true"

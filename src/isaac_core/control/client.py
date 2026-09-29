@@ -28,6 +28,10 @@ from isaac_core.control.messages import (
 # runs N frames -- and a short timeout reported those as failures while they were still working.
 DEFAULT_CALL_TIMEOUT_S: float = 60.0
 
+# Largest response line this will buffer. Mirrors the server's own request cap: without it a peer that
+# never sends a newline makes the client grow until the process dies.
+MAX_RESPONSE_BYTES: int = 1 << 20
+
 
 class ControlClient:
     """Synchronous JSON-RPC 2.0 client over TCP with newline-delimited messages.
@@ -144,8 +148,16 @@ class ControlClient:
         )
         self._sock.sendall(encode(request))
 
-        # Read until we have a complete line.
+        # Read until we have a complete line, but not without limit. The server caps a request line at
+        # MAX_RESPONSE_BYTES for the same reason: a peer that never sends a newline would otherwise make
+        # this grow until the process dies.
         while b"\n" not in self._buffer:
+            if len(self._buffer) > MAX_RESPONSE_BYTES:
+                msg = (
+                    f"server sent more than {MAX_RESPONSE_BYTES} bytes with no newline; "
+                    "giving up rather than buffering without limit"
+                )
+                raise ConnectionError(msg)
             chunk = self._sock.recv(65536)
             if not chunk:
                 msg = "connection closed by server"

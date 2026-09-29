@@ -23,8 +23,6 @@ from isaac_core.config.schema import (
     LoggingConfig,
     PrimOverride,
     Ros2Config,
-    SidecarConfig,
-    SidecarServiceConfig,
     SimConfig,
     VehicleConfig,
 )
@@ -43,8 +41,6 @@ __all__ = [
     "LoggingConfig",
     "PrimOverride",
     "Ros2Config",
-    "SidecarConfig",
-    "SidecarServiceConfig",
     "SimConfig",
     "VehicleConfig",
     "cli_source",

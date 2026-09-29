@@ -331,24 +331,6 @@ f_stop = 0.0
 
 
 # -----------------------------------------------------------------------------
-# [sidecar] -- services that cannot run inside Isaac's interpreter
-# -----------------------------------------------------------------------------
-# Supervised as a peer process rather than forked by the simulator.
-[sidecar]
-enabled = false
-
-# No services ship today. Video streaming used to live here and now does not: Isaac's native
-# RTSP publishes straight from the camera graph, so no out-of-process helper is needed.
-#
-# The mechanism is kept deliberately, for work that genuinely cannot run inside Isaac's
-# interpreter -- anything needing rclpy, for instance, which is built for Python 3.10 while
-# Isaac runs 3.12.
-#
-# [sidecar.services.my_service]
-# kind = "my_service_kind"
-
-
-# -----------------------------------------------------------------------------
 # [logging]
 # -----------------------------------------------------------------------------
 [logging]

@@ -47,7 +47,7 @@ _PUBLIC_SYMBOL_ALLOWLIST: Final[frozenset[str]] = frozenset(
         # Console-script entry points wired in pyproject.toml [project.scripts]; called by the
         # installed launcher, not by other Python in the repo.
         "cli",  # isaac_core.cli.main:cli  -> `isaac-core`
-        "main",  # inspector / pose_sender_gui / sidecar / mavlink `main()` entry points
+        "main",  # inspector / pose_sender_gui / mavlink `main()` entry points
         # Package facade classes re-exported from __init__ and used by operator scripts, whose
         # only in-repo references are the re-export line itself.
         "Sim",

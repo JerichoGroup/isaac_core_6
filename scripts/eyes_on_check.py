@@ -33,8 +33,13 @@ import argparse
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import math
+import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
+import tempfile
+import threading
 import time
 from typing import Any
 
@@ -73,6 +78,41 @@ class Scenario:
     overrides: dict[str, Any] = field(default_factory=dict)
     needs_ros: bool = False
     note: str = ""
+
+
+# Where scenario 16's throwaway layer is written. Deliberately outside the repo: the point is that a
+# layer needs nothing inside isaac_core, only a directory on the search path.
+_OWN_LAYER_ROOT = Path(tempfile.gettempdir()) / "isaac_core_eyes_on_layers"
+_OWN_LAYER_ID = "eyes_on_probe"
+
+
+def _prepare_own_layer() -> Path:
+    """Write a behaviour-only layer outside the repo and return its search root.
+
+    It declares no USD, which is legal for a layer that contributes behaviour rather than prims, so
+    this needs no authored geometry to prove that discovery and composition reach outside the package.
+
+    Returns:
+        The directory to hand to ``assets.layer_search_paths``.
+
+    """
+    layer = _OWN_LAYER_ROOT / _OWN_LAYER_ID
+    layer.mkdir(parents=True, exist_ok=True)
+    (layer / "layer.toml").write_text(
+        "\n".join(
+            (
+                f'id = "{_OWN_LAYER_ID}"',
+                "# No `usd` key: this layer contributes behaviour rather than prims, which is what lets",
+                "# the scenario prove discovery works without authoring geometry.",
+                'mount = "/World/Environment/{instance}"',
+                "requires = []",
+                'provides = ["EYES_ON_PROBE"]',
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    return _OWN_LAYER_ROOT
 
 
 def _banner(text: str) -> None:
@@ -457,6 +497,362 @@ _GIMBAL_TOLERANCE_DEG = 0.001
 _SWARM_SEPARATION_M = 600.0
 
 
+def _scenario_zoom(session: Any, keep_open: float, dwell: float) -> None:
+    """Sweep the zoom from widest to longest, then take it by focal length."""
+    del dwell
+    _place_and_confirm(session, alt_m=1400.0)
+    session.set_gimbal(pitch_deg=-35.0)
+    time.sleep(3.0)
+    print("  Zoom is LINEAR IN FIELD OF VIEW, so level 0.5 should look halfway, not nearly", flush=True)
+    print("  fully zoomed in. Watch how much ground the frame covers at each step.\n", flush=True)
+    for level in (0.0, 0.25, 0.5, 0.75, 1.0):
+        reported = session.set_zoom(level=level)
+        print(
+            f"  level {level:4.2f}  ->  focal {reported['focal_length_mm']:7.2f} mm, "
+            f"field of view {reported['hfov_deg']:6.2f} deg",
+            flush=True,
+        )
+        time.sleep(7.0)
+    print("\n  Now by exact focal length rather than by level:", flush=True)
+    for focal in (35.0, 85.0):
+        reported = session.set_zoom(focal_mm=focal)
+        print(f"  focal {focal:5.1f} mm  ->  level {reported['level']:5.3f}", flush=True)
+        time.sleep(6.0)
+    print("\n  Out-of-range values are clamped rather than refused:", flush=True)
+    for focal in (1.0, 9999.0):
+        reported = session.set_zoom(focal_mm=focal)
+        print(f"  asked {focal:7.1f} mm  ->  got {reported['focal_length_mm']:7.2f} mm", flush=True)
+        time.sleep(3.0)
+    session.set_zoom(level=0.0)
+    _hold(keep_open, "Zoom sweep finished, returned to the widest setting.")
+
+
+def _scenario_segmentation(session: Any, keep_open: float, dwell: float) -> None:
+    """Record a segmentation mp4 while orbiting, so colour stability can be judged."""
+    del dwell
+    import math
+
+    from isaac_core.contracts.pose import Lla
+    from isaac_core.geo.distance import look_at_angles, meters_to_latlon_offset
+
+    output = Path.home() / "isaac_core_out"
+    print(f"  Recording to {output}/eyes_on_segmentation.mp4", flush=True)
+    print("  The viewport shows the NORMAL camera; the segmentation is written to the file.", flush=True)
+    print("  Orbiting the reference point while aimed at it, so the subject stays centred.\n", flush=True)
+
+    target = Lla(lat_deg=ORIGIN_LAT, lon_deg=ORIGIN_LON, alt_m=GROUND_M + 2.0)
+    radius_m, orbit_alt_m = 140.0, GROUND_M + 120.0
+    _place_and_confirm(session, alt_m=orbit_alt_m)
+    session.start_segmentation_recording()
+    for index in range(72):
+        bearing = math.radians(index * 5.0)
+        north_m, east_m = radius_m * math.cos(bearing), radius_m * math.sin(bearing)
+        lat_off, lon_off = meters_to_latlon_offset(north_m, east_m, ORIGIN_LAT)
+        here = Lla(lat_deg=ORIGIN_LAT + lat_off, lon_deg=ORIGIN_LON + lon_off, alt_m=orbit_alt_m)
+        yaw_r, pitch_r = look_at_angles(here, target)
+        session.set_pose(
+            lat_deg=here.lat_deg,
+            lon_deg=here.lon_deg,
+            alt_m=here.alt_m,
+            pitch_deg=math.degrees(pitch_r),
+            yaw_deg=math.degrees(yaw_r),
+        )
+        time.sleep(0.25)
+    written = session.stop_segmentation_recording("eyes_on_segmentation.mp4")
+    print(f"\n  WROTE: {written['path']}", flush=True)
+    print(f"  {written['frames']} frames at {written['fps']} fps, {written['dropped']} dropped", flush=True)
+    print(f"\n  Open it:  ffplay {written['path']}", flush=True)
+    _hold(keep_open, "Segmentation recording finished.")
+
+
+def _scenario_ros_pose(session: Any, keep_open: float, dwell: float) -> None:
+    """Drive the vehicle over ROS 2 instead of UDP, the way MAVROS would."""
+    del dwell
+    import math
+
+    try:
+        from geometry_msgs.msg import PoseStamped
+        import rclpy
+        from rclpy.node import Node
+        from sensor_msgs.msg import NavSatFix
+    except ImportError as exc:
+        print(f"  ROS 2 is not sourced, so this scenario cannot run: {exc}", flush=True)
+        print("    source /opt/ros/humble/setup.bash", flush=True)
+        return
+
+    print("  This vehicle's pose_source is 'ros', so UDP packets are ignored entirely.", flush=True)
+    print("  Publishing MAVROS-shaped topics from this process:", flush=True)
+    print("    /mavros/global_position/global  (NavSatFix)", flush=True)
+    print("    /mavros/local_position/pose     (PoseStamped)\n", flush=True)
+
+    rclpy.init()
+    node = Node("eyes_on_mavros_stand_in")
+    fix_pub = node.create_publisher(NavSatFix, "/mavros/global_position/global", 10)
+    pose_pub = node.create_publisher(PoseStamped, "/mavros/local_position/pose", 10)
+    try:
+        # Interpolated at 30 Hz rather than jumped. Publishing one fixed pose per phase makes the camera
+        # snap between places, which demonstrates nothing about whether the path is followed smoothly.
+        alt_m, yaw_deg = 1200.0, 0.0
+        for label, to_alt, to_yaw, seconds in (
+            ("climb to 1200 m, facing north", 1200.0, 0.0, 6.0),
+            ("turn to face east, holding altitude", 1200.0, -90.0, 8.0),
+            ("climb to 1600 m, still facing east", 1600.0, -90.0, 8.0),
+            ("descend to 900 m, turning back to north", 900.0, 0.0, 10.0),
+        ):
+            print(f"  publishing: {label}", flush=True)
+            from_alt, from_yaw = alt_m, yaw_deg
+            ticks = max(1, int(seconds * 30.0))
+            for tick in range(ticks + 1):
+                fraction = tick / ticks
+                alt_m = from_alt + fraction * (to_alt - from_alt)
+                yaw_deg = from_yaw + fraction * (to_yaw - from_yaw)
+                fix = NavSatFix()
+                fix.latitude, fix.longitude, fix.altitude = ORIGIN_LAT, ORIGIN_LON, alt_m
+                pose = PoseStamped()
+                half = math.radians(yaw_deg) / 2.0
+                pose.pose.orientation.z = math.sin(half)
+                pose.pose.orientation.w = math.cos(half)
+                stamp = node.get_clock().now().to_msg()
+                fix.header.stamp = stamp
+                pose.header.stamp = stamp
+                fix_pub.publish(fix)
+                pose_pub.publish(pose)
+                rclpy.spin_once(node, timeout_sec=0.005)
+                time.sleep(1.0 / 30.0)
+            observed = _translate_of(session.get_pose())
+            if observed is not None:
+                print(f"    stage z now {observed[2]:8.2f} (expected about {to_alt - GROUND_M:.2f})", flush=True)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+    _hold(keep_open, "ROS 2 pose sequence finished.")
+
+
+def _scenario_posebot(session: Any, keep_open: float, dwell: float) -> None:
+    """Fly the PoseBot flight library: orbit, path, steer, then track a moving target."""
+    del dwell
+    from isaac_core.contracts.pose import Lla
+    from isaac_core.devkit import PoseBot
+
+    config = session.config.get()
+    vehicle = next(iter(config["vehicles"]))
+    udp_port = int(config["vehicles"][vehicle].get("udp_port") or 33333)
+    print(f"  Driving {vehicle} over UDP port {udp_port} with PoseBot, not set_pose.", flush=True)
+    print("  Each command is a real 30 Hz pose stream, so the motion should be smooth.\n", flush=True)
+
+    start = Lla(lat_deg=ORIGIN_LAT, lon_deg=ORIGIN_LON, alt_m=1200.0)
+    with PoseBot(port=udp_port, start=start, rate_hz=30.0) as bot:
+        time.sleep(2.0)
+        print("  orbit: 300 m radius at 40 m/s for 20 s", flush=True)
+        bot.orbit(ORIGIN_LAT, ORIGIN_LON, radius_m=300.0, speed_mps=40.0, duration_s=20.0)
+
+        print("  fly_path: three waypoints at 60 m/s, nose along the track", flush=True)
+        bot.fly_path(
+            [
+                Lla(lat_deg=ORIGIN_LAT + 0.004, lon_deg=ORIGIN_LON, alt_m=1300.0),
+                Lla(lat_deg=ORIGIN_LAT + 0.004, lon_deg=ORIGIN_LON + 0.005, alt_m=1100.0),
+                Lla(lat_deg=ORIGIN_LAT, lon_deg=ORIGIN_LON, alt_m=1200.0),
+            ],
+            speed_mps=60.0,
+        )
+
+        print("  steer: 250 m turn radius at 45 m/s for 15 s (a coordinated turn)", flush=True)
+        bot.steer(turn_radius_m=250.0, speed_mps=45.0, duration_s=15.0)
+
+        print("  track_point: aiming at a target that drifts east, without moving", flush=True)
+        # Offset from the aircraft on purpose. A target directly below means a straight-down aim, where the
+        # Euler decomposition is singular and yaw collapses into roll -- the stage then reports a rolled
+        # airframe for a command that never touched roll, which reads as a bug and is not one.
+        drifting_lon = ORIGIN_LON + 0.004
+
+        def moving_target() -> Lla:
+            nonlocal drifting_lon
+            drifting_lon += 0.00004
+            return Lla(lat_deg=ORIGIN_LAT, lon_deg=drifting_lon, alt_m=GROUND_M)
+
+        bot.track_point(moving_target, duration_s=12.0)
+
+        print("  follow_point: chasing that target with a 250 m standoff", flush=True)
+        bot.follow_point(moving_target, distance_m=250.0, height_m=150.0, speed_mps=50.0, duration_s=18.0)
+        print(f"\n  {bot.sent} pose packets sent in total.", flush=True)
+    _hold(keep_open, "PoseBot sequence finished.")
+
+
+def _scenario_mavlink(session: Any, keep_open: float, dwell: float) -> None:
+    """Drive the simulator from a MAVLink source through the isaac-core-mavlink bridge."""
+    del dwell
+    try:
+        from pymavlink import mavutil
+    except ImportError as exc:
+        print(f"  pymavlink is not installed, so this scenario cannot run: {exc}", flush=True)
+        return
+
+    config = session.config.get()
+    vehicle = next(iter(config["vehicles"]))
+    udp_port = int(config["vehicles"][vehicle].get("udp_port") or 33333)
+    mavlink_port = 14577
+
+    print("  Three processes: a fake autopilot here, the bridge, and the simulator.", flush=True)
+    print(f"  autopilot -> MAVLink udp {mavlink_port} -> bridge -> pose udp {udp_port} -> sim\n", flush=True)
+
+    bridge = subprocess.Popen(
+        [
+            "isaac-core-mavlink",
+            f"udpin:127.0.0.1:{mavlink_port}",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(udp_port),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    # The bridge must be listening before the autopilot speaks, or the opening datagrams are lost.
+    time.sleep(4.0)
+    stop = threading.Event()
+    state = {"alt_m": 1100.0, "yaw_deg": 0.0}
+
+    def autopilot() -> None:
+        """Emit GLOBAL_POSITION_INT and ATTITUDE at 30 Hz."""
+        link = mavutil.mavlink_connection(f"udpout:127.0.0.1:{mavlink_port}", source_system=1)
+        while not stop.is_set():
+            boot_ms = int(time.monotonic() * 1000) & 0xFFFFFFFF
+            link.mav.global_position_int_send(
+                boot_ms,
+                int(ORIGIN_LAT * 1e7),
+                int(ORIGIN_LON * 1e7),
+                int(state["alt_m"] * 1000),
+                int(state["alt_m"] * 1000),
+                0,
+                0,
+                0,
+                int(state["yaw_deg"] * 100) % 36000,
+            )
+            link.mav.attitude_send(boot_ms, 0.0, 0.0, math.radians(state["yaw_deg"]), 0.0, 0.0, 0.0)
+            time.sleep(1.0 / 30.0)
+
+    thread = threading.Thread(target=autopilot, daemon=True)
+    thread.start()
+    try:
+        # Walked rather than jumped: the autopilot thread reads `state` every tick, so moving it gradually
+        # is what makes this look like a flight instead of a sequence of teleports.
+        for label, to_alt, to_yaw, seconds in (
+            ("hold 1100 m", 1100.0, 0.0, 4.0),
+            ("climb to 1500 m", 1500.0, 0.0, 8.0),
+            ("turn to 90 deg while holding altitude", 1500.0, 90.0, 8.0),
+            ("descend to 850 m", 850.0, 90.0, 10.0),
+        ):
+            print(f"  autopilot: {label}", flush=True)
+            from_alt, from_yaw = float(state["alt_m"]), float(state["yaw_deg"])
+            ticks = max(1, int(seconds * 20.0))
+            for tick in range(ticks + 1):
+                fraction = tick / ticks
+                state["alt_m"] = from_alt + fraction * (to_alt - from_alt)
+                state["yaw_deg"] = from_yaw + fraction * (to_yaw - from_yaw)
+                time.sleep(1.0 / 20.0)
+            observed = _translate_of(session.get_pose())
+            if observed is not None:
+                print(f"    stage z now {observed[2]:8.2f} (expected about {to_alt - GROUND_M:.2f})", flush=True)
+    finally:
+        stop.set()
+        if bridge.poll() is None:
+            try:
+                os.killpg(os.getpgid(bridge.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+    _hold(keep_open, "MAVLink sequence finished.")
+
+
+def _scenario_recording(session: Any, keep_open: float, dwell: float) -> None:
+    """Record the published topics of a real flight to disk, then report the files."""
+    del dwell
+    try:
+        import rclpy
+
+        from isaac_core.devkit.recording import pose_recorder, range_recorder, video_recorder
+    except ImportError as exc:
+        print(f"  ROS 2 is not sourced, so this scenario cannot run: {exc}", flush=True)
+        print("    source /opt/ros/humble/setup.bash", flush=True)
+        return
+
+    output = Path.home() / "isaac_core_out"
+    output.mkdir(parents=True, exist_ok=True)
+    rclpy.init()
+    camera = video_recorder()
+    poses = pose_recorder()
+    ranges = range_recorder()
+    for recorder in (camera, poses, ranges):
+        recorder.start()
+        threading.Thread(target=recorder.spin, daemon=True).start()
+    print("  Three recorders subscribed. Flying a circle while they capture.\n", flush=True)
+    try:
+        _place_and_confirm(session, alt_m=1300.0)
+        _fly_circle(session, 40.0, alt_m=1300.0)
+    finally:
+        for recorder in (camera, poses, ranges):
+            recorder.stop()
+    print(
+        f"  captured: {camera.frame_count} image frames, {poses.frame_count} poses, " f"{ranges.frame_count} ranges",
+        flush=True,
+    )
+    written: list[str] = []
+    if camera.frame_count:
+        written.append(str(camera.save_video(output / "eyes_on_recording.mp4")))
+    if poses.frame_count:
+        written.append(str(poses.save_to(output / "eyes_on_poses.pkl")))
+    if ranges.frame_count:
+        written.append(str(ranges.save_to(output / "eyes_on_ranges.pkl")))
+    for path in written:
+        size = Path(path).stat().st_size if Path(path).is_file() else 0
+        print(f"    {path}  ({size} bytes)", flush=True)
+    for recorder in (camera, poses, ranges):
+        recorder.shutdown()
+    rclpy.shutdown()
+    if written:
+        print(f"\n  Open the video:  ffplay {written[0]}", flush=True)
+    _hold(keep_open, "Recording finished.")
+
+
+def _scenario_pose_sender(session: Any, keep_open: float, dwell: float) -> None:
+    """Open the pose-sender GUI against this simulator and leave it up to fly by hand."""
+    del dwell
+    config = session.config.get()
+    vehicle = next(iter(config["vehicles"]))
+    udp_port = int(config["vehicles"][vehicle].get("udp_port") or 33333)
+    print("  Opening the pose-sender GUI. Fly the aircraft by hand from it.", flush=True)
+    print(f"  It should land on UDP port {udp_port}, which is what this simulator listens on.\n", flush=True)
+    gui = subprocess.Popen(
+        ["isaac-core-pose-sender", "--port", str(udp_port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        if gui.poll() is not None:
+            print("  The GUI exited immediately. Is python3-tk installed?", flush=True)
+            return
+        _hold(keep_open, "GUI open. Drive it, then close the window or press Ctrl-C here.")
+    finally:
+        if gui.poll() is None:
+            try:
+                os.killpg(os.getpgid(gui.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+def _scenario_own_layer(session: Any, keep_open: float, dwell: float) -> None:
+    """Prove a layer authored OUTSIDE the repo composes, with nothing in isaac_core changed."""
+    del dwell, session
+    print("  This scenario is about the startup report rather than the viewport.", flush=True)
+    print("  A layer was written to a temporary directory outside this repo, and the", flush=True)
+    print("  simulator was pointed at it with assets.layer_search_paths only.\n", flush=True)
+    print("  In the startup output above, look for the feature layer report and confirm:", flush=True)
+    print("    eyes_on_probe appears as COMPOSED, not skipped and not absent.", flush=True)
+    print("  If it is absent entirely, the search path never reached discovery.", flush=True)
+    _hold(30.0, "Nothing to fly here; the evidence is in the report above.")
+
+
 def _reference_altitude(session: Any) -> float:
     """Return the scene's ENU reference altitude from the running simulator's own config."""
     config = session.config.get()
@@ -652,6 +1048,125 @@ SCENARIOS: tuple[Scenario, ...] = (
             "It keeps running while the aircraft moves -- no flag was needed to enable it.",
         ),
         run=_scenario_terrain,
+    ),
+    Scenario(
+        number=9,
+        title="Zoom, linear in field of view",
+        overrides={
+            "vehicles.drone_0.camera.focal_length_min_mm": 20.0,
+            "vehicles.drone_0.camera.focal_length_max_mm": 200.0,
+            "vehicles.drone_0.camera.zoom_max_rate_deg_s": 25.0,
+        },
+        watch=(
+            "Each step ZOOMS SMOOTHLY at about 25 deg/s of field of view -- it must not snap.",
+            "Level 0.5 looks about HALFWAY zoomed. If it looks nearly fully zoomed in, the level is",
+            "  being interpolated in focal length instead of field of view, which is the bug this guards.",
+            "The printed focal length and field of view agree with what the picture does.",
+            "Out-of-range focal lengths are clamped to 20 and 200 mm rather than refused.",
+            "The aircraft does not move; only the lens changes.",
+        ),
+        run=_scenario_zoom,
+    ),
+    Scenario(
+        number=10,
+        title="Segmentation recording",
+        overrides={"features.enabled": ["camera_udp", "segmentation"]},
+        watch=(
+            "The VIEWPORT shows the normal camera; segmentation goes to the file, not the screen.",
+            "Open the written mp4 afterwards. Every distinct object should hold ONE FLAT COLOUR",
+            "  that stays with it as the viewpoint orbits.",
+            "Cesium terrain is streamed generated geometry, so expect the ground to read as a few",
+            "  large regions rather than per-building instances. Authored objects segment cleanly.",
+            "A bad recording shows colours FLICKERING on a stationary object, or any solid black frame.",
+            "Colours are stable within one file, not between runs -- do not compare two recordings.",
+        ),
+        run=_scenario_segmentation,
+        note="Writes ~/isaac_core_out/eyes_on_segmentation.mp4 for you to open afterwards.",
+    ),
+    Scenario(
+        number=11,
+        title="ROS 2 pose source (MAVROS shaped)",
+        overrides={"vehicles.drone_0.pose_source": "ros"},
+        needs_ros=True,
+        watch=(
+            "The aircraft moves in response to ROS 2 topics, with NO UDP sender running at all.",
+            "Each printed stage z matches the commanded altitude minus 516.7, within a metre or so.",
+            "The heading changes when the published quaternion changes.",
+            "MAVROS publishes ENU already, so a positive yaw here turns the opposite way to the",
+            "  UDP packet's NED yaw. That difference is expected, not a bug.",
+        ),
+        run=_scenario_ros_pose,
+    ),
+    Scenario(
+        number=12,
+        title="PoseBot flight library",
+        watch=(
+            "orbit: a smooth circle at constant radius, nose tangential, not a series of jumps.",
+            "fly_path: straight legs between waypoints, the nose turning to face each new leg,",
+            "  and it ENDS EXACTLY on the last waypoint rather than overshooting.",
+            "steer: a constant-radius coordinated turn, not a polygon.",
+            "track_point: the aircraft HOLDS POSITION and only rotates, following the drifting target.",
+            "follow_point: it now chases the target, holding roughly 250 m away and 150 m above it.",
+            "Nothing should jump instantly between poses: every command is a real 30 Hz stream.",
+        ),
+        run=_scenario_posebot,
+    ),
+    Scenario(
+        number=13,
+        title="MAVLink bridge",
+        watch=(
+            "The aircraft follows the fake autopilot, with no UDP sender and no ROS 2 involved.",
+            "Each printed stage z matches the commanded altitude minus 516.7 within a metre or so.",
+            "If nothing moves at all, the bridge is not receiving: it must be the LISTENER (udpin)",
+            "  and it must be up before the autopilot starts talking.",
+        ),
+        run=_scenario_mavlink,
+    ),
+    Scenario(
+        number=14,
+        title="Recording published topics to disk",
+        needs_ros=True,
+        overrides={"features.enabled": ["camera_udp", "distance_sensor"]},
+        watch=(
+            "All three counts are non-zero: image frames, poses and ranges.",
+            "The written mp4 plays and shows the flight, at the rate actually measured.",
+            "A .timestamps.txt sits beside the mp4 -- the simulator's frame rate is not constant,",
+            "  so that sidecar is how the real per-frame timing survives.",
+            "The pickles are non-trivial in size, not a few bytes.",
+        ),
+        run=_scenario_recording,
+        note="Writes ~/isaac_core_out/eyes_on_recording.mp4 plus two pickles.",
+    ),
+    Scenario(
+        number=15,
+        title="Pose sender GUI, flown by hand",
+        watch=(
+            "The window opens with one tab, already on the port this simulator listens on.",
+            "Typing a position and pressing 'Fly there' RAMPS over about three seconds, not a jump.",
+            "The readback line shows what the SIMULATOR reports, beside what you are sending --",
+            "  if the camera freezes, that line tells you which half is wrong.",
+            "Arrow keys nudge yaw and pitch; PageUp/PageDown nudge altitude.",
+            "'Copy call' and 'Copy TOML' put usable text on the clipboard.",
+            "Ctrl-C in this terminal closes the GUI and the simulator together.",
+        ),
+        run=_scenario_pose_sender,
+        note="Needs python3-tk and a display.",
+    ),
+    Scenario(
+        number=16,
+        title="A layer authored outside the repo",
+        watch=(
+            "In the startup report, eyes_on_probe is listed as a COMPOSED feature layer.",
+            "Nothing in isaac_core was edited to make that happen: the layer lives in a temporary",
+            "  directory and was found through assets.layer_search_paths alone.",
+            "If it is missing entirely, discovery never saw the search path.",
+        ),
+        run=_scenario_own_layer,
+        overrides={
+            "assets.layer_search_paths": [str(_prepare_own_layer())],
+            "features.enabled": ["camera_udp", _OWN_LAYER_ID],
+        },
+        note="Writes a throwaway layer under /tmp; nothing in the repo changes.",
     ),
 )
 

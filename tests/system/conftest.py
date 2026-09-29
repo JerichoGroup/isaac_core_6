@@ -45,12 +45,26 @@ TEARDOWN_GRACE_S = 30.0
 # How many times a fixture retries a launch that never becomes ready.
 LAUNCH_ATTEMPTS = 2
 
-# Rounds of waiting for a launched simulator to report a composed, ready stage, at two seconds each.
-# Twenty seconds is deliberate. Raising it to two minutes was tried and made things worse rather than
-# better: when a two-vehicle stage in a multi-module run does not compose, it does not compose at all,
-# so a longer budget converts a quick, informative skip into a very long hang. Failing fast is the
-# more useful behaviour.
-READINESS_ATTEMPTS = 10
+# Wall-clock budget for a launched simulator to report a composed, ready stage. Twenty seconds is
+# deliberate: when a stage in a multi-module run does not compose, it does not compose at all, so a longer
+# budget converts a quick informative skip into a very long hang.
+#
+# This is a DEADLINE, not a number of attempts. Counting attempts makes the real budget
+# attempts x slowest-possible-call, and when the call timeout was later raised to 240 s for heavy stages
+# the readiness poll silently inherited it -- so the intended 20 seconds became up to 40 minutes, which is
+# exactly the outcome the paragraph above was written to prevent.
+READINESS_BUDGET_S = 20.0
+
+# Socket timeout for the readiness poll alone. A poll asks `get_state`, which is answered off the main
+# thread and returns in milliseconds, so it has no business waiting as long as a command that drives
+# frames. Keeping the two separate is what stops one slow call consuming the whole budget.
+READINESS_POLL_TIMEOUT_S = 5.0
+
+# Budget for the one main-thread call that proves the simulation thread is turning. Generous enough that a
+# merely busy stage passes, short enough that a starved one is diagnosed in seconds. The usual reason it
+# fails is not this repo: another process holding the GPU leaves the renderer unable to allocate, and Isaac
+# reports that as silence rather than as an error.
+STARVATION_PROBE_TIMEOUT_S = 30.0
 
 # Module order, heaviest simulator first. Measured: running the two-vehicle module LAST made it
 # fail or skip, while the same module first passed every time -- cumulative pressure from earlier
@@ -200,21 +214,28 @@ def _await_responsive(session: Any) -> None:
     """
     last_state: object = None
     last_error: str | None = None
-    for _ in range(READINESS_ATTEMPTS):
+    deadline = time.monotonic() + READINESS_BUDGET_S
+    while time.monotonic() < deadline:
         try:
-            state = session.state()
+            state = _poll_state(session)
             last_state = state
             if state.get("ready") and state.get("stage_composed"):
-                # The stage has reported itself composed, so it IS ready; the warm-up below is a
-                # courtesy. A two-vehicle headless stage can hold its main thread for over a minute
-                # streaming tiles, and `step` is dispatched to that thread, so this call can exceed the
-                # RPC timeout while the control plane keeps answering. Treating that as "never became
-                # ready" is what reported three passing tests as skipped, with a message naming the
-                # wrong cause -- the state right beside it said ready and composed.
-                try:
-                    session.step(count=STEP_CHUNK_FRAMES)
-                except (TimeoutError, OSError) as warm_up_error:
-                    print(f"warm-up step timed out on a ready stage, continuing: {warm_up_error}")
+                # The stage reports itself composed, but that is answered off the simulation thread, so
+                # it does not prove the thread is turning. One cheap main-thread call does.
+                #
+                # When a stage is starved, EVERY main-thread call times out -- `step(1)` as surely as
+                # `step(10)`, and `get_pose` too -- while `get_state` keeps answering. Continuing in that
+                # state means each test burns the full call budget: measured, ten tests times 240 s is the
+                # 40-minute run this check exists to prevent. Skipping immediately costs seconds and names
+                # the real cause.
+                if not _main_thread_turning(session):
+                    pytest.skip(
+                        "the stage composed but its simulation thread is not servicing calls: a trivial "
+                        f"step did not return within {STARVATION_PROBE_TIMEOUT_S}s while get_state kept "
+                        "answering. CHECK FREE GPU MEMORY FIRST (`nvidia-smi`): this was traced to another "
+                        "process holding most of the card, which starves the renderer without any message "
+                        "saying so. A Cesium stage needs roughly 3 GiB free, and two vehicles need more."
+                    )
                 return
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
@@ -222,9 +243,65 @@ def _await_responsive(session: Any) -> None:
     # Swallowing the reason cost hours once: the simulator's own log showed it had composed and was
     # running, so the failure was on this side of the wire and the message said nothing about it.
     pytest.skip(
-        "the simulator launched but never reported a composed, ready stage; "
+        f"the simulator launched but never reported a composed, ready stage within {READINESS_BUDGET_S}s; "
         f"last state={last_state!r}, last error={last_error}"
     )
+
+
+def _main_thread_turning(session: Any) -> bool:
+    """Return whether the simulation thread is servicing main-thread calls.
+
+    `get_state` is answered by the control-plane thread, so it says nothing about whether the simulation
+    loop is turning. `step` is dispatched to that loop, so one frame is the cheapest honest probe.
+
+    Args:
+        session: The devkit session, used only for its host and port.
+
+    Returns:
+        Whether a single-frame step completed in time.
+
+    """
+    from isaac_core.control.client import ControlClient
+
+    client = ControlClient(
+        host=session.client.host, port=session.client.port, call_timeout_s=STARVATION_PROBE_TIMEOUT_S
+    )
+    try:
+        client.connect()
+        client.call("step", {"count": 1})
+        return True
+    except Exception as exc:
+        # Printed rather than swallowed: a probe that hides its own reason for failing sends the reader
+        # hunting for a starved simulator when the fault may be in the probe.
+        print(f"main-thread probe failed: {type(exc).__name__}: {exc}")
+        return False
+    finally:
+        client.close()
+
+
+def _poll_state(session: Any) -> dict[str, Any]:
+    """Ask the simulator for its state on a short-lived connection.
+
+    Deliberately not `session.state()`: that reuses the session's client, whose socket timeout is the
+    command budget, so one poll could block far longer than the whole readiness budget. A fresh
+    connection with its own short timeout keeps the poll bounded by the poll.
+
+    Args:
+        session: The devkit session, used only for its host and port.
+
+    Returns:
+        The state mapping.
+
+    """
+    from isaac_core.control.client import ControlClient
+
+    client = ControlClient(host=session.client.host, port=session.client.port, call_timeout_s=READINESS_POLL_TIMEOUT_S)
+    client.connect()
+    try:
+        state: dict[str, Any] = client.call("get_state")
+        return state
+    finally:
+        client.close()
 
 
 def _clear_startup_hazards() -> None:

@@ -25,7 +25,7 @@ from typing import Protocol, runtime_checkable
 
 from isaac_core.contracts.frames import Frame
 from isaac_core.contracts.pose import GeodeticPose, Lla, Rpy
-from isaac_core.geo.distance import geodesic_distance_m, meters_to_latlon_offset
+from isaac_core.geo.distance import EARTH_RADIUS_M, geodesic_distance_m, meters_to_latlon_offset
 
 
 @runtime_checkable
@@ -108,7 +108,9 @@ class OrbitTrajectory:
         speed_mps: Ground speed in m/s (must be positive).
         orbit_duration_s: Total orbit duration in seconds.
         roll_r: Fixed roll angle in radians (default 0).
-        pitch_r: Fixed pitch angle in radians (default 0).
+        pitch_r: Pitch OFFSET in radians, added to the segment's own gradient (default 0). The nose
+            already follows a climbing or descending leg, so this is for a deliberate bias rather than
+            for setting the pitch outright.
 
     """
 
@@ -193,7 +195,8 @@ class PathTrajectory:
 
     Match the old ``PathSender``'s cumulative-distance approach: the path is
     parameterised by arc length, the vehicle travels at constant ground speed,
-    and the yaw at each sample points along the current segment. The duration
+    and the attitude at each sample points along the current segment, in three dimensions:
+    yaw along the ground track and pitch along its gradient. The duration
     is determined by ``total_distance / speed_mps``.
 
     Args:
@@ -295,12 +298,29 @@ class PathTrajectory:
             lon = p1.lon_deg + seg_frac * (p2.lon_deg - p1.lon_deg)
             alt = p1.alt_m + seg_frac * (p2.alt_m - p1.alt_m)
 
-            # Yaw points along the segment direction
+            # The nose points along the segment, in three dimensions. A degree of longitude is shorter
+            # than a degree of latitude by cos(latitude), so comparing the two raw deltas over-weights
+            # the east-west component -- by about 18% at latitude 32, which is several degrees of bearing.
             d_lat = p2.lat_deg - p1.lat_deg
             d_lon = p2.lon_deg - p1.lon_deg
-            yaw = math.atan2(d_lon, d_lat) if (d_lat != 0.0 or d_lon != 0.0) else 0.0
+            north_m = math.radians(d_lat) * EARTH_RADIUS_M
+            east_m = math.radians(d_lon) * EARTH_RADIUS_M * math.cos(math.radians(p1.lat_deg))
+            yaw = math.atan2(east_m, north_m) if (north_m != 0.0 or east_m != 0.0) else 0.0
+
+            # Pitch follows the segment's gradient, so a climbing leg is flown nose-up. Leaving it at a
+            # fixed value meant an aircraft descending 200 m still pointed at the horizon, which reads as
+            # sliding rather than flying. `pitch_r` remains an offset on top, for a deliberate nose-down
+            # bias.
+            climb_m = p2.alt_m - p1.alt_m
+            ground_m = math.hypot(north_m, east_m)
+            travel_pitch = math.atan2(climb_m, ground_m) if ground_m > 0.0 else 0.0
 
             yield GeodeticPose(
                 position=Lla(lat_deg=lat, lon_deg=lon, alt_m=alt),
-                orientation=Rpy(roll_r=self.roll_r, pitch_r=self.pitch_r, yaw_r=yaw, frame=Frame.NED),
+                orientation=Rpy(
+                    roll_r=self.roll_r,
+                    pitch_r=self.pitch_r + travel_pitch,
+                    yaw_r=yaw,
+                    frame=Frame.NED,
+                ),
             )

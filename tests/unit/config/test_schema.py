@@ -66,11 +66,30 @@ def test_the_gimbal_has_no_rotation_frame_of_its_own() -> None:
     assert "rotation_frame" not in GimbalConfig.model_fields
 
 
-def test_gimbal_rate_limit_is_optional_but_must_be_positive() -> None:
+def test_gimbal_rate_limit_accepts_both_spellings_of_unlimited() -> None:
+    # Zero and None both mean unlimited. Zero used to be REJECTED while the comparable
+    # `camera.zoom_max_rate_deg_s` accepted it for exactly that meaning -- and a comment claimed the two
+    # readings were "kept identical". A config that read naturally beside the zoom setting failed to load,
+    # for a value `slew_towards` had always treated as unlimited.
     assert GimbalConfig().max_rate_deg_s is None
     assert GimbalConfig(max_rate_deg_s=60.0).max_rate_deg_s == pytest.approx(60.0)
+    assert GimbalConfig(max_rate_deg_s=0.0).max_rate_deg_s == pytest.approx(0.0)
+    assert GimbalConfig(max_rate_deg_s=None).max_rate_deg_s is None
+
+
+def test_a_negative_gimbal_rate_is_still_refused() -> None:
+    # Widening to accept zero must not accept nonsense.
     with pytest.raises(ValidationError):
-        GimbalConfig(max_rate_deg_s=0.0)
+        GimbalConfig(max_rate_deg_s=-5.0)
+
+
+def test_the_two_rate_limits_agree_on_what_unlimited_means() -> None:
+    # The inconsistency this guards was found by a combination sweep, not by either setting's own tests:
+    # each was correct alone and they contradicted each other.
+    from isaac_core.config import CameraConfig
+
+    assert CameraConfig(zoom_max_rate_deg_s=0.0).zoom_max_rate_deg_s == pytest.approx(0.0)
+    assert GimbalConfig(max_rate_deg_s=0.0).max_rate_deg_s == pytest.approx(0.0)
 
 
 # --------------------------------------------------------------------------- #

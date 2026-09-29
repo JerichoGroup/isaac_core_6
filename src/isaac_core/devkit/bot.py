@@ -537,8 +537,8 @@ class PoseBot:
 
     def orbit(
         self,
-        centre_lat_deg: float,
-        centre_lon_deg: float,
+        center_lat_deg: float,
+        center_lon_deg: float,
         *,
         radius_m: float,
         speed_mps: float,
@@ -548,8 +548,8 @@ class PoseBot:
         """Circle a point, facing along the direction of travel.
 
         Args:
-            centre_lat_deg: Centre latitude in degrees.
-            centre_lon_deg: Centre longitude in degrees.
+            center_lat_deg: Centre latitude in degrees.
+            center_lon_deg: Centre longitude in degrees.
             radius_m: Orbit radius in metres.
             speed_mps: Ground speed along the circle.
             duration_s: How long to orbit for.
@@ -560,8 +560,8 @@ class PoseBot:
 
         """
         trajectory = OrbitTrajectory(
-            center_lat_deg=centre_lat_deg,
-            center_lon_deg=centre_lon_deg,
+            center_lat_deg=center_lat_deg,
+            center_lon_deg=center_lon_deg,
             radius_m=radius_m,
             height_m=height_m if height_m is not None else self._state.alt_m,
             speed_mps=speed_mps,

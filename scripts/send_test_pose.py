@@ -37,7 +37,7 @@ DEFAULT_LAT_DEG = 32.22481
 DEFAULT_LON_DEG = 35.25621
 DEFAULT_ALT_M = 1000.0
 
-# Matches the previous generation's senders, and comfortably above the render rate.
+# Comfortably above the render rate, so the stage never waits on a packet.
 DEFAULT_RATE_HZ = 30.0
 
 

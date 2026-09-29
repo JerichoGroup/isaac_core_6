@@ -5014,3 +5014,388 @@ standoff.
 
 `isaac-core doctor` reports 14 of 14 checks passing, which is the first thing a user runs and had not been
 exercised this cycle.
+
+## Phase 8 Stage 0 — the suite could not be run twice, and most of it was my doing
+
+**Symptom.** Repeated full system-suite runs failed or stalled past a 40-minute timeout, while every module
+passed on its own. Never seen in normal use, which was the first clue that this was a harness problem.
+
+**What it was not**, each ruled out by measurement rather than argument:
+
+- *Not a GPU leak.* Six launches in one process: GPU went 1114 MiB before, ~2852 while running, 1115 after,
+  every time. It releases cleanly.
+- *Not leaked processes.* Zero strays after every launch.
+- *Not accumulating state.* Time-to-ready did not climb: 20.5, 20.2, 14.1, 20.7 s. Failures landed at
+  launches 0 and 4, not at a threshold.
+- *Not launch or composition.* Across 31 launches the control-plane port opened every time in 13-14 s, and a
+  separate probe composed a stage 6 times out of 6 in 14-23 s.
+- *Not the readiness poll's socket timeout.* Ten launches, five with a 240 s call budget and five with 20 s,
+  interleaved: 10/10 ready. Hypothesis disproved.
+
+**What it is.** On a two-vehicle Cesium stage the simulation thread sometimes stops servicing main-thread
+calls entirely. `get_state` keeps answering, because the control-plane thread handles it; `step(1)`,
+`step(10)` and `get_pose` all time out identically. Our loop is `update_app()` then drain queued tasks, so if
+Kit's `update_app()` does not return, nothing drains. Two viewports streaming Cesium tiles is a known
+main-thread hog -- measured at 7 fps on first-pass terrain. It clears after a pause, and the shipped
+single-vehicle path is unaffected, which is why it never showed up in real use.
+
+That is inside Kit, not in our code, so there is no honest product fix here.
+
+**What was mine, and is fixed.** Two harness defects turned that intermittent condition into a 40-minute
+mystery:
+
+1. `_await_responsive` bounded its wait by *attempts* rather than wall-clock time. The constant's own comment
+   said "at two seconds each. Twenty seconds is deliberate" and warned that a longer budget "converts a
+   quick, informative skip into a very long hang". When the call timeout was later raised to 240 s for heavy
+   stages, the readiness poll silently inherited it and the intended 20 seconds became up to 40 minutes --
+   precisely the outcome that paragraph was written to prevent. It is now a deadline, and the poll has its
+   own short socket timeout so one call cannot consume the budget.
+2. Nothing checked whether the simulation thread was actually turning. A composed stage was taken as usable,
+   so every subsequent test burned the full 240 s call budget: ten tests times 240 s is the 40 minutes. One
+   trivial main-thread `step(1)` now proves it, and a starved stage skips immediately with a message naming
+   the real cause instead of stalling.
+
+**Measured after the fix**, two consecutive full runs from one state: 179 s (17 passed, 10 skipped, the swarm
+module skipping fast and accurately) and 216 s (27 passed, nothing skipped). Both exit zero. Before, the same
+two runs hit a 2600-second timeout each.
+
+So the suite is now reliable in the sense that matters: it always finishes in minutes and always tells the
+truth about why. The underlying Kit behaviour is documented rather than pretended away.
+
+**A note on how this was found.** Several hours went into expensive full-suite runs before the cheap
+reproduction was built. Bisecting against a 40-minute failure is hopeless; the first job with any slow
+intermittent problem is to make it fast to observe. Ofer called out that I was stuck, which is what prompted
+dropping the suite entirely and probing the two-vehicle stage directly with short timeouts -- that produced
+the decisive evidence in ninety seconds.
+
+## The sidecar is gone
+
+Removed on Ofer's decision, and the package's own docstring had already written the rule: "It is retained
+deliberately for v2 rather than deleted... an out-of-process service is expected again in v3. **If v3 closes
+without one, delete the package then.**" V3 closed without one.
+
+The evidence it was dead weight rather than dormant infrastructure: zero service kinds registered, so the
+supervisor supervised nothing; not one of the four declared console scripts; no reference from anywhere in
+`src` outside its own package; reachable only as `python3 -m isaac_core.sidecar` and exercised only by its
+own tests. Every other "sidecar" hit in the codebase is the unrelated `.timestamps.txt` file written beside
+a video, which stays.
+
+Removed: 447 lines of source, 310 lines and 15 tests, `SidecarConfig` and `SidecarServiceConfig` plus the
+`sidecar` field on the root config, the `[sidecar]` extra in `pyproject.toml`, three import-linter contracts,
+the `[sidecar]` and `[sidecar.services]` blocks in both shipped TOMLs, and the architecture note explaining
+why it existed with nothing in it.
+
+Kept deliberately: the 2023-parity tables in `docs/dev/roadmap.md` and the note in
+`docs/migrating_from_2023.md`, which describe what the previous generation did rather than what this repo
+ships. Those are history, and deleting history to make a diff look tidy loses the reasoning.
+
+Verified after: 2114 unit tests pass where 2129 did before, the difference being exactly the 15 sidecar
+tests; 20 import contracts kept where 23 were, the difference being exactly the three sidecar contracts; the
+root config now has 10 top-level sections rather than 11; both shipped TOMLs and `pyproject.toml` still
+parse; all 16 hooks pass.
+
+**Worth noting for the remaining Phase 8 stages.** This was pulled forward rather than left to the deletions
+at the end, because every later stage -- adversarial config sweeps, the combination matrix, the eyes-on
+scenarios -- would otherwise have spent effort covering 750 lines already agreed for removal. Deleting docs
+can wait until last; deleting code that later stages would test cannot.
+
+## Correction: Stage 0's cause was GPU contention, not Kit
+
+The Stage 0 entry above concluded that a two-vehicle Cesium stage sometimes stops servicing main-thread
+calls because Kit's `update_app()` does not return. The observation was right; **the attribution was wrong**,
+and the real cause is embarrassing in how ordinary it is.
+
+While driving the ROS pose source live, the simulator died with a clear message rather than a silence:
+
+```
+[omni.rtx] Out of GPU memory allocating resource 'Synthetic Image Data Color (LDR)'
+[omni.rtx] VkResult: ERROR_OUT_OF_DEVICE_MEMORY  /  vkAllocateMemory failed.
+```
+
+`nvidia-smi` then showed why. An unrelated process on this machine -- `ollama`'s `llama-server`, serving a
+30B coding model -- was holding **21306 MiB of the card's 24564 MiB**, leaving 2202 MiB free. A
+single-vehicle Cesium stage was measured needing about 2852 MiB while running. Isaac could not fit.
+
+`ollama ps` also explains the intermittency that made this so hard to pin down: the model is loaded on
+demand and unloaded after roughly thirty minutes idle. So the card's free memory swings between about
+23 GiB and about 2 GiB depending on nothing to do with this repo. That accounts for every confusing
+observation:
+
+- **The pass/fail alternation.** A model loading between runs, not state accumulating in the harness.
+- **"Works once or twice, then fails."** Same thing.
+- **Twenty-five consecutive successful launches after two early failures.** The model had unloaded.
+- **A baseline that read 673 MiB, then 1113 MiB, then 21902 MiB** across the session. Residency, not a leak.
+- **Why Ofer never hit it in normal use.** He is not launching four simulators in a row while a 22 GiB model
+  is resident.
+
+The uncomfortable part: that model is almost certainly the one serving this session, so the test environment
+was competing with the agent running the tests. The GPU reading taken *while Isaac was not running* looked
+like a clean baseline and hid it completely.
+
+**What this changes.** The harness fixes stand on their own merits and are unaffected: bounding readiness by
+wall clock rather than attempts was a real defect, and probing that the simulation thread turns before
+running a module is right regardless of why it might not. What was wrong was the stated cause, and the skip
+message that asserted it -- it now tells the reader to check free GPU memory first, which is the thing that
+would actually have saved the hours this cost.
+
+**The lesson worth keeping.** A resource measured only when the system under test is idle is not a baseline.
+Every GPU reading in the Stage 0 investigation was taken before or after a launch, never against a competing
+workload, and the one number that would have ended the investigation on day one -- free memory at the moment
+of failure -- was never looked at.
+
+## Phase 8 Stage 2.1 — the three paths that had never been run
+
+Shipping a feature nobody has ever run is not acceptable for 1.0.0, and three of them were in that state:
+unit-tested only, never driven against a simulator. All three now work, and all three were testable here the
+whole time.
+
+**`pose_source = "ros"`.** Half of the two pose sources the README advertises, and the untested half. Driven
+by publishing MAVROS-shaped `NavSatFix` and `PoseStamped` from system Python with `rclpy` -- which is exactly
+how a real MAVROS would do it, since rclpy cannot run inside Isaac's 3.12 interpreter. The `camera_ros` layer
+composed with nothing skipped, and the stage reached z 883.300 against a wanted 883.30, with the orientation
+quaternion (w=0.9397, z=0.3420) being yaw 40 degrees to four figures.
+
+**`isaac-core-mavlink`.** A real `pymavlink` source emitting `GLOBAL_POSITION_INT` and `ATTITUDE` put the
+stage at z 733.300 against a wanted 733.30, on the first poll.
+
+The first attempt failed, and the fault was the test rather than the bridge: the autopilot was listening on
+`udpin` while the bridge sent on `udpout`, so nothing was ever received. The bridge has to be the listener,
+which the CLI help says plainly ("e.g. 'udpin:0.0.0.0:14550'") and which I misread. Also worth knowing: the
+bridge must be listening *before* the autopilot starts, or the opening datagrams are simply lost -- the same
+lesson the pose sender already learned.
+
+**The topic recorders.** `video_recorder`, `pose_recorder` and `range_recorder` subscribed to the live topics
+of a moving simulator and wrote files that read back: 329 frames to a 557 KB mp4, and 394 poses and 394
+ranges to pickles. A first longer run captured 797, 950 and 951 respectively, so the capture rate tracks the
+topics rather than a fixed guess.
+
+All three were exercised against one simulator driven over MAVLink while the recorders captured the resulting
+topics, which is also how two of them would really be used together.
+
+## Stage 0, settled
+
+Two entries above got the cause wrong in two different ways, so here is the resolved position with the
+evidence, and then this stops being re-litigated.
+
+There were **two** independent problems wearing one symptom:
+
+1. **A harness defect, mine.** `_await_responsive` bounded its wait by attempts rather than wall-clock time,
+   so it inherited the 240-second call budget and turned a documented twenty-second fail-fast into up to
+   forty minutes. Nothing verified the simulation thread was turning either, so a composed-but-unusable
+   stage let every subsequent test burn the full call budget. Both fixed in `tests/system/conftest.py`.
+2. **GPU contention, not ours.** A 22 GiB language model resident on the same card left about 2 GiB free
+   where a Cesium stage needs roughly 3 GiB. Isaac reported that as silence rather than as an error, except
+   once when it said `ERROR_OUT_OF_DEVICE_MEMORY` outright. Ofer's workload, under his control, and nothing
+   for this repo to fix.
+
+With the harness fixed and the card free: **two consecutive full system runs, 27 passed each, 186 s and
+183 s, zero probe failures.** Previously the same two runs hit a 2600-second timeout apiece.
+
+Three process lessons, which are the durable part:
+
+- **A resource measured only when the system under test is idle is not a baseline.** Every GPU reading in the
+  first investigation was taken before or after a launch, never against the competing workload, and free
+  memory at the moment of failure was the one number that would have ended it on day one.
+- **Bounding work by attempts rather than by a deadline hides a multiplication.** Ten attempts is only
+  twenty seconds if each attempt is bounded too; the constant's own comment said so and my change to a
+  different constant silently broke it.
+- **A probe that swallows its own exception sends the reader hunting the wrong thing.** The starvation check
+  returned a bare `False`, so a probe-side failure was indistinguishable from a starved simulator. It prints
+  its reason now, which is what it should have done from the start.
+
+## Phase 8 Stages 2 and 3 — the eyes-on suite, and a schema swept for bad input
+
+**Stage 3 is ready to hand over.** The repo already had eight eyes-on scenarios, but they predate V3, so
+nothing covered zoom, segmentation, the ROS pose source, PoseBot, MAVLink, the topic recorders, the GUI, or
+authoring a layer from outside the repo. Eight more were added to `scripts/eyes_on_check.py`, taking it to
+sixteen, and **every one was smoke-tested end to end** rather than merely registered -- a scenario that
+crashes wastes the reviewer's time, which is the one thing an eyes-on suite must not do.
+
+What the smoke tests showed, which is also evidence the features work:
+
+- **Zoom**: level 0 to 1 gave focal 20 to 200 mm and field of view 85.50 to 10.56 degrees, with level 0.5 at
+  48.03 -- the exact midpoint, which is the linear-in-field-of-view property the scenario exists to check.
+- **Segmentation**: 834 frames at 39.4 fps with one dropped, a 20 MiB mp4.
+- **ROS pose source**: four commanded altitudes, stage z matching each to the centimetre.
+- **MAVLink**: the same, driven by a real pymavlink autopilot through the bridge.
+- **Recording**: 2067 image frames, 2387 poses, 2388 ranges, written and sized on disk.
+- **A layer authored outside the repo**: `✓ eyes_on_probe` composed from a directory under `/tmp`, with
+  nothing in `isaac_core` edited. It declares no USD, which is legal for a layer contributing behaviour
+  rather than prims, so this needed no authored geometry to prove discovery reaches outside the package.
+
+One finding about the harness itself: `--verify all` launches five simulators back to back, and the
+two-vehicle scenario can time out under that pressure while passing perfectly on its own. Recorded in the
+reviewer's guide rather than papered over.
+
+**Stage 2.3, the adversarial config sweep.** The existing schema tests cover the keys somebody thought to
+test. The new sweep walks the schema instead, finds every leaf with a numeric bound -- 21 of them -- pushes
+each out of range through `load(cli_overrides=...)`, which is the path a `--set` flag takes, and asserts the
+rejection **names the key**. That last property is the one that matters when a config is wrong at 2am: a
+message that does not say which setting was bad leaves a user bisecting their own TOML.
+
+It also covers wrongly typed values, non-finite numbers (NaN compares false against every bound, so a range
+check alone does not stop it), unknown keys and sections, invalid vehicle and feature names, and -- easy to
+forget -- that a value exactly on an inclusive bound is still accepted, since no out-of-range test would
+catch an off-by-one that makes a documented value unusable. Proven non-vacuous by removing a bound from
+`fov_deg` and watching three tests fail.
+
+**Stage 2.5** is prepared as `scripts/fresh_clone_check.sh` for the 6.1.0-rc.26 machine. It clones to a
+temporary directory rather than reusing a checkout, so a missing file or an untracked dependency surfaces
+instead of being silently satisfied by an existing tree. Nothing it does is destructive.
+
+## What Ofer's eyes-on pass found
+
+Sixteen scenarios run by hand. Twelve were clean. The rest produced four findings, and the split between
+them is the useful part: two were real product bugs, two were my own test design, and separating those took
+measurement rather than argument.
+
+**The stutter was mine, and it was a regression.** Reported as "the screen is stuck or frozen every N frames
+on repeat", with the explicit and correct observation that this was not the Cesium tile-streaming stutter
+already accepted. In Phase 8 I had made `set_pose` send three datagrams with 20 ms gaps, to fix a lost-packet
+bug. That cost 40 ms per call, so a caller's 20 Hz pose loop delivered 11 Hz as bursts of three identical
+packets separated by silence: the camera jumped once every few rendered frames and sat frozen in between.
+The burst is now paid once per vehicle, on the opening call, and every later call sends one packet. It also
+explains why the PoseBot scenario looked smoother -- PoseBot streams UDP directly and never touches
+`set_pose`.
+
+**`fly_path` did not pitch, and its bearing was wrong.** Two defects on adjacent lines, both invisible to an
+endpoint assertion because the path still arrives in the right place:
+
+- `pitch_r` was a fixed value while yaw was computed, so a leg descending 200 m pointed at the horizon.
+  Pitch now follows the gradient: measured -23.04 degrees descending and +8.78 climbing, where it was
+  0.000 and 0.000.
+- Yaw came from `atan2(d_lon, d_lat)` on raw degrees. A degree of longitude is shorter than a degree of
+  latitude by cos(latitude), so the east-west component was over-weighted -- about 18% at latitude 32. A leg
+  with equal deltas now reads 40.300 degrees, the true bearing, rather than 45.000.
+
+**The roll on track and follow was my scenario, not the product.** On the wire all four aiming commands hold
+roll at exactly 0.000. But the scenario aimed at a target at the *same* latitude and longitude as the
+aircraft -- straight down, where the Euler decomposition is singular. Measured: a commanded yaw of 45 with
+pitch -90 comes back from the stage as roll 45 and yaw 0. At five metres of horizontal offset it is clean.
+The scenario now offsets the target, and the singularity is already documented and tested from Phase 7.
+
+**The snapping in the ROS and MAVLink scenarios was also my scenario.** Each published one fixed pose per
+phase and held it, so of course the camera teleported. They interpolate at 30 Hz and 20 Hz now, which is what
+actually demonstrates a followed path.
+
+### Smaller things the pass turned up
+
+- **The GUI's "Fly there" is gone**, on Ofer's call, and his reasoning is right: the field boxes are the
+  target, so "fly there" needed either its own fields or a mode, and this window exists for finding a
+  viewpoint rather than flying missions. The devkit does flight properly.
+- **The readback line was reported as missing.** It was not: a green label, bound to a variable, updated on a
+  timer. But it was unlabelled, so a line reading `udp 127.0.0.1:33333 | sent 1234 | stage x=...` is
+  indistinguishable from anonymous status text. It says `SIMULATOR SAYS:` now. A feature nobody can
+  recognise is not a feature.
+- **`isaac-core-inspect` reported only the first vehicle.** `get_runtime_values` has always taken a
+  `vehicle`, and the inspector never passed one. It iterates the configured vehicles now -- verified live on
+  a two-vehicle stage showing lead on 33333 and wing on 33334 with their own mounts and topics.
+- **The runtime patch key was renamed** to its real path, `vehicles.<id>.gimbal.max_rate_deg_s`. The old bare
+  `gimbal.max_rate_deg_s` is not a path the schema has anywhere, so `config.patch` succeeded on a key no user
+  could find in their own TOML -- and silently applied it to the first vehicle, because the key had no
+  vehicle in it to key on. Patching `wing` now leaves `lead` alone, verified.
+- **Segmentation on Cesium terrain** was understated in the guide. Ofer saw the same patch of terrain change
+  colour *between frames within one recording*, not merely lacking per-building instances. Streamed tiles are
+  regenerated geometry with no durable per-prim identity, so there is nothing stable for the annotator to key
+  on. The guide now says to judge colour stability on authored objects only.
+- **Port contention between consecutive scenarios** cost a confusing failure during re-testing: a lingering
+  simulator holds UDP 33333 and RTSP 8554, and the next scenario reports a stage Z of 0.00 while the real
+  cause sits in the log as `Address already in use`. Now called out in the guide with the command to check.
+
+Everything Ofer reported as an error but which was not ours: the Cesium `curl: Couldn't connect to server`
+lines were his tileset server being briefly unreachable, which is why a second run of the same scenario was
+clean; `Could not import rclpy` inside Isaac is expected and documented; the `renderProductPath is empty` and
+`UsdStage reference count` lines are transient startup noise.
+
+## Phase 8 Stages 2.2 and 2.4
+
+**2.2, combinations.** A pairwise covering design over the axes that interact -- one or two vehicles, UDP or
+ROS pose source, default or pinned ports, gimbal or zoom or both, earth or house scene. The full cross product
+is 96 runs; the covering set is 8, and every pair of values appears in at least one of them. Each run asserts
+against the live stage rather than that a call returned: the commanded pose reaches the prim, gimbal offsets
+land on the right vehicle's prim, zoom writes `focalLength` on the right camera, and ports and topics are
+namespaced per vehicle.
+
+It earned its keep on the first run by finding an inconsistency neither setting's own tests could see, because
+each was correct in isolation and they contradicted each other:
+
+**`gimbal.max_rate_deg_s` rejected `0.0` while `camera.zoom_max_rate_deg_s` accepted it for exactly the same
+meaning.** The gimbal used `gt=0.0` with `None` for unlimited; zoom used `ge=0.0` with `0` for unlimited. Worse,
+the comment I had written on the zoom field claimed the reading was "the same reading the gimbal's
+`max_rate_deg_s` has, kept identical so one does not surprise someone who learned the other" -- which was
+false. A config that read naturally beside the zoom setting failed to load, for a value `slew_towards` had
+always treated as unlimited: its own docstring says "zero or negative means UNLIMITED" and it snaps correctly.
+Only the schema disagreed. The gimbal now accepts both spellings, negatives are still refused, and a test
+asserts the two settings agree on what unlimited means.
+
+Final state: 4 of 4 single-vehicle combinations pass, 3 of 4 two-vehicle. The one failure is the known
+intermittent two-vehicle timeout, not a combination-specific defect. Two earlier "failures" were the probe's
+own fault -- it asserted a UDP pose port on ROS-sourced vehicles, which correctly have none.
+
+**2.4, resource and lifecycle.** Five exit paths, each checked for leaked processes, three bound ports and GPU
+memory:
+
+| exit path | result |
+|---|---|
+| clean exit | no process, all ports free, GPU 780 -> 780 MiB |
+| exception inside the block | clean |
+| SIGINT, the way Ctrl-C arrives | clean |
+| **SIGKILL of the owning process** | **2 processes, all three ports held, GPU 780 -> 3411 MiB** |
+| failed launch, port already taken | clean |
+
+The SIGKILL leak is inherent rather than a defect: no cleanup code can run after `kill -9`, and `Sim.launch`
+uses `start_new_session=True` deliberately so signals aimed at a caller do not tear down the simulator
+mid-frame. What was wrong was the guidance. The README's troubleshooting entry mentioned the port but not the
+cause, the cost, or the symptom -- and the symptom is the confusing part: the next run launches happily,
+composes a stage, and sits at a pose of zero while the real reason is one `Address already in use` line buried
+in the simulator's own log. It now says that, along with the measured fact that every *normal* exit leaves
+nothing behind, so a stray is always attributable to a hard kill.
+
+A mitigation exists and is deliberately not taken unilaterally: `prctl(PR_SET_PDEATHSIG)` would make the
+simulator die with its parent, but it pulls against the signal isolation `start_new_session` was chosen for.
+That is a design decision rather than a fix, so it is Ofer's to make.
+
+## Phase 8 Stage 4 — the cleanup, and 1.0.0
+
+Version is `1.0.0`. The tasks behind it were small; two are worth recording because of what they revealed.
+
+**The gimbal rate fix made an existing README claim true.** `README.md:324` has always said
+`max_rate_deg_s = 20.0     # omit or 0 to snap instantly`. Zero was *rejected* by the schema until Stage 2.2's
+combination sweep found it. So the documentation described the intended behaviour, `slew_towards` implemented
+it ("zero or negative means UNLIMITED"), and only the schema disagreed -- which is the most persuasive
+argument that widening it was a fix rather than a change.
+
+**Nothing enforced the no-archaeology rule**, which is why nine sites had accumulated in `src` and `scripts`.
+`tests/unit/test_no_archaeology.py` now walks both directories for years, "previous generation", "used to be",
+"predates" and "legacy". Two details make it a guard rather than a gesture: it asserts it actually found files
+to scan, and each exemption carries a reason plus a test that the exemption is still needed -- a stale
+allowlist entry is how a guard quietly stops guarding. `docs/` and `tests/` are deliberately out of scope:
+the log and the migration notes exist to hold history, and a test named `test_is_supported_false_for_2023`
+describes behaviour rather than narrating the past.
+
+The rest: two dead symbols removed (`REQUIRED_EXTENSIONS`, `VehicleState.distance_to`, each with exactly one
+repo-wide reference -- its own definition); six banner comments deleted; three silent failures given a log
+line each, the worst being the GUI returning an empty vehicle list on *any* exception so a failed config read
+looked identical to a simulator with no vehicles; and the client's response buffer capped to mirror the
+server's existing request cap, with a test that floods it newline-free and expects a refusal rather than
+growth.
+
+`v2_finalization_plan.md` and `v3_plan.md` are deleted. `phase_8_eyes_on.md` and `phase_8_second_machine.md`
+are kept deliberately -- the first is a manual test plan with ongoing value, the second is still pending a run.
+
+**Decided, rather than escalated: the SIGKILL leak stays.** `prctl(PR_SET_PDEATHSIG)` would make the simulator
+die with its parent, but it trades a property that holds all the time -- signals aimed at a caller never tear
+the simulator down mid-frame -- against a case the user caused deliberately with `kill -9`. Every normal exit
+was measured clean. Documenting the cause, the cost and the recovery is the proportionate response.
+
+One flake surfaced during the final Stage 4 verification and is worth the note. A full system run reported
+`captured 0 segmentation frame(s)` while the same module passed alone. That was not a regression: Replicator
+hands over nothing usable for the first frames after an annotator is attached, and under the load of a full
+run that window was longer than the clip the test recorded. The recorder behaved correctly -- it refuses to
+write a file of black frames rather than producing something that looks like a successful capture -- so the
+fault was the test expecting frames before any could exist. It now burns forty frames after attaching, before
+counting on any. The previously failing full run then passed 27/27 in 200 s.
+
+**What remains is one thing only: the second machine.** Everything else in Phase 8 is done. That run is the
+only test of the install path and of Isaac Sim 6.1, it needs `dev` pushed first, and `scripts/fresh_clone_check.sh`
+stops rather than producing a green report from a stale branch.

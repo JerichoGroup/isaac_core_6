@@ -278,7 +278,7 @@ class SimSession:
         ``camera.zoom_max_rate_deg_s`` set the move takes time, exactly like ``set_gimbal``. Poll
         :meth:`get_zoom` to watch it get there.
 
-        Needs ``camera.focal_length_min_mm`` and ``focal_length_max_mm`` configured. Single vehicle only.
+        Needs ``camera.focal_length_min_mm`` and ``focal_length_max_mm`` configured.
 
         Args:
             vehicle: Which vehicle's camera to zoom. Defaults to the first configured one.
@@ -332,7 +332,7 @@ class SimSession:
         params: dict[str, Any] = {} if vehicle is None else {"vehicle": vehicle}
         return self._client.call(Method.START_SEGMENTATION_RECORDING.value, params)
 
-    def stop_segmentation_recording(self, path: str | Path) -> Any:
+    def stop_segmentation_recording(self, path: str | Path, *, vehicle: str | None = None) -> Any:
         """Stop recording and write the mp4.
 
         Written at the rate the frames were actually produced, not a nominal one, with a
@@ -341,15 +341,20 @@ class SimSession:
 
         Args:
             path: Where to write, resolved under ``sim.control_plane.output_root`` and confined to it.
+            vehicle: Which vehicle's recording to stop. Defaults to the first configured one, and must
+                match whatever ``start_segmentation_recording`` was given.
 
         Returns:
             The path written, the frame count, the measured fps and the resolution.
 
         """
-        return self._client.call(Method.STOP_SEGMENTATION_RECORDING.value, {"path": str(path)})
+        params: dict[str, Any] = {"path": str(path)}
+        if vehicle is not None:
+            params["vehicle"] = vehicle
+        return self._client.call(Method.STOP_SEGMENTATION_RECORDING.value, params)
 
     @contextmanager
-    def segmentation_recorder(self, path: str | Path) -> Iterator[dict[str, Any]]:
+    def segmentation_recorder(self, path: str | Path, *, vehicle: str | None = None) -> Iterator[dict[str, Any]]:
         """Record segmentation for the duration of a block, writing on exit.
 
         Reads like the topic recorders do, and cannot leave a recording running even if the block
@@ -363,17 +368,18 @@ class SimSession:
 
         Args:
             path: Where to write the mp4.
+            vehicle: Which vehicle's camera to record. Defaults to the first configured one.
 
         Yields:
             A dict filled in on exit with the path, frame count, measured fps and resolution.
 
         """
         result: dict[str, Any] = {}
-        self.start_segmentation_recording()
+        self.start_segmentation_recording(vehicle=vehicle)
         try:
             yield result
         finally:
-            written = self.stop_segmentation_recording(path)
+            written = self.stop_segmentation_recording(path, vehicle=vehicle)
             if isinstance(written, dict):
                 result.update(written)
 

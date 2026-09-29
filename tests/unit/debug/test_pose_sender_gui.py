@@ -492,32 +492,6 @@ def test_the_stream_url_mirrors_how_the_simulator_allocates_streams(
     assert controller.rtsp_url == expected
 
 
-# -- ramping ------------------------------------------------------------------- #
-
-
-def test_ramping_walks_the_fields_to_the_target() -> None:
-    # "Fly there" must move through the intermediate values, because a jump is not a flight and looks
-    # wrong in a recording.
-    from isaac_core.debug.pose_sender_gui import _ramp_controller
-
-    controller = PoseSenderController()
-    controller.alt_m = 1000.0
-    _ramp_controller(controller, {"alt_m": 1200.0}, duration_s=0.05)
-    assert controller.alt_m == pytest.approx(1200.0)
-
-
-def test_ramping_ends_exactly_on_the_target() -> None:
-    from isaac_core.debug.pose_sender_gui import _ramp_controller
-
-    controller = PoseSenderController()
-    _ramp_controller(controller, {"lat_deg": 33.0, "lon_deg": 36.0}, duration_s=0.05)
-    assert controller.lat_deg == pytest.approx(33.0)
-    assert controller.lon_deg == pytest.approx(36.0)
-
-
-# -- the CLI's controller becomes tab one -------------------------------------- #
-
-
 def test_a_supplied_controller_becomes_the_first_tab() -> None:
     # The CLI configures a controller from its flags before any window exists, so it must not end up
     # beside a default tab nobody asked for.
